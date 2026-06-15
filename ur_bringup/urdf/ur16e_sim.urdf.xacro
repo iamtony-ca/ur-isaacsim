@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!--
+  UR16e description for the Isaac Sim backend.
+  Geometry/kinematics come from the official ur_description macro; the
+  ros2_control block is the topic_based (Isaac) variant.
+
+  NOTE: the ur_robot() macro signature below targets ur_description as shipped
+  with ur_robot_driver 3.7 on Jazzy. If xacro errors on an unknown arg after
+  install, diff against $(find ur_description)/urdf/ur.urdf.xacro and adjust.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur16e">
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_commands_topic" default="/isaac_joint_commands"/>
+  <xacro:arg name="joint_states_topic" default="/isaac_joint_states"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_sim.ros2_control.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/ur16e/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/ur16e/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/ur16e/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/ur16e/visual_parameters.yaml">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <xacro:ur16e_sim_ros2_control
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    joint_commands_topic="$(arg joint_commands_topic)"
+    joint_states_topic="$(arg joint_states_topic)"/>
+</robot>

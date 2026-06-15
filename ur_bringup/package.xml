@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>ur_bringup</name>
+  <version>0.1.0</version>
+  <description>UR16e bringup for both Isaac Sim (ROS2 bridge / topic_based_ros2_control) and the real robot (ur_robot_driver), sharing one ros2_control + MoveIt2 interface.</description>
+  <maintainer email="iamtony.ca@gmail.com">tony</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- shared description / kinematics -->
+  <exec_depend>ur_description</exec_depend>
+  <exec_depend>xacro</exec_depend>
+
+  <!-- ros2_control core + controllers (shared sim/real) -->
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+
+  <!-- sim backend: ros2_control <-> Isaac Sim via topics (built from src clone) -->
+  <exec_depend>joint_state_topic_hardware_interface</exec_depend>
+
+  <!-- real backend: official UR driver -->
+  <exec_depend>ur_robot_driver</exec_depend>
+
+  <!-- planning (shared) -->
+  <exec_depend>ur_moveit_config</exec_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

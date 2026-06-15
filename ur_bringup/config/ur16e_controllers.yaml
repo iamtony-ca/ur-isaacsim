@@ -1,0 +1,35 @@
+# Shared ros2_control configuration for UR16e.
+# Used for the Isaac Sim (topic_based) and mock-hardware backends launched
+# directly by ur_bringup. The real robot path delegates to ur_robot_driver's
+# own ur_control.launch.py (which loads ur_controllers.yaml), so this file is
+# intentionally minimal and backend-agnostic.
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz. Keep BELOW the Isaac /clock publish rate (~250 Hz) under
+                      # use_sim_time, otherwise the CM update loop waits on sim time and
+                      # starves the topic_based hardware's subscription callback (NaN states).
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Named to match ur_moveit_config's default controller so MoveIt's
+    # moveit_controllers.yaml is reused unchanged for sim and real. In sim this
+    # is a plain JTC (topic_based hardware has no speed-scaling interface).
+    scaled_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+scaled_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    # MoveIt2 talks to this controller via the follow_joint_trajectory action.
