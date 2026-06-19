@@ -55,7 +55,7 @@ import sys  # noqa: E402
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics  # noqa: E402
 
 THIS_DIR = Path(__file__).resolve().parent
-ASSETS = THIS_DIR / "assets"
+ASSETS = THIS_DIR.parent / "assets"   # isaac/assets (shared bucket, one level up from isaac/common)
 ASSETS.mkdir(exist_ok=True)
 
 UR16E_URL = (

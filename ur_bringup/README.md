@@ -60,9 +60,9 @@ Both expose `joint_trajectory_controller/follow_joint_trajectory`, so MoveIt and
 any higher-level node are written once and work in both modes.
 
 ## Layout
-- `launch/ur16e.launch.py` — the `use_sim` dispatcher.
-- `config/ur16e_controllers.yaml` — controllers for the sim/mock path.
-- `urdf/ur16e_sim*.xacro` — UR16e description + `topic_based` ros2_control (sim).
+- `launch/ur16e/ur16e.launch.py` — the `use_sim` dispatcher.
+- `config/ur16e/ur16e_controllers.yaml` — controllers for the sim/mock path.
+- `urdf/ur16e/ur16e_sim*.xacro` — UR16e description + `topic_based` ros2_control (sim).
 - `isaac/README.md` — Isaac Sim OmniGraph (ROS2 bridge) wiring + topics.
 
 The **real** path delegates to the upstream `ur_robot_driver/ur_control.launch.py`,

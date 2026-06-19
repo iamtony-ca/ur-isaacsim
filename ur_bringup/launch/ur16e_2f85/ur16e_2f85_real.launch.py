@@ -109,7 +109,7 @@ def generate_launch_description():
         actions=[
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
-                    PathJoinSubstitution([pkg, "launch", "robotiq_2f85_real.launch.py"])
+                    PathJoinSubstitution([pkg, "launch", "ur16e_2f85", "robotiq_2f85_real.launch.py"])
                 ),
                 launch_arguments={
                     "use_fake_hardware": use_fake_hardware,

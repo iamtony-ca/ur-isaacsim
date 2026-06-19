@@ -2,6 +2,8 @@
 *.bundle
 .claude/
 CLAUDE.md
+__pycache__/
+*.pyc
 
 # Source dependencies managed by vcstool (src/ur16e.repos), not embedded in this repo.
 /topic_based_hardware_interfaces/

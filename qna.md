@@ -133,7 +133,7 @@ SRDF 의 핵심은 `disable_collisions`(인접 링크 충돌 무시 규칙). UR 
 ### ③ "collision 반영" = 그리퍼 collision 메시 + 그리퍼용 disable 규칙을 함께
 그리퍼 형상을 MoveIt 이 충돌 계산에 쓰려면 URDF 에 **collision 메시**가 있어야 한다(`robotiq_2f85_macro.xacro
 collision:=true`). 하지만 팔 전용 SRDF 에는 그리퍼 링크용 disable 규칙이 없어서, 그냥 켜면 그리퍼 내부 링크끼리·
-그리퍼와 장착 손목이 충돌로 오인돼 또 `-10`. 그래서 전용 SRDF(`srdf/ur16e_2f85.srdf.xacro`)가
+그리퍼와 장착 손목이 충돌로 오인돼 또 `-10`. 그래서 전용 SRDF(`srdf/common/ur16e_2f85.srdf.xacro`)가
 - **그리퍼 내부 모든 쌍 + 그리퍼↔손목/tool0** → `disable_collisions` (시작자세 오인 방지)
 - **그리퍼↔팔 몸통(upper_arm/forearm/shoulder/base) + 환경** → 그대로 검사 (진짜 충돌은 잡음)
 
@@ -144,7 +144,7 @@ collision:=true`). 하지만 팔 전용 SRDF 에는 그리퍼 링크용 disable 
 ### ④ 결과: 자기충돌/환경충돌을 실제로 거부
 `/check_state_validity` 로 보면 그리퍼를 팔 몸통에 박는 포즈에서 `robotiq_85_*_link <-> upper_arm_link` 같은
 접촉이 잡히고(valid=False), 그 포즈를 목표로 보내면 MoveGroup 이 `FAILURE` 로 거부한다
-(`isaac/selfcollision_demo.py` 로 실증). 반대로 그리퍼 내부/손목 마운트는 disable 돼 정상 자세는 통과.
+(`isaac/ur16e_2f85/selfcollision_demo.py` 로 실증). 반대로 그리퍼 내부/손목 마운트는 disable 돼 정상 자세는 통과.
 
 > 정리: 그리퍼는 **DOF 1개(`finger_joint`)+mimic** 로 제어하고, MoveIt 충돌 인식은 **collision 메시 + (이름이 일치하는)
 > 결합 SRDF** 의 disable 범위로 정해진다 — 내부/마운트는 끄고, 몸통/환경은 켠다.

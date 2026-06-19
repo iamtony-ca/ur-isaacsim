@@ -21,9 +21,9 @@
   <xacro:arg name="joint_states_topic" default="/isaac_joint_states"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
-  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85_sim.ros2_control.xacro"/>
-  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_macro.xacro"/>
-  <xacro:include filename="$(find ur_bringup)/urdf/realsense_d405_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/common/ur16e_2f85_sim.ros2_control.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/common/robotiq_2f85_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85_d405/realsense_d405_macro.xacro"/>
   <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
 
   <link name="world"/>

@@ -70,7 +70,7 @@ def generate_launch_description():
     robot_description = ParameterValue(
         Command([
             FindExecutable(name="xacro"), " ",
-            PathJoinSubstitution([pkg, "urdf", "robotiq_2f85_real.urdf.xacro"]), " ",
+            PathJoinSubstitution([pkg, "urdf", "ur16e_2f85", "robotiq_2f85_real.urdf.xacro"]), " ",
             "use_fake_hardware:=", use_fake_hardware, " ",
             "mock_sensor_commands:=", mock_sensor_commands, " ",
             "com_port:=", com_port, " ",
@@ -78,7 +78,7 @@ def generate_launch_description():
         ]),
         value_type=str,
     )
-    controllers_yaml = PathJoinSubstitution([pkg, "config", "robotiq_2f85_real_controllers.yaml"])
+    controllers_yaml = PathJoinSubstitution([pkg, "config", "ur16e_2f85", "robotiq_2f85_real_controllers.yaml"])
 
     gripper_group = GroupAction([
         PushRosNamespace(GRIPPER_NS),

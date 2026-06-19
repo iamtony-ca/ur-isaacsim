@@ -38,7 +38,7 @@ def generate_launch_description():
     robot_description_semantic = ParameterValue(
         Command([
             FindExecutable(name="xacro"), " ",
-            PathJoinSubstitution([pkg, "srdf", "ur16e_2f85.srdf.xacro"]), " ",
+            PathJoinSubstitution([pkg, "srdf", "common", "ur16e_2f85.srdf.xacro"]), " ",
             "name:=ur16e",
         ]),
         value_type=str,

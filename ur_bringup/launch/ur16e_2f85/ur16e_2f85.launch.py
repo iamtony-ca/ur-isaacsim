@@ -1,19 +1,22 @@
-"""UR16e + Robotiq 2F-85 + RealSense D405 bringup for the Isaac Sim backend (Set 3).
+"""UR16e + Robotiq 2F-85 bringup for the Isaac Sim backend.
 
-Same control stack as ur16e_2f85.launch.py (arm JTC + gripper_controller; the
-camera is sensor-only, no extra controller), but loads the camera-equipped
-description ur16e_2f85_d405_sim.urdf.xacro so robot_state_publisher carries the
-camera frames (tool0 -> camera_*_optical_frame) into TF — required for the
-depth->OctoMap pipeline. Reuses config/ur16e_2f85_controllers.yaml unchanged.
+Standalone launch for the gripper variant; the arm-only ur16e.launch.py is left
+untouched. Starts robot_state_publisher + ros2_control_node (topic_based
+hardware) + spawners for joint_state_broadcaster,
+scaled_joint_trajectory_controller (6 arm joints) and gripper_controller
+(finger_joint GripperCommand action).
 
-Isaac must run the composed Set-3 scene (coupling + PickNik bracket baked) WITH
-the camera graph:
-    /isaac-sim/python.sh .../isaac/ur16e_isaac_ros2.py \
-        --asset-path .../isaac/assets/ur16e_2f85_d405.usd --with-camera
+Isaac Sim must be running the composed UR16e+2F-85 scene, e.g.:
+    /isaac-sim/python.sh \
+        /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_isaac_ros2.py \
+        --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
 
-Then:
-    ros2 launch ur_bringup ur16e_2f85_d405.launch.py
-    ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py   # MoveIt + depth->OctoMap
+Then (this launch):
+    ros2 launch ur_bringup ur16e_2f85.launch.py
+
+The arm still exposes the same follow_joint_trajectory action, so
+ur16e_moveit.launch.py works unchanged; the gripper adds a GripperCommand
+action at /gripper_controller/gripper_cmd.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -46,14 +49,14 @@ def generate_launch_description():
     robot_description = ParameterValue(
         Command([
             FindExecutable(name="xacro"), " ",
-            PathJoinSubstitution([pkg, "urdf", "ur16e_2f85_d405_sim.urdf.xacro"]), " ",
+            PathJoinSubstitution([pkg, "urdf", "ur16e_2f85", "ur16e_2f85_sim.urdf.xacro"]), " ",
             "joint_commands_topic:=", joint_commands_topic, " ",
             "joint_states_topic:=", joint_states_topic,
         ]),
         value_type=str,
     )
     sim_time = ParameterValue(use_sim_time, value_type=bool)
-    controllers_yaml = PathJoinSubstitution([pkg, "config", "ur16e_2f85_controllers.yaml"])
+    controllers_yaml = PathJoinSubstitution([pkg, "config", "common", "ur16e_2f85_controllers.yaml"])
 
     return LaunchDescription(declared_args + [
         Node(

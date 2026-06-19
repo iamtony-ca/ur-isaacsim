@@ -30,9 +30,9 @@ sim_app = SimulationApp({"headless": True})
 import omni.kit.asset_converter as asset_converter  # noqa: E402
 from isaacsim.core.utils import extensions  # noqa: E402
 
-THIS_DIR = Path(__file__).resolve().parent
-SRC = THIS_DIR.parent / "meshes" / "picknik_ur5_realsense_camera_adapter_rev2.dae"
-DST = THIS_DIR / "assets" / "picknik_camera_adapter.usd"
+THIS_DIR = Path(__file__).resolve().parent          # isaac/ur16e_2f85_d405
+SRC = THIS_DIR.parent.parent / "meshes" / "picknik_ur5_realsense_camera_adapter_rev2.dae"
+DST = THIS_DIR.parent / "assets" / "picknik_camera_adapter.usd"   # isaac/assets
 
 
 async def _convert(src: str, dst: str) -> bool:

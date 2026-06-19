@@ -85,7 +85,7 @@ This folder ships `ur16e_isaac_ros2.py`, which loads the UR16e and builds the
 whole graph programmatically (no manual GUI wiring):
 ```
 /isaac-sim/python.sh \
-    /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_isaac_ros2.py [--headless] [--no-env]
+    /isaac-sim/ur_ws/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py [--headless] [--no-env]
 ```
 Verified: it publishes `/isaac_joint_states` with the correct UR joint names,
 `/clock`, and gravity-loaded efforts (physics running), and accepts commands on

@@ -63,14 +63,14 @@ def generate_launch_description():
     # ---------------- SIM (Isaac) backend ----------------
     sim_description = Command([
         FindExecutable(name="xacro"), " ",
-        PathJoinSubstitution([pkg, "urdf", "ur16e_sim.urdf.xacro"]), " ",
+        PathJoinSubstitution([pkg, "urdf", "ur16e", "ur16e_sim.urdf.xacro"]), " ",
         "joint_commands_topic:=", joint_commands_topic, " ",
         "joint_states_topic:=", joint_states_topic,
     ])
     sim_robot_description = ParameterValue(sim_description, value_type=str)
     sim_time = ParameterValue(use_sim_time, value_type=bool)
 
-    controllers_yaml = PathJoinSubstitution([pkg, "config", "ur16e_controllers.yaml"])
+    controllers_yaml = PathJoinSubstitution([pkg, "config", "ur16e", "ur16e_controllers.yaml"])
 
     sim_group = GroupAction(
         condition=IfCondition(use_sim),

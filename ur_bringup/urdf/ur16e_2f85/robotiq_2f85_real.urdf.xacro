@@ -27,8 +27,8 @@
        (Collision-aware planning uses the combined ur16e_2f85 URDF + SRDF.) -->
   <xacro:arg name="collision" default="false"/>
 
-  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_macro.xacro"/>
-  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_real.ros2_control.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/common/robotiq_2f85_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85/robotiq_2f85_real.ros2_control.xacro"/>
 
   <!-- Reference frame: the arm's tool0 (published by the UR driver's RSP). -->
   <link name="$(arg prefix)tool0"/>

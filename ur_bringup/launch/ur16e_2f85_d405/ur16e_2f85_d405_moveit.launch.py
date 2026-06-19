@@ -46,7 +46,7 @@ def generate_launch_description():
     robot_description_semantic = ParameterValue(
         Command([
             FindExecutable(name="xacro"), " ",
-            PathJoinSubstitution([pkg, "srdf", "ur16e_2f85.srdf.xacro"]), " ",
+            PathJoinSubstitution([pkg, "srdf", "common", "ur16e_2f85.srdf.xacro"]), " ",
             "name:=ur16e",
         ]),
         value_type=str,
@@ -54,7 +54,7 @@ def generate_launch_description():
     semantic_param = {"robot_description_semantic": robot_description_semantic}
 
     sensors_3d_path = os.path.join(
-        get_package_share_directory("ur_bringup"), "config", "sensors_3d.yaml"
+        get_package_share_directory("ur_bringup"), "config", "ur16e_2f85_d405", "sensors_3d.yaml"
     )
 
     # Two configs: octomap one loads sensors_3d, plain one doesn't (so
