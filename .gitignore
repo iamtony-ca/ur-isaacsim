@@ -3,5 +3,7 @@
 .claude/
 CLAUDE.md
 
-# Source dependency managed by vcstool (src/ur16e.repos), not embedded in this repo.
+# Source dependencies managed by vcstool (src/ur16e.repos), not embedded in this repo.
 /topic_based_hardware_interfaces/
+/ros2_robotiq_gripper/
+/serial/

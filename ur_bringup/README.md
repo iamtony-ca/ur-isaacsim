@@ -3,6 +3,13 @@
 One ROS2 (Jazzy) bringup for a **UR16e** that runs against **Isaac Sim 5.1.0**
 or the **real robot**, sharing the same ros2_control + MoveIt2 interface.
 
+> **Three independent rigs** share this package (each in its own files, higher
+> sets reuse but never edit lower-set files):
+> **Set 1** UR16e only (`ur16e*`) — documented below ·
+> **Set 2** + Robotiq 2F-85 via the GRP-ES-CPL-077 coupling (`ur16e_2f85*`) ·
+> **Set 3** + RealSense D405 on a PickNik bracket (`ur16e_2f85_d405*`).
+> Sets 2/3 are covered in the top-level [`../README.md`](../README.md) §8 / §9.
+
 ```
             app / MoveIt2  (identical)
                    │  follow_joint_trajectory

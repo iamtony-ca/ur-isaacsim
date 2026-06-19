@@ -4,7 +4,7 @@ project(ur_bringup)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch config urdf isaac
+  DIRECTORY launch config urdf srdf isaac meshes
   DESTINATION share/${PROJECT_NAME}
 )
 

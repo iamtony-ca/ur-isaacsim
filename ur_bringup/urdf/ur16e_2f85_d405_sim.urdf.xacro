@@ -1,0 +1,107 @@
+<?xml version="1.0"?>
+<!--
+  UR16e + Robotiq 2F-85 + RealSense D405 (eye-in-hand) — Set 3 top-level for Isaac.
+
+  = the gripper set's description (ur16e_2f85_sim.urdf.xacro) PLUS an eye-in-hand
+  D405. Kept as a SEPARATE file so the three rigs stay independent:
+    Set 1  UR only                 -> ur16e_sim.urdf.xacro
+    Set 2  UR + 2F-85              -> ur16e_2f85_sim.urdf.xacro
+    Set 3  UR + 2F-85 + D405       -> THIS file
+
+  Reuses the gripper's ros2_control block + robotiq macro unchanged (the camera is
+  sensor-only: a camera link + optical frames, no ros2_control joints). robot name
+  MUST stay "ur16e" so ur_moveit_config's SRDF applies.
+
+  Pair with: launch/ur16e_2f85_d405.launch.py, launch/ur16e_2f85_d405_moveit.launch.py
+  (depth to OctoMap), and Isaac ur16e_isaac_ros2.py with the camera flag.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur16e">
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_commands_topic" default="/isaac_joint_commands"/>
+  <xacro:arg name="joint_states_topic" default="/isaac_joint_states"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85_sim.ros2_control.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/realsense_d405_macro.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/ur16e/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/ur16e/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/ur16e/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/ur16e/visual_parameters.yaml">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- Set 3 end-of-arm stack — order per PickNik UR hardware guide:
+         tool0 -> camera mount (bracket, flush) -> coupling(+11) -> 2F-85
+       The camera mount is FIRST on the flange (M6x16 screws pass through both the
+       mount and the coupling); the gripper bolts to the coupling. Gripper ends up
+       +18 mm from the flange; the bracket holds the eye-in-hand D405. -->
+
+  <!-- 1) camera mount (PickNik bracket) flush on the flange -->
+  <link name="$(arg tf_prefix)camera_adapter_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur_bringup/meshes/picknik_ur5_realsense_camera_adapter_rev2.dae"/>
+      </geometry>
+    </visual>
+    <!-- collision so MoveIt avoids driving the bracket into the arm body. SRDF
+         disables the mount-neighbour pairs (wrist_3/coupling/gripper); bracket-vs-
+         arm-body stays enabled so self-interference poses are rejected. -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://ur_bringup/meshes/picknik_ur5_realsense_camera_adapter_rev2_collision.stl"/>
+      </geometry>
+    </collision>
+  </link>
+  <joint name="$(arg tf_prefix)camera_adapter_joint" type="fixed">
+    <parent link="$(arg tf_prefix)tool0"/>
+    <child link="$(arg tf_prefix)camera_adapter_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- bracket's gripper-side face (+7 mm, PickNik realsense_camera_adapter_tool0_joint);
+       the coupling mounts here -->
+  <link name="$(arg tf_prefix)bracket_tool0"/>
+  <joint name="$(arg tf_prefix)bracket_tool0_joint" type="fixed">
+    <parent link="$(arg tf_prefix)camera_adapter_link"/>
+    <child link="$(arg tf_prefix)bracket_tool0"/>
+    <origin xyz="0 0 0.007" rpy="0 0 0"/>
+  </joint>
+
+  <!-- 2) GRP-ES-CPL-077 coupling on the camera mount: bracket_tool0 ->
+       ur_to_robotiq_link -> gripper_mount_link (+11 mm) -->
+  <xacro:ur_to_robotiq prefix="$(arg tf_prefix)" connected_to="$(arg tf_prefix)bracket_tool0"/>
+
+  <!-- 3) 2F-85 on the coupling output -->
+  <xacro:robotiq_2f85 prefix="$(arg tf_prefix)" parent="$(arg tf_prefix)gripper_mount_link">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_2f85>
+
+  <!-- Eye-in-hand D405 HELD BY the bracket (PickNik d415_mount_joint, relative to
+       camera_adapter_link): xyz=(0,-0.067,0.0171), pitched (-pi/2 + 6deg) about Y
+       with +pi/2 yaw so the optical axis (camera_link +x) looks down the tool axis
+       toward the grasp region. (Bracket is for D415/L515; representative for D405.) -->
+  <xacro:realsense_d405 prefix="$(arg tf_prefix)" parent="$(arg tf_prefix)camera_adapter_link" collision="true">
+    <!-- Pitch 8deg (not the PickNik nominal 6deg): matches the bracket's actual
+         mount-surface normal (measured on the visual mesh) so the D405 back face is
+         PARALLEL to the cradle. Height 0.01847 solved for gap=0 so it seats flush.
+         collision:=true so MoveIt avoids driving the D405 body into the arm. -->
+    <origin xyz="0 -0.067 0.01847" rpy="0 ${-pi/2 + radians(8)} ${pi/2}"/>
+  </xacro:realsense_d405>
+
+  <xacro:ur16e_2f85_sim_ros2_control
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    joint_commands_topic="$(arg joint_commands_topic)"
+    joint_states_topic="$(arg joint_states_topic)"/>
+</robot>

@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  Standalone REAL Robotiq 2F-85 description (gripper only).
+
+  On the real robot the UR16e arm is driven by ur_robot_driver via
+  `ros2 launch ur_bringup ur16e.launch.py use_sim:=false robot_ip:=...`
+  (its own /controller_manager + robot_state_publisher publishes the arm TF up
+  to tool0). The gripper is a SEPARATE physical device on its own serial bus, so
+  it gets its own control stack (robotiq_2f85_real.launch.py, namespace
+  `gripper`). This URDF is what that stack's robot_state_publisher and
+  ros2_control_node load.
+
+  Root link is `tool0` with NO geometry: the gripper subtree hangs off it, but
+  this URDF never publishes a transform INTO tool0, so it does not conflict with
+  the arm's robot_state_publisher (which owns world->...->tool0). The two TF
+  trees join cleanly at tool0.
+
+  The gripper mount transform (tool0 -> robotiq_85_base_link) matches the sim
+  combined URDF exactly, so sim and real place the gripper identically.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robotiq_2f85">
+  <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="use_fake_hardware" default="false"/>
+  <xacro:arg name="mock_sensor_commands" default="false"/>
+  <xacro:arg name="com_port" default="/dev/ttyUSB0"/>
+  <!-- visual-only by default: this gripper-only URDF feeds RSP/RViz, not MoveIt.
+       (Collision-aware planning uses the combined ur16e_2f85 URDF + SRDF.) -->
+  <xacro:arg name="collision" default="false"/>
+
+  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_real.ros2_control.xacro"/>
+
+  <!-- Reference frame: the arm's tool0 (published by the UR driver's RSP). -->
+  <link name="$(arg prefix)tool0"/>
+
+  <xacro:robotiq_2f85 prefix="$(arg prefix)" parent="$(arg prefix)tool0"
+                      collision="$(arg collision)">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_2f85>
+
+  <xacro:robotiq_2f85_real_ros2_control
+    name="robotiq_2f85"
+    prefix="$(arg prefix)"
+    use_fake_hardware="$(arg use_fake_hardware)"
+    mock_sensor_commands="$(arg mock_sensor_commands)"
+    com_port="$(arg com_port)"/>
+</robot>

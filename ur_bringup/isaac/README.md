@@ -91,6 +91,26 @@ Verified: it publishes `/isaac_joint_states` with the correct UR joint names,
 `/clock`, and gravity-loaded efforts (physics running), and accepts commands on
 `/isaac_joint_commands`.
 
+Flags for the gripper / camera rigs (always pass an **absolute** `--asset-path` —
+a relative path is treated as Isaac-asset-server-relative and the robot fails to
+load, leaving only the camera/gripper visible):
+- `--asset-path <usd>` — load a composed scene built by `build_ur16e_2f85.py`:
+  - **Set 2**: `assets/ur16e_with_2f85.usd` — UR16e + GRP-ES-CPL-077 coupling
+    (+11 mm) + 2F-85, single articulation (coupling visual + standoff baked in so
+    the Isaac EE matches the URDF/RViz).
+  - **Set 3**: `assets/ur16e_2f85_d405.usd` — Set 2 plus the PickNik camera
+    bracket (flush on the flange) + coupling on top (+7 mm) + gripper (+18 mm),
+    all baked. Use this with `--with-camera`.
+- `--with-camera` — **Set 3 only**: parents an eye-in-hand D405 `Camera` (+ a
+  42×42×23 mm body box) under `wrist_3_link`, seated on the bracket cradle
+  (pitch 8°, flush), and builds a second OmniGraph (`IsaacCreateRenderProduct` →
+  `ROS2CameraHelper` rgb/depth/depth_pcl + `ROS2CameraInfoHelper`) publishing on
+  realsense2_camera-standard topics: `/camera/color/image_raw` (rgb8),
+  `/camera/depth/image_rect_raw` (32FC1), `/camera/depth/color/points`,
+  `/camera/{color,depth}/camera_info` (HFOV≈87°, 640×480). frameIds
+  `camera_{color,depth}_optical_frame` match the URDF in `ur16e_2f85_d405_sim.urdf.xacro`.
+  Pair with `ur16e_2f85_d405.launch.py` + `ur16e_2f85_d405_moveit.launch.py`.
+
 ## Headless / scripted alternative
 `/isaac-sim/standalone_examples/api/isaacsim.ros2.bridge/` has reference Python
 scripts for building this graph programmatically if you prefer a repeatable

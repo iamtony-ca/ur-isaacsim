@@ -1,0 +1,27 @@
+# MoveIt 3D perception: feed the eye-in-hand D405 depth point cloud into the
+# move_group OctoMap so planning avoids whatever the camera sees (sim + real,
+# same topic). Loaded by ur16e_2f85_moveit.launch.py via
+# MoveItConfigsBuilder.sensors_3d(); octomap_frame/octomap_resolution are passed
+# as move_group params in that launch.
+#
+# Requires the plugin from ros-jazzy-moveit-ros-perception (occupancy_map_monitor
+# namespace). moveit_ros_occupancy_map_monitor alone is NOT enough.
+sensors:
+  - d405_pointcloud
+
+d405_pointcloud:
+  sensor_plugin: occupancy_map_monitor/PointCloudOctomapUpdater
+  # Sim Isaac and real realsense2_camera both publish this (organized XYZ cloud).
+  point_cloud_topic: /camera/depth/color/points
+  # D405 is a close-range sensor; cap far points to keep stale/noisy returns out
+  # of the map. Raise if you mount it further from the work area.
+  max_range: 1.5
+  point_subsample: 1
+  # Self-filter: ignore returns on the robot's own (padded) links so the arm /
+  # gripper don't paint themselves into the octomap.
+  padding_offset: 0.03
+  padding_scale: 1.0
+  # Integrate at a modest rate (cloud is ~80 Hz in sim); the planning scene does
+  # not need every frame.
+  max_update_rate: 5.0
+  filtered_cloud_topic: filtered_cloud

@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<!--
+  UR16e + Robotiq 2F-85 top-level description for the Isaac Sim backend.
+  Arm from the official ur_description macro; gripper from robotiq_2f85_macro.xacro
+  (official robotiq_description .dae meshes, full mimic linkage, visual-only).
+  Requires the apt package ros-jazzy-robotiq-description.
+
+  robot name MUST stay "ur16e" so ur_moveit_config's SRDF applies (otherwise
+  MoveIt ignores the SRDF and reports START_STATE_IN_COLLISION / -10).
+  ros2_control exchanges only finger_joint with Isaac; the other 5 gripper
+  joints follow via <mimic> in ROS (RSP) and PhysxMimicJointAPI in Isaac.
+
+  Pair with: launch/ur16e_2f85.launch.py, config/ur16e_2f85_controllers.yaml,
+  and the composed Isaac asset isaac/assets/ur16e_with_2f85.usd.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur16e">
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_commands_topic" default="/isaac_joint_commands"/>
+  <xacro:arg name="joint_states_topic" default="/isaac_joint_states"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85_sim.ros2_control.xacro"/>
+  <xacro:include filename="$(find ur_bringup)/urdf/robotiq_2f85_macro.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/ur_to_robotiq_adapter.urdf.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/ur16e/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/ur16e/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/ur16e/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/ur16e/visual_parameters.yaml">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <!-- Robotiq e-Series wrist-connect coupling (real part: GRP-ES-CPL-077 for the
+       newest UR16e M8-female flange). Goes BETWEEN the UR flange and the gripper:
+       tool0 -> ur_to_robotiq_link (coupling) -> gripper_mount_link (+11 mm). This
+       is the standard mount; the gripper never bolts straight to tool0. -->
+  <xacro:ur_to_robotiq prefix="$(arg tf_prefix)" connected_to="$(arg tf_prefix)tool0"/>
+
+  <!-- 2F-85 mounted on the coupling output (not tool0). -->
+  <xacro:robotiq_2f85 prefix="$(arg tf_prefix)" parent="$(arg tf_prefix)gripper_mount_link">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_2f85>
+
+  <xacro:ur16e_2f85_sim_ros2_control
+    name="ur16e"
+    tf_prefix="$(arg tf_prefix)"
+    joint_commands_topic="$(arg joint_commands_topic)"
+    joint_states_topic="$(arg joint_states_topic)"/>
+</robot>

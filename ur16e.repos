@@ -13,3 +13,18 @@ repositories:
     # which does NOT update exported state interfaces on Jazzy 4.44 -> /joint_states
     # becomes all-NaN and MoveIt/RViz break. See SETUP.md "Known issues".
     version: 0.2.1
+  # Real Robotiq 2F-85 gripper driver (hardware interface). Not in apt for Jazzy
+  # (only robotiq_description/robotiq_controllers are). Build from source.
+  ros2_robotiq_gripper:
+    type: git
+    url: https://github.com/PickNikRobotics/ros2_robotiq_gripper.git
+    # No Jazzy tag exists; main is the Jazzy-compatible branch (tag 0.0.1 is the
+    # old Humble-era release). Provides robotiq_driver (RobotiqGripperHardwareInterface)
+    # + robotiq_controllers (RobotiqActivationController). robotiq_description comes
+    # from apt; we use our own robotiq_2f85_macro for the URDF.
+    version: main
+  # robotiq_driver depends on this serial library (tylerjw/serial, ros2 branch).
+  serial:
+    type: git
+    url: https://github.com/tylerjw/serial.git
+    version: ros2

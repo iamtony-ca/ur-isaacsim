@@ -42,6 +42,13 @@ parser.add_argument(
 )
 parser.add_argument("--joint-states-topic", default="isaac_joint_states")
 parser.add_argument("--joint-commands-topic", default="isaac_joint_commands")
+# --- eye-in-hand RealSense D405 (sim) ---
+parser.add_argument("--with-camera", action="store_true",
+                    help="attach an eye-in-hand D405 camera and publish RGB/depth/points/camera_info "
+                         "(Set 3 rig; pair with the ur16e_2f85_d405_* launches whose URDF carries the "
+                         "camera frames. Only meaningful with the 2F-85 asset.)")
+parser.add_argument("--camera-parent", default="wrist_3_link",
+                    help="articulation link the camera is parented to (moves with the arm)")
 args, _ = parser.parse_known_args()
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
@@ -77,7 +84,14 @@ robot_usd = args.asset_path
 if robot_usd.startswith("/Isaac") or not (robot_usd.startswith("/") or "://" in robot_usd):
     robot_usd = assets_root_path + (robot_usd if robot_usd.startswith("/") else "/" + robot_usd)
 
-viewports.set_camera_view(eye=np.array([1.6, 1.6, 1.2]), target=np.array([0.0, 0.0, 0.3]))
+import os as _os0  # optional viewport override for inspection: VIEW_EYE/VIEW_TARGET="x,y,z"
+_veye = _os0.environ.get("VIEW_EYE"); _vtgt = _os0.environ.get("VIEW_TARGET")
+_eye = np.array([float(v) for v in _veye.split(",")]) if _veye else np.array([1.6, 1.6, 1.2])
+_tgt = np.array([float(v) for v in _vtgt.split(",")]) if _vtgt else np.array([0.0, 0.0, 0.3])
+viewports.set_camera_view(eye=_eye, target=_tgt)
+if _os0.environ.get("NO_DOF") == "1":  # disable depth-of-field blur (sharp close-ups for inspection)
+    import carb as _carb0
+    _carb0.settings.get_settings().set("/rtx/post/dof/enabled", False)
 
 # background environment (optional)
 if not args.no_env:
@@ -137,6 +151,153 @@ except Exception as e:
     sys.exit()
 
 simulation_app.update()
+
+# ---- Robotiq coupling / camera-mount VISUALS ------------------------------
+# NOTE: the gripper coupling (GRP-ES-CPL-077) + camera-mount visuals and the
+# +18 mm gripper standoff are represented in the URDF/RViz model. They are NOT
+# injected into the Isaac stage at runtime: shifting the baked 2F-85 via the
+# fixed joint / prim Xform desynchronises the articulation (broken robot or a
+# dead finger_joint drive). The correct way to add them to Isaac is to BAKE the
+# standoff + coupling mesh into the asset in build_ur16e_2f85.py and re-export,
+# so the articulation is consistent from the start. Until then Isaac keeps the
+# gripper at its baked flange pose so it actuates normally.
+
+# ---- eye-in-hand D405 camera graph (optional) ------------------------------
+# Single render product (one camera) -> RGB + depth + pointcloud + camera_info,
+# on the same topic names the real realsense2_camera driver uses, so the sim and
+# real perception stacks (and downstream cuMotion / DepthAnything / FoundationPose)
+# subscribe identically. depth is rendered from the same sensor as color, so it
+# is inherently aligned to the color frame.
+if args.with_camera:
+    import omni.usd
+    from pxr import Gf, UsdGeom, Vt
+
+    CAM_PRIM = f"{ROBOT_PRIM}/{args.camera_parent}/d405_camera"
+    CAM_W, CAM_H = 640, 480
+    # Eye-in-hand D405 mount — kept IDENTICAL to the URDF (realsense_d405_macro
+    # <origin>). Pose taken from PickNik's open-source UR RealSense camera adapter
+    # (picknik_accessories ur_realsense_camera_adapter, d415_mount_joint):
+    # camera_link at xyz=(0,-0.067,0.0171) from tool0, pitched (-pi/2 + 6deg)
+    # about Y with +pi/2 yaw so the optical axis (camera_link +x) looks down the
+    # tool axis toward the grasp region (~6deg off-axis). That adapter targets the
+    # D415/L515 (no D405 variant) and adds ~7 mm flange->gripper that we omit, so
+    # this is a faithful *representative* mount pending a D405 bracket / hand-eye.
+    # We compose the UR fixed chain wrist_3->flange->tool0 with this mount and the
+    # ROS-optical->USD-camera convention so the Isaac sensor pose EXACTLY matches
+    # RViz/TF. Change these numbers HERE and in realsense_d405_macro's <origin>
+    # together.
+    def _rpy(r, p, y):   # URDF fixed-axis (XYZ) Euler -> 3x3 rotation
+        Rx = np.array([[1, 0, 0], [0, np.cos(r), -np.sin(r)], [0, np.sin(r), np.cos(r)]])
+        Ry = np.array([[np.cos(p), 0, np.sin(p)], [0, 1, 0], [-np.sin(p), 0, np.cos(p)]])
+        Rz = np.array([[np.cos(y), -np.sin(y), 0], [np.sin(y), np.cos(y), 0], [0, 0, 1]])
+        return Rz @ Ry @ Rx
+
+    _w2tool0 = _rpy(0, -np.pi / 2, -np.pi / 2) @ _rpy(np.pi / 2, 0, np.pi / 2)
+    _R = (_w2tool0
+          @ _rpy(0, -np.pi / 2 + np.deg2rad(8.0), np.pi / 2)  # tool0->camera_link: 8deg pitch
+          #   matches the bracket's actual mount-surface normal so the body sits flush
+          #   (PickNik nominal is 6deg; the visual mesh surface measures 8deg)
+          @ _rpy(-np.pi / 2, 0, -np.pi / 2)      # camera_link -> ROS optical (z-fwd)
+          @ _rpy(np.pi, 0, 0))                   # ROS optical -> USD camera (-z fwd)
+    # camera_link is held by the camera mount, which is flush on the flange, so the
+    # d415_mount is taken directly off tool0 (no coupling offset — the coupling is
+    # ABOVE the mount, on the gripper side).
+    _t = _w2tool0 @ np.array([0.0, -0.067, 0.01847])  # camera_link in wrist_3: solved (gap=0)
+    #     for the 8deg pitch so the now-parallel D405 back face seats flush on the bracket
+    # Put the sensor at the D405 FRONT FACE: +half-depth (11.5 mm) forward along
+    # the optical axis. The 23 mm body box (child, behind the lens) then sits
+    # centred on camera_link, nesting its back into the bracket cradle instead of
+    # poking through it, while the lens stays the front-most point (no occlusion).
+    # Mirrors realsense_d405_macro's optical-frame forward offset.
+    _t = _t + 0.0115 * (_R @ np.array([0.0, 0.0, -1.0]))
+    _M3 = Gf.Matrix3d(*[float(v) for v in _R.T.flatten()])  # USD rows = world axes
+
+    stage_obj = omni.usd.get_context().get_stage()
+    cam = UsdGeom.Camera.Define(stage_obj, CAM_PRIM)
+    cam.GetFocalLengthAttr().Set(1.88)        # ~87 deg HFOV with the apertures below
+    cam.GetHorizontalApertureAttr().Set(3.6)
+    cam.GetVerticalApertureAttr().Set(2.7)
+    cam.GetClippingRangeAttr().Set(Gf.Vec2f(0.01, 10.0))
+    xf = UsdGeom.Xformable(cam.GetPrim())
+    xf.ClearXformOpOrder()
+    xf.AddTransformOp().Set(Gf.Matrix4d(_M3, Gf.Vec3d(float(_t[0]), float(_t[1]), float(_t[2]))))
+
+    # Visible D405 housing so the camera shows up in the GUI (a UsdGeom.Camera
+    # prim itself draws no geometry). Mirrors the URDF visual exactly: a
+    # 42 x 42 x 23 mm dark-aluminium box. Parented UNDER the camera prim so it
+    # tracks the exact sensor pose, and offset to +Z (cameras look down -Z) so
+    # the front face sits at the lens and the body never occludes the view.
+    import os as _os
+    if _os.environ.get("CAM_BODY", "1") != "0":
+        body = UsdGeom.Cube.Define(stage_obj, CAM_PRIM + "/body")
+        body.GetSizeAttr().Set(1.0)
+        bxf = UsdGeom.Xformable(body.GetPrim())
+        bxf.ClearXformOpOrder()
+        bxf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.0115))   # front face flush at lens
+        bxf.AddScaleOp().Set(Gf.Vec3f(0.042, 0.042, 0.023))    # x=right, y=up, z=optical(thin)
+        body.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0.25, 0.25, 0.27)]))
+    # NOTE: the PickNik camera bracket is set aside for now (focusing on the real
+    # GRP-ES-CPL-077 gripper coupling first). The coupling standoff is applied to
+    # the gripper below (outside this block) for both Set 2 and Set 3.
+    simulation_app.update()
+
+    try:
+        og.Controller.edit(
+            {"graph_path": "/CameraGraph", "evaluator_name": "execution"},
+            {
+                og.Controller.Keys.CREATE_NODES: [
+                    ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                    ("CamContext", "isaacsim.ros2.bridge.ROS2Context"),
+                    ("RenderProduct", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+                    ("RGB", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ("Depth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ("DepthPCL", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ("ColorInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                    ("DepthInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                ],
+                og.Controller.Keys.CONNECT: [
+                    ("OnTick.outputs:tick", "RenderProduct.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "RGB.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "Depth.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "DepthPCL.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "ColorInfo.inputs:execIn"),
+                    ("RenderProduct.outputs:execOut", "DepthInfo.inputs:execIn"),
+                    ("RenderProduct.outputs:renderProductPath", "RGB.inputs:renderProductPath"),
+                    ("RenderProduct.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
+                    ("RenderProduct.outputs:renderProductPath", "DepthPCL.inputs:renderProductPath"),
+                    ("RenderProduct.outputs:renderProductPath", "ColorInfo.inputs:renderProductPath"),
+                    ("RenderProduct.outputs:renderProductPath", "DepthInfo.inputs:renderProductPath"),
+                    ("CamContext.outputs:context", "RGB.inputs:context"),
+                    ("CamContext.outputs:context", "Depth.inputs:context"),
+                    ("CamContext.outputs:context", "DepthPCL.inputs:context"),
+                    ("CamContext.outputs:context", "ColorInfo.inputs:context"),
+                    ("CamContext.outputs:context", "DepthInfo.inputs:context"),
+                ],
+                og.Controller.Keys.SET_VALUES: [
+                    ("RenderProduct.inputs:cameraPrim", [usdrt.Sdf.Path(CAM_PRIM)]),
+                    ("RenderProduct.inputs:width", CAM_W),
+                    ("RenderProduct.inputs:height", CAM_H),
+                    ("RGB.inputs:type", "rgb"),
+                    ("RGB.inputs:topicName", "/camera/color/image_raw"),
+                    ("RGB.inputs:frameId", "camera_color_optical_frame"),
+                    ("Depth.inputs:type", "depth"),
+                    ("Depth.inputs:topicName", "/camera/depth/image_rect_raw"),
+                    ("Depth.inputs:frameId", "camera_depth_optical_frame"),
+                    ("DepthPCL.inputs:type", "depth_pcl"),
+                    ("DepthPCL.inputs:topicName", "/camera/depth/color/points"),
+                    ("DepthPCL.inputs:frameId", "camera_depth_optical_frame"),
+                    ("ColorInfo.inputs:topicName", "/camera/color/camera_info"),
+                    ("ColorInfo.inputs:frameId", "camera_color_optical_frame"),
+                    ("DepthInfo.inputs:topicName", "/camera/depth/camera_info"),
+                    ("DepthInfo.inputs:frameId", "camera_depth_optical_frame"),
+                ],
+            },
+        )
+        print(f"  eye-in-hand camera  : {CAM_PRIM} ({CAM_W}x{CAM_H})")
+        print("  camera topics       : /camera/color/image_raw, /camera/depth/image_rect_raw,")
+        print("                        /camera/depth/color/points, /camera/{color,depth}/camera_info")
+    except Exception as e:
+        carb.log_error(f"Failed to build camera graph: {e}")
 
 # physics must be initialized before the articulation can be driven
 simulation_context.initialize_physics()

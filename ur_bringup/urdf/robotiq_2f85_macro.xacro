@@ -1,0 +1,133 @@
+<?xml version="1.0"?>
+<!--
+  Robotiq 2F-85 VISUAL description using the official robotiq_description meshes
+  (file://$(find robotiq_description)/meshes/visual/*.dae), driven by a single
+  master joint named `finger_joint` so RViz animates the full parallel linkage
+  straight from the /joint_states value that ros2_control/Isaac already publish.
+
+  Differences vs robotiq_description's own macro (intentional, why this file
+  exists):
+    * Master joint renamed to `finger_joint` (robotiq_description's master is
+      `robotiq_85_left_knuckle_joint`, which is NOT in our /joint_states, so its
+      macro would not animate here). All other joints <mimic> finger_joint.
+    * collision meshes are emitted only when collision:=true (default). MoveIt
+      then needs srdf/ur16e_2f85.srdf.xacro (via ur16e_2f85_moveit.launch.py),
+      which disables the gripper-internal + gripper-vs-wrist pairs so the start
+      state is not flagged as self-in-collision. Use collision:=false for a
+      visual-only gripper that works with the plain arm SRDF.
+
+  Link frames / joint origins are copied verbatim from robotiq_description's
+  robotiq_2f_85_macro so the meshes assemble correctly.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- collision:=true emits robotiq collision .stl meshes (for MoveIt
+       collision-aware planning, paired with srdf/ur16e_2f85.srdf.xacro which
+       disables the gripper-internal + gripper-vs-wrist pairs). Set false for a
+       visual-only gripper that needs no extra SRDF. -->
+  <xacro:macro name="robotiq_2f85" params="prefix parent *origin collision:=true">
+
+    <material name="robotiq_2f85_grey"><color rgba="0.1 0.1 0.1 1.0"/></material>
+
+    <!-- link helper: visual .dae always; collision .stl only when collision=true -->
+    <xacro:macro name="g_link" params="lname mesh">
+      <link name="${prefix}${lname}">
+        <visual>
+          <geometry>
+            <mesh filename="file://$(find robotiq_description)/meshes/visual/${mesh}.dae"/>
+          </geometry>
+        </visual>
+        <xacro:if value="${collision}">
+          <collision>
+            <geometry>
+              <mesh filename="file://$(find robotiq_description)/meshes/collision/${mesh}.stl"/>
+            </geometry>
+          </collision>
+        </xacro:if>
+        <inertial>
+          <mass value="0.01"/>
+          <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+        </inertial>
+      </link>
+    </xacro:macro>
+
+    <xacro:g_link lname="robotiq_85_base_link"               mesh="robotiq_base"/>
+    <xacro:g_link lname="robotiq_85_left_knuckle_link"       mesh="left_knuckle"/>
+    <xacro:g_link lname="robotiq_85_right_knuckle_link"      mesh="right_knuckle"/>
+    <xacro:g_link lname="robotiq_85_left_finger_link"        mesh="left_finger"/>
+    <xacro:g_link lname="robotiq_85_right_finger_link"       mesh="right_finger"/>
+    <xacro:g_link lname="robotiq_85_left_inner_knuckle_link"  mesh="left_inner_knuckle"/>
+    <xacro:g_link lname="robotiq_85_right_inner_knuckle_link" mesh="right_inner_knuckle"/>
+    <xacro:g_link lname="robotiq_85_left_finger_tip_link"    mesh="left_finger_tip"/>
+    <xacro:g_link lname="robotiq_85_right_finger_tip_link"   mesh="right_finger_tip"/>
+
+    <!-- mount on the UR tool flange -->
+    <joint name="${prefix}robotiq_85_base_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${prefix}robotiq_85_base_link"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+
+    <!-- MASTER actuated joint (== ros2_control / Isaac finger_joint) -->
+    <joint name="${prefix}finger_joint" type="revolute">
+      <parent link="${prefix}robotiq_85_base_link"/>
+      <child link="${prefix}robotiq_85_left_knuckle_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="0.03060114 0.0 0.05490452" rpy="0 0 0"/>
+      <limit lower="0.0" upper="0.8" velocity="0.5" effort="50"/>
+    </joint>
+
+    <!-- everything else mimics finger_joint -->
+    <joint name="${prefix}robotiq_85_right_knuckle_joint" type="revolute">
+      <parent link="${prefix}robotiq_85_base_link"/>
+      <child link="${prefix}robotiq_85_right_knuckle_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="-0.03060114 0.0 0.05490452" rpy="0 0 0"/>
+      <limit lower="-0.8" upper="0.0" velocity="0.5" effort="50"/>
+      <mimic joint="${prefix}finger_joint" multiplier="-1"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_left_finger_joint" type="fixed">
+      <parent link="${prefix}robotiq_85_left_knuckle_link"/>
+      <child link="${prefix}robotiq_85_left_finger_link"/>
+      <origin xyz="0.03152616 0.0 -0.00376347" rpy="0 0 0"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_right_finger_joint" type="fixed">
+      <parent link="${prefix}robotiq_85_right_knuckle_link"/>
+      <child link="${prefix}robotiq_85_right_finger_link"/>
+      <origin xyz="-0.03152616 0.0 -0.00376347" rpy="0 0 0"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_left_inner_knuckle_joint" type="continuous">
+      <parent link="${prefix}robotiq_85_base_link"/>
+      <child link="${prefix}robotiq_85_left_inner_knuckle_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="0.0127 0.0 0.06142" rpy="0 0 0"/>
+      <mimic joint="${prefix}finger_joint" multiplier="1"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_right_inner_knuckle_joint" type="continuous">
+      <parent link="${prefix}robotiq_85_base_link"/>
+      <child link="${prefix}robotiq_85_right_inner_knuckle_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="-0.0127 0.0 0.06142" rpy="0 0 0"/>
+      <mimic joint="${prefix}finger_joint" multiplier="-1"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_left_finger_tip_joint" type="continuous">
+      <parent link="${prefix}robotiq_85_left_finger_link"/>
+      <child link="${prefix}robotiq_85_left_finger_tip_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="0.00563134 0.0 0.04718515" rpy="0 0 0"/>
+      <mimic joint="${prefix}finger_joint" multiplier="-1"/>
+    </joint>
+
+    <joint name="${prefix}robotiq_85_right_finger_tip_joint" type="continuous">
+      <parent link="${prefix}robotiq_85_right_finger_link"/>
+      <child link="${prefix}robotiq_85_right_finger_tip_link"/>
+      <axis xyz="0 -1 0"/>
+      <origin xyz="-0.00563134 0.0 0.04718515" rpy="0 0 0"/>
+      <mimic joint="${prefix}finger_joint" multiplier="1"/>
+    </joint>
+  </xacro:macro>
+</robot>

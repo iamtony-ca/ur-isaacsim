@@ -1,0 +1,44 @@
+# ros2_control configuration for the UR16e + Robotiq 2F-85 Isaac Sim backend.
+# Standalone copy of ur16e_controllers.yaml (the arm-only file is left
+# untouched) with a gripper_controller added for finger_joint.
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz. Keep BELOW the Isaac /clock rate (~250 Hz) under
+                      # use_sim_time, else the CM loop starves the topic_based
+                      # hardware callback (NaN states).
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Named to match ur_moveit_config's default so MoveIt config is reused.
+    scaled_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # Robotiq 2F-85: GripperCommand action on the single finger_joint.
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+scaled_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+
+gripper_controller:
+  ros__parameters:
+    joint: finger_joint
+    # 2F-85 finger_joint travel: 0.0 (open) .. ~0.8 rad (closed).
+    allow_stalling: true        # holding a closed grip stalls the joint; treat as success
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
+    goal_tolerance: 0.05
+    max_effort: 100.0

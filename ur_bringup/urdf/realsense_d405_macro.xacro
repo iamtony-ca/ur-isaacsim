@@ -1,0 +1,94 @@
+<?xml version="1.0"?>
+<!--
+  Intel RealSense D405 — minimal, self-contained eye-in-hand description.
+
+  Adds a camera body link + the RealSense TF convention (body frames + REP-103
+  optical frames, z-forward/x-right/y-down) so downstream perception gets a
+  correct `*_optical_frame` to reference. Self-contained on purpose (no
+  realsense2_description apt dep), same approach as robotiq_2f85_macro.xacro;
+  swap to realsense2_description's D405 macro later if you want the exact mesh.
+
+  Frames (match the real realsense2_camera driver so sim/real TF line up):
+    <prefix>camera_link                 mount/body frame (x forward)
+      |- <prefix>camera_depth_frame  -> <prefix>camera_depth_optical_frame
+      \- <prefix>camera_color_frame  -> <prefix>camera_color_optical_frame
+  The driver publishes depth/color images in the *_optical_frame; FoundationPose
+  / cuMotion / nvblox consume those + camera_info + this TF, so the tool0->camera
+  transform must be accurate (sim: exact from here; real: hand-eye calibration).
+
+  D405 is a close-range (~7-50 cm) depth+RGB module — ideal for eye-in-hand grasp
+  perception. Color and depth share the imager, so the color/depth extrinsic is
+  ~0; we keep distinct optical frames for driver/topic parity.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- collision:=false (default) keeps the camera body visual-only. The small,
+       rigidly-mounted D405 is not a useful planning obstacle, and a collision box
+       at the placeholder mount pose overlaps the gripper -> false self-collision
+       (START_STATE_IN_COLLISION) since the SRDF has no camera<->gripper disables.
+       Obstacle avoidance comes from the OctoMap (depth), not the camera body.
+       Set collision:=true only with a tuned mount + matching SRDF disable rules. -->
+  <xacro:macro name="realsense_d405" params="prefix parent *origin collision:=false">
+
+    <material name="${prefix}d405_alu"><color rgba="0.25 0.25 0.27 1.0"/></material>
+
+    <!-- mount: parent (e.g. tool0) -> camera_link via the given *origin block -->
+    <joint name="${prefix}camera_mount_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${prefix}camera_link"/>
+      <xacro:insert_block name="origin"/>
+    </joint>
+
+    <!-- D405 body: ~42 x 42 x 23 mm. Visual always; collision only if requested. -->
+    <link name="${prefix}camera_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry><box size="0.023 0.042 0.042"/></geometry>
+        <material name="${prefix}d405_alu"/>
+      </visual>
+      <xacro:if value="${collision}">
+        <collision>
+          <origin xyz="0 0 0" rpy="0 0 0"/>
+          <geometry><box size="0.023 0.042 0.042"/></geometry>
+        </collision>
+      </xacro:if>
+      <inertial>
+        <mass value="0.05"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+    </link>
+
+    <!-- depth module body frame + optical frame -->
+    <joint name="${prefix}camera_depth_joint" type="fixed">
+      <parent link="${prefix}camera_link"/>
+      <child link="${prefix}camera_depth_frame"/>
+      <!-- +11.5 mm forward (camera_link +x = optical fwd): optical/sensor sits at
+           the D405 front face while the body box stays centred on camera_link
+           (nests into the bracket cradle). Matches ur16e_isaac_ros2.py sensor offset. -->
+      <origin xyz="0.0115 0 0" rpy="0 0 0"/>
+    </joint>
+    <link name="${prefix}camera_depth_frame"/>
+    <joint name="${prefix}camera_depth_optical_joint" type="fixed">
+      <parent link="${prefix}camera_depth_frame"/>
+      <child link="${prefix}camera_depth_optical_frame"/>
+      <!-- body (x fwd, z up) -> optical (z fwd, x right, y down) -->
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+    <link name="${prefix}camera_depth_optical_frame"/>
+
+    <!-- color module body frame + optical frame (D405: ~coincident with depth) -->
+    <joint name="${prefix}camera_color_joint" type="fixed">
+      <parent link="${prefix}camera_link"/>
+      <child link="${prefix}camera_color_frame"/>
+      <origin xyz="0.0115 0 0" rpy="0 0 0"/>  <!-- +11.5 mm fwd, see depth joint -->
+
+    </joint>
+    <link name="${prefix}camera_color_frame"/>
+    <joint name="${prefix}camera_color_optical_joint" type="fixed">
+      <parent link="${prefix}camera_color_frame"/>
+      <child link="${prefix}camera_color_optical_frame"/>
+      <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+    </joint>
+    <link name="${prefix}camera_color_optical_frame"/>
+
+  </xacro:macro>
+</robot>
