@@ -1,7 +1,7 @@
 # SETUP — UR16e (ROS 2 Jazzy + Isaac Sim 5.1.0) 재현 매뉴얼
 
 깨끗한 환경에서 이 워크스페이스(sim+real UR16e 제어 스택)를 **그대로 재현**하는 절차.
-아키텍처/배경은 상위 [`README.md`](../README.md) 참고.
+아키텍처/배경은 상위 [`README.md`](README.md) 참고.
 
 ---
 
@@ -135,7 +135,7 @@ python3 /isaac-sim/ur_ws/src/ur_bringup/isaac/common/moveit_plan_execute_demo.py
 ## 5-B. 그리퍼 세트 구동 (UR16e + Robotiq 2F-85)
 
 팔 단독 세트(§5)와 병렬. 그리퍼는 단일 `finger_joint` 만 ROS/Isaac 이 교환하고(나머지 5관절은 자동 mimic),
-MoveIt 은 그리퍼 형상까지 충돌 인식. 배경/함정은 [`README.md`](../README.md) §8.
+MoveIt 은 그리퍼 형상까지 충돌 인식. 배경/함정은 [`HISTORY.md`](HISTORY.md) §8.
 
 ```bash
 # (1회) Isaac UR16e + GRP-ES-CPL-077 커플링 + 2F-85 단일 articulation USD 합성
@@ -164,7 +164,7 @@ python3 /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_2f85/selfcollision_demo.py  
 ### 5-C. 세트 3 — UR16e + 2F-85 + D405 (eye-in-hand 카메라, sim)
 
 세트2(그리퍼) 파일은 그대로 두고 카메라를 **별도 세트(`ur16e_2f85_d405_*`)** 로 분리. 카메라는 sensor-only
-(camera link + optical frames, ros2_control joint 없음). 배경/연결/캘리브는 [`README.md`](../README.md) §9.
+(camera link + optical frames, ros2_control joint 없음). 배경/연결/캘리브는 [`HISTORY.md`](HISTORY.md) §9.
 
 ```bash
 # (1회) 세트3 USD 합성 — 커플링(+7mm) + PickNik 브라켓 + gripper standoff(+18mm) 베이크
@@ -187,7 +187,7 @@ ros2 topic echo /camera/color/camera_info --once   # K: fx≈fy≈334, cx=320, c
 ```
 > 실물 카메라는 §2 의 옵션 apt(`realsense2-camera`) 설치 후 `realsense2_camera` 노드로 (sim 과 동일 토픽명).
 > sim 카메라 pose(Isaac 스크립트의 카메라 배치)와 URDF mount(`realsense_d405` origin, PickNik 브라켓 기준)는
-> **한 쌍으로** 맞춘다(실물은 hand-eye 캘리브로 보정). 브라켓/시팅 상세는 [`README.md`](../README.md) §9.
+> **한 쌍으로** 맞춘다(실물은 hand-eye 캘리브로 보정). 브라켓/시팅 상세는 [`HISTORY.md`](HISTORY.md) §9.
 
 **depth → MoveIt OctoMap 충돌회피** (§2 의 `moveit-ros-perception` 설치 필요):
 ```bash
@@ -217,7 +217,7 @@ ros2 launch ur_bringup ur16e_moveit.launch.py use_sim:=false
 ### 6-B. 실물 그리퍼 (Robotiq 2F-85)
 
 그리퍼는 팔(RTDE)과 **별개 시리얼 장치**(Modbus RTU)라 **`gripper` 네임스페이스 전용 controller_manager**
-로 돈다(§4 에서 `robotiq_driver` 빌드 선행). 배경/함정/연결 토폴로지표는 [`README.md`](../README.md) §8.
+로 돈다(§4 에서 `robotiq_driver` 빌드 선행). 배경/함정/연결 토폴로지표는 [`HISTORY.md`](HISTORY.md) §8.
 
 **중요 — 2F-85 는 UR 손목 tool 커넥터에 물리고 제어 PC 에는 직접 안 붙는다.** PC 가 닿는 표준 경로는
 ur_robot_driver 의 **tool communication 브리지**(UR tool RS-485 → 가상 시리얼 `/tmp/ttyUR`)다.
@@ -293,4 +293,4 @@ pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib
 | (octomap) move_group 이 `libgeometric_shapes.so.2.3.x cannot open` 로 updater 로드 실패 | `moveit-ros-perception` 만 최신이라 부분 업그레이드 ABI 불일치 → 스택 정렬: `sudo apt install -y $(dpkg -l \| awk '/^ii.*ros-jazzy-moveit/{print $2}') ros-jazzy-geometric-shapes` (전부 같은 빌드로). octomap 불필요면 `use_octomap:=false` |
 | (세트2/3) Isaac 에 로봇은 안 보이고 카메라/그리퍼만 보임 | `--asset-path` 가 상대경로 → Isaac 에셋서버 기준으로 붙어 로드 실패. **절대경로**로 지정 |
 | (세트2/3) Isaac EE(그리퍼) 위치가 RViz 와 어긋남 | URDF 는 커플링 +11/+18mm 인데 USD 가 옛 flush 베이크 → `build_ur16e_2f85.py` 를 `--gripper-z`/`--coupling-usd` 옵션으로 **재베이크**(§5-B/§5-C) |
-| (세트3) 카메라가 브라켓에서 떠 보이거나 파고듦 | `realsense_d405` origin 의 pitch(8°)/높이(0.01847) 시팅 값 → README §9 참고, cradle 표면 법선과 평행+gap0 으로 맞춤 |
+| (세트3) 카메라가 브라켓에서 떠 보이거나 파고듦 | `realsense_d405` origin 의 pitch(8°)/높이(0.01847) 시팅 값 → [`HISTORY.md`](HISTORY.md) §9 참고, cradle 표면 법선과 평행+gap0 으로 맞춤 |

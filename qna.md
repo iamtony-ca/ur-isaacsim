@@ -1,6 +1,6 @@
 # QnA — UR16e sim+real 스택
 
-개념 이해를 돕는 질문/답변 모음. (구성/실행은 [`README.md`](../README.md), 재현은 [`SETUP.md`](SETUP.md))
+개념 이해를 돕는 질문/답변 모음. (구성/실행은 [`README.md`](README.md), 재현은 [`SETUP.md`](SETUP.md))
 
 ---
 
@@ -215,7 +215,7 @@ URDF 가 `tool0 → camera_link → camera_{color,depth}_optical_frame`(REP-103,
 이 되도록 origin 을 맞춰 sim 형상이 실제 기구와 같게 한다. 브라켓·카메라 body 는 **collision 메시**를 켜고
 (`collision:=true`) SRDF 로 마운트 인접쌍만 disable → 팔이 카메라/브라켓을 자기 몸체에 박는 자세를 MoveIt 이
 거부한다(환경 장애물 회피는 OctoMap, 자기간섭 회피는 collision+SRDF — 상보적). 상세 치수/검증은
-[`README.md`](../README.md) §9.
+[`HISTORY.md`](HISTORY.md) §9.
 
 ### sim/real perception parity
 Isaac 의 `ROS2CameraHelper`(rgb/depth/depth_pcl) + `ROS2CameraInfoHelper` 를 **realsense2_camera 와 동일한

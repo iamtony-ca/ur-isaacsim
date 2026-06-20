@@ -1,0 +1,37 @@
+# Intel RealSense D405 (eye-in-hand) parameters for the REAL robot.
+# Loaded by launch/ur16e_2f85_d405/d405_real.launch.py onto the realsense2_camera
+# node. Wildcard node key (/**) so it applies regardless of the node's FQN/namespace.
+#
+# Goal: publish the SAME topics/encodings as the sim camera so the perception stack
+# is unchanged (sim/real parity):
+#   /camera/color/image_raw        (rgb8)
+#   /camera/depth/image_rect_raw   (depth, aligned to color)
+#   /camera/depth/color/points     (XYZRGB cloud -> MoveIt OctoMap, cuMotion, ...)
+#   /camera/{color,depth}/camera_info
+#
+# Profile names are <width>x<height>x<fps>. If your librealsense build rejects a
+# profile, list supported ones with: rs-enumerate-devices -c
+/**:
+  ros__parameters:
+    # D405 = depth + RGB on a single imager (close range ~7-50 cm).
+    enable_color: true
+    enable_depth: true
+    enable_infra1: false
+    enable_infra2: false
+
+    # Streams. D405 commonly supports 848x480 and 640x480.
+    rgb_camera.color_profile: "848x480x30"
+    depth_module.depth_profile: "848x480x30"
+
+    # Align depth to color (the sim depth is rendered aligned to the color frame).
+    align_depth.enable: true
+
+    # Organized XYZRGB point cloud on /camera/depth/color/points (= sim topic).
+    pointcloud.enable: true
+    pointcloud.stream_filter: 2      # RS2_STREAM_COLOR -> coloured cloud
+    pointcloud.ordered_pc: false
+
+    # TF: the camera frames come from our camera robot_state_publisher
+    # (d405_real.urdf.xacro = sim frames + hand-eye extrinsic), so the driver must
+    # NOT publish its own camera TF (would duplicate / fight robot_state_publisher).
+    publish_tf: false
