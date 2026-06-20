@@ -2,8 +2,12 @@
 # Import into the workspace src/ with:
 #     cd /isaac-sim/ur_ws && vcs import src < src/ur16e.repos
 #
-# Only deps that must be built from source are listed here. Everything else
-# (ur_robot_driver, moveit, ros2_control, ...) comes from apt (see SETUP.md).
+# Only deps that must be built from SOURCE are listed here. Everything else is apt:
+#   - core: ros-jazzy-ur, -moveit, -moveit-ros-perception, -ros2-control, -ros2-controllers
+#   - Set 2 (gripper): ros-jazzy-robotiq-description  (the driver itself = source, below)
+#   - Set 3 real camera: ros-jazzy-realsense2-camera, -librealsense2,
+#                        -diagnostic-updater, -diagnostic-msgs  (NOT vcs — apt only)
+# See ../README.md (install) / ../HARDWARE.md (real bring-up) / ../SETUP.md (manual).
 repositories:
   topic_based_hardware_interfaces:
     type: git

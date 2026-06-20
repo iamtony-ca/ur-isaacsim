@@ -110,6 +110,10 @@ load, leaving only the camera/gripper visible):
   `/camera/{color,depth}/camera_info` (HFOV≈87°, 640×480). frameIds
   `camera_{color,depth}_optical_frame` match the URDF in `ur16e_2f85_d405_sim.urdf.xacro`.
   Pair with `ur16e_2f85_d405.launch.py` + `ur16e_2f85_d405_moveit.launch.py`.
+  > **Real counterpart**: `d405_real.launch.py` runs the `realsense2_camera` driver
+  > on these SAME topics/frames (so MoveIt/OctoMap/perception is unchanged), plus a
+  > camera robot_state_publisher for the TF. See [`../../HARDWARE.md`](../../HARDWARE.md) §3
+  > (USB3, topic-namespace check, hand-eye calibration).
 
 ## Headless / scripted alternative
 `/isaac-sim/standalone_examples/api/isaacsim.ros2.bridge/` has reference Python
