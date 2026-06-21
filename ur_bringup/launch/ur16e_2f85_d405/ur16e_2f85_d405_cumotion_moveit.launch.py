@@ -131,7 +131,11 @@ def launch_setup(context, *args, **kwargs):
         parameters=[cfg.to_dict(), common, *extra_move_group_params],
     )
 
-    rviz_config = PathJoinSubstitution([FindPackageShare("ur_moveit_config"), "config", "moveit.rviz"])
+    # when pulling a world ESDF, show the nvblox voxels/workspace in RViz
+    if read_esdf_world:
+        rviz_config = os.path.join(ur_share, "config", "ur16e_2f85_d405", "cumotion_nvblox.rviz")
+    else:
+        rviz_config = PathJoinSubstitution([FindPackageShare("ur_moveit_config"), "config", "moveit.rviz"])
     rviz_params = [cfg.robot_description_kinematics, cfg.planning_pipelines, cfg.joint_limits,
                    {"use_sim_time": use_sim_time}, *extra_move_group_params]
     if ur_only:

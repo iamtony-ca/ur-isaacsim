@@ -49,6 +49,29 @@ parser.add_argument("--with-camera", action="store_true",
                          "camera frames. Only meaningful with the 2F-85 asset.)")
 parser.add_argument("--camera-parent", default="wrist_3_link",
                     help="articulation link the camera is parented to (moves with the arm)")
+# --- static external depth camera (sim) : overlooks the workspace for nvblox ---
+parser.add_argument("--with-static-cam", action="store_true",
+                    help="add a STATIC depth camera overlooking the workspace (not attached to the arm) "
+                         "and publish depth/camera_info on /static_cam/depth/*. This is the camera nvblox "
+                         "uses to build the obstacle ESDF for cuMotion; the eye-in-hand D405 is for grasp "
+                         "perception. Pose is fixed in the base frame -- keep it in sync with the static TF "
+                         "in ur16e_2f85_d405_nvblox.launch.py.")
+parser.add_argument("--static-cam-xyz", default="1.10,0.0,1.10",
+                    help="static camera position in the base frame (m), comma-separated")
+parser.add_argument("--static-cam-target", default="0.30,0.0,0.15",
+                    help="point in the base frame the static camera looks at (m), comma-separated")
+# --- demo obstacle (sim) : a box the static camera sees -> nvblox -> cuMotion avoids ---
+parser.add_argument("--obstacle", action="store_true",
+                    help="spawn a visible box obstacle in the workspace (for the nvblox/cuMotion "
+                         "real-time avoidance demo). The static camera sees it, nvblox maps it, "
+                         "cuMotion routes around it.")
+# default obstacle: a pillar in the +x/+y workspace, raised so its base clears BOTH
+# the home pose (arm up, links near x~0) and the all-zeros startup pose (arm
+# horizontal at z~0.18). cuMotion must route around it to reach goals beyond.
+parser.add_argument("--obstacle-pose", default="0.5,0.3,0.6",
+                    help="obstacle box center in the base frame (m), comma-separated")
+parser.add_argument("--obstacle-size", default="0.12,0.12,0.5",
+                    help="obstacle box size x,y,z (m), comma-separated")
 args, _ = parser.parse_known_args()
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
@@ -299,9 +322,140 @@ if args.with_camera:
     except Exception as e:
         carb.log_error(f"Failed to build camera graph: {e}")
 
+# ---- static external depth camera (optional) ------------------------------
+# A camera FIXED in the world (base frame), overlooking the workspace, used by
+# nvblox to build the obstacle ESDF for cuMotion. Unlike the eye-in-hand D405,
+# it does NOT move with the arm, so the TSDF is stable and the arm is not the
+# dominant thing in view -> a clean world map. Publishes depth + camera_info on
+# /static_cam/depth/* with frame static_cam_depth_optical_frame; the matching
+# base_link->static_cam_depth_optical_frame TF is published by the nvblox launch
+# (ur16e_2f85_d405_nvblox.launch.py) -- keep the pose here and there in sync.
+if args.with_static_cam:
+    import omni.usd
+    from pxr import Gf, UsdGeom, Vt
+
+    SCAM_PRIM = "/World/static_cam"          # NOT under the robot -> world-fixed
+    SCAM_W, SCAM_H = 640, 480
+    _p = np.array([float(v) for v in args.static_cam_xyz.split(",")])
+    _tg = np.array([float(v) for v in args.static_cam_target.split(",")])
+
+    # ROS optical frame: z = view direction, x = image-right, y = image-down.
+    _z = _tg - _p; _z = _z / np.linalg.norm(_z)
+    _x = np.cross(_z, np.array([0.0, 0.0, 1.0])); _x = _x / np.linalg.norm(_x)
+    _y = np.cross(_z, _x)
+    _Ropt = np.column_stack([_x, _y, _z])            # optical axes in base frame
+    # USD camera looks down -Z with +Y up: optical -> USD = rotate pi about X
+    # (identical convention to the eye-in-hand block above).
+    _Rx = np.array([[1, 0, 0], [0, -1, 0], [0, 0, -1]])
+    _Rusd = _Ropt @ _Rx
+    _M3s = Gf.Matrix3d(*[float(v) for v in _Rusd.T.flatten()])
+
+    stage_obj = omni.usd.get_context().get_stage()
+    scam = UsdGeom.Camera.Define(stage_obj, SCAM_PRIM)
+    scam.GetFocalLengthAttr().Set(1.88)              # ~87 deg HFOV (D405-like)
+    scam.GetHorizontalApertureAttr().Set(3.6)
+    scam.GetVerticalApertureAttr().Set(2.7)
+    scam.GetClippingRangeAttr().Set(Gf.Vec2f(0.05, 10.0))
+    sxf = UsdGeom.Xformable(scam.GetPrim())
+    sxf.ClearXformOpOrder()
+    sxf.AddTransformOp().Set(Gf.Matrix4d(_M3s, Gf.Vec3d(float(_p[0]), float(_p[1]), float(_p[2]))))
+
+    # small visible housing so the camera shows up in the GUI
+    sbody = UsdGeom.Cube.Define(stage_obj, SCAM_PRIM + "/body")
+    sbody.GetSizeAttr().Set(1.0)
+    sbxf = UsdGeom.Xformable(sbody.GetPrim())
+    sbxf.ClearXformOpOrder()
+    sbxf.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 0.04))
+    sbxf.AddScaleOp().Set(Gf.Vec3f(0.06, 0.06, 0.05))
+    sbody.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0.05, 0.35, 0.55)]))
+    simulation_app.update()
+
+    try:
+        og.Controller.edit(
+            {"graph_path": "/StaticCamGraph", "evaluator_name": "execution"},
+            {
+                og.Controller.Keys.CREATE_NODES: [
+                    ("OnTick", "omni.graph.action.OnPlaybackTick"),
+                    ("Ctx", "isaacsim.ros2.bridge.ROS2Context"),
+                    ("RP", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
+                    ("Depth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ("DepthInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                ],
+                og.Controller.Keys.CONNECT: [
+                    ("OnTick.outputs:tick", "RP.inputs:execIn"),
+                    ("RP.outputs:execOut", "Depth.inputs:execIn"),
+                    ("RP.outputs:execOut", "DepthInfo.inputs:execIn"),
+                    ("RP.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
+                    ("RP.outputs:renderProductPath", "DepthInfo.inputs:renderProductPath"),
+                    ("Ctx.outputs:context", "Depth.inputs:context"),
+                    ("Ctx.outputs:context", "DepthInfo.inputs:context"),
+                ],
+                og.Controller.Keys.SET_VALUES: [
+                    ("RP.inputs:cameraPrim", [usdrt.Sdf.Path(SCAM_PRIM)]),
+                    ("RP.inputs:width", SCAM_W),
+                    ("RP.inputs:height", SCAM_H),
+                    ("Depth.inputs:type", "depth"),
+                    ("Depth.inputs:topicName", "/static_cam/depth/image_rect_raw"),
+                    ("Depth.inputs:frameId", "static_cam_depth_optical_frame"),
+                    ("DepthInfo.inputs:topicName", "/static_cam/depth/camera_info"),
+                    ("DepthInfo.inputs:frameId", "static_cam_depth_optical_frame"),
+                ],
+            },
+        )
+        print(f"  static cam          : {SCAM_PRIM} @ {list(_p)} -> {list(_tg)} ({SCAM_W}x{SCAM_H})")
+        print("  static cam topics   : /static_cam/depth/image_rect_raw, /static_cam/depth/camera_info")
+    except Exception as e:
+        carb.log_error(f"Failed to build static camera graph: {e}")
+
+# ---- demo obstacle (optional) ---------------------------------------------
+# A plain visible box in the workspace. The static camera renders it into depth,
+# nvblox turns it into ESDF voxels, and cuMotion (read_esdf_world:=true) plans
+# around it. No physics needed -- it's an obstacle the camera *sees*.
+if args.obstacle:
+    import omni.usd
+    from pxr import Gf, UsdGeom, Vt
+
+    OBS_PRIM = "/World/demo_obstacle"
+    _op = np.array([float(v) for v in args.obstacle_pose.split(",")])
+    _osz = np.array([float(v) for v in args.obstacle_size.split(",")])
+    stage_obj = omni.usd.get_context().get_stage()
+    obs = UsdGeom.Cube.Define(stage_obj, OBS_PRIM)
+    obs.GetSizeAttr().Set(1.0)
+    oxf = UsdGeom.Xformable(obs.GetPrim())
+    oxf.ClearXformOpOrder()
+    oxf.AddTranslateOp().Set(Gf.Vec3d(float(_op[0]), float(_op[1]), float(_op[2])))
+    oxf.AddScaleOp().Set(Gf.Vec3f(float(_osz[0]), float(_osz[1]), float(_osz[2])))
+    obs.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0.85, 0.2, 0.15)]))
+    simulation_app.update()
+    print(f"  demo obstacle       : {OBS_PRIM} @ {list(_op)} size {list(_osz)}")
+
 # physics must be initialized before the articulation can be driven
 simulation_context.initialize_physics()
 simulation_context.play()
+
+# Start the arm at the HOME pose (arm up) instead of the all-zeros USD default
+# (arm stretched horizontally) so the initial view is sane and clear of obstacles.
+# ros2_control's reset_pose later commands the same home; this just fixes the
+# pre-control startup pose. Defensive: never let this abort the sim.
+try:
+    from isaacsim.core.prims import SingleArticulation
+    for _ in range(5):
+        simulation_context.step(render=False)          # let the articulation register
+    _art = SingleArticulation(ARTICULATION_ROOT)
+    _art.initialize()
+    _home = {"shoulder_pan_joint": 0.0, "shoulder_lift_joint": -1.5708, "elbow_joint": 0.0,
+             "wrist_1_joint": 0.0, "wrist_2_joint": 0.0, "wrist_3_joint": 0.0}
+    _names = list(_art.dof_names)
+    _pos = _art.get_joint_positions()
+    for _n, _v in _home.items():
+        if _n in _names:
+            _pos[_names.index(_n)] = _v
+    from isaacsim.core.utils.types import ArticulationAction
+    _art.set_joint_positions(_pos)                      # teleport to home
+    _art.apply_action(ArticulationAction(joint_positions=_pos))   # hold under the drive
+    print("  initial pose       : home (arm up)")
+except Exception as _e:
+    carb.log_warn(f"could not set initial home pose (continuing): {_e}")
 
 print("=" * 70)
 print("UR16e Isaac Sim ROS2 bridge running.")

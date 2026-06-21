@@ -60,12 +60,22 @@ python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py          # progr
   works even out of bounds; also `up` / `zero`). RViz named states (home/up) work
   too once in bounds.
 
-## Next: real-time obstacle avoidance (world collision)
-cuMotion only does self/scene collision until you feed it a world. For
-**camera-based real-time avoidance** (the UR16e + 2F-85 + D405 goal): run
-**isaac_ros_nvblox** on the D405 depth + camera_info to build an ESDF, then launch
-with `read_esdf_world:=true` (cuMotion already exposes the
-`/nvblox_node/get_esdf_and_gradient` hook). Not wired yet.
+## Real-time obstacle avoidance (world collision) — DONE (sim)
+cuMotion only does self/scene collision until you feed it a world ESDF. This is
+now wired with **isaac_ros_nvblox** + **robot_segmenter**:
+
+    ros2 launch ur_bringup ur16e_2f85_d405_nvblox.launch.py            # segmenter + nvblox + static-cam TF
+    ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py read_esdf_world:=true
+
+Pipeline: `static workspace camera depth -> robot_segmenter (mask robot) -> nvblox
+(3D ESDF, base_link) -> cuMotion` (cuMotion reads `/nvblox_node/get_esdf_and_gradient`).
+
+**Key lesson:** map with a STATIC workspace camera, NOT the eye-in-hand D405 — the
+wrist camera mostly sees the robot and moves with it, polluting the TSDF so the
+start pose is reported in world collision. The D405 stays grasp/vision-only.
+Config `config/ur16e_2f85_d405/nvblox_cumotion.yaml` (nvblox `global_frame` MUST
+equal cuMotion's XRDF base frame = `base_link`). Full write-up + gotchas:
+`../../HARDWARE.md` §4, `../../HISTORY.md` §12.
 
 See `../../HARDWARE.md` §4 for the Isaac ROS cuMotion install (apt repos, CUDA 13,
 VPI) and the ABI/JTC gotchas.

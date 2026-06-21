@@ -114,6 +114,18 @@ load, leaving only the camera/gripper visible):
   > on these SAME topics/frames (so MoveIt/OctoMap/perception is unchanged), plus a
   > camera robot_state_publisher for the TF. See [`../../HARDWARE.md`](../../HARDWARE.md) §3
   > (USB3, topic-namespace check, hand-eye calibration).
+- `--with-static-cam` — **Set 3, nvblox avoidance**: adds a STATIC depth camera
+  (NOT attached to the arm) overlooking the workspace, publishing
+  `/static_cam/depth/{image_rect_raw,camera_info}` (frame `static_cam_depth_optical_frame`).
+  This is the camera nvblox maps from (the eye-in-hand D405 is too self-occluded —
+  see `../../HARDWARE.md` §4). Pose: `--static-cam-xyz`/`--static-cam-target` (base
+  frame); MUST match the `SCAM_TF` static transform in `ur16e_2f85_d405_nvblox.launch.py`.
+- `--obstacle` — spawn a visible demo box the static camera sees → nvblox → cuMotion
+  routes around. `--obstacle-pose`/`--obstacle-size` (base frame, default a raised
+  pillar clear of the arm). Pair with the nvblox + `read_esdf_world:=true` launches.
+- The arm is initialized to the **home pose** (arm up) at startup instead of the
+  all-zeros USD default (arm horizontal), so the initial view is sane and clear of
+  a low obstacle. (ros2_control's `reset_pose.py home` does the same once connected.)
 
 ## Headless / scripted alternative
 `/isaac-sim/standalone_examples/api/isaacsim.ros2.bridge/` has reference Python

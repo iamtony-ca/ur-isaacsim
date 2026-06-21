@@ -139,6 +139,17 @@ python3 src/ur_bringup/isaac/ur16e_2f85_d405/octomap_demo.py
 ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py               # move_group + cuMotion(기본 pipeline)
 python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py                # plan+execute via cuMotion
 #   설치(Isaac ROS cuMotion + CUDA13 + VPI)·함정·로봇설정은 HARDWARE.md §4 / cumotion/README.md
+
+# ── 실시간 장애물 회피 (cuMotion + nvblox) ── 세트3, "카메라가 본 장애물을 GPU 가 실시간 회피"
+#   정적 카메라(회피용) + eye-in-hand(파지용) 2대 + 데모 박스 장애물
+/isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
+    --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd \
+    --with-camera --with-static-cam --obstacle
+ros2 launch ur_bringup ur16e_2f85_d405.launch.py use_sim:=true                 # 제어
+ros2 launch ur_bringup ur16e_2f85_d405_nvblox.launch.py use_sim_time:=true     # segmenter + nvblox + 정적카메라 TF
+ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
+    use_sim_time:=true read_esdf_world:=true ur_only:=true                     # cuMotion 이 nvblox ESDF 읽음 + RViz 복셀
+#   RViz: goal 마커를 장애물 너머로 → Plan → cuMotion 이 우회 → Execute. 원리·함정은 HARDWARE.md §4.
 ```
 
 ---
@@ -177,8 +188,9 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 | 세트 2 (+2F-85) | ✅ 그리퍼 개폐·자기충돌·plan+execute | ✅ `robotiq_driver` (mock 검증) | ⏳ 그리퍼 연결 시 |
 | 세트 3 (+D405) | ✅ 카메라·OctoMap·plan+execute | ✅ `realsense2_camera` 노드 로드+카메라 TF | ⏳ D405 USB3 연결 시 (영상 스트림·hand-eye) |
 | **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
+| **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion, 장애물 매핑+회피 검증 | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
 
-자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md).
+자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피).
 
 ---
 

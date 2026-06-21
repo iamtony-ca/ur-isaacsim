@@ -580,4 +580,51 @@ NVIDIA **Isaac ROS cuMotion** 을 MoveIt planning pipeline 으로 통합. GPU(cu
 | UR16e XRDF/URDF 생성 + cuMotion 노드 로드("Robot description loaded successfully") | ✅ |
 | move_group 에 `isaac_ros_cumotion` pipeline 등록 + planner 노드 기동 | ✅ |
 | **plan+execute** (조인트 목표, MoveGroup SUCCESS, 오차 **0.0003 rad**, 기존 컨트롤러로 실행) | ✅ |
-| world ESDF(nvblox) 연동 | 미구현 — 다음 단계(`read_esdf_world`) |
+| world ESDF(nvblox) 연동 | ✅ — §12 참고 |
+
+## 12. nvblox 실시간 장애물 회피 (cuMotion + nvblox) — 2026-06-22
+
+cuMotion 의 `read_esdf_world` 를 **nvblox** 에 연결해 "카메라가 본 장애물을 GPU 가 실시간 회피"를 sim 에서 검증.
+파이프라인: `정적 카메라 depth → robot_segmenter(로봇 마스킹) → nvblox(3D ESDF, base_link) → cuMotion`.
+
+### 설치 (apt)
+- `ros-jazzy-isaac-ros-nvblox`, `ros-jazzy-isaac-ros-cumotion-robot-segmenter`(레포는 §11 의 Isaac ROS release-4).
+- realsense2_camera 가 `diagnostic_updater` 4.2.7 을 끌어와 ABI 깨짐 → `ros-jazzy-diagnostic-updater/-msgs` 동반 업그레이드(§11-2 와 동류).
+
+### 구성 (자체 코드)
+- 설정 `config/ur16e_2f85_d405/nvblox_cumotion.yaml`: nvblox_base 위 overlay. **3D ESDF**, voxel 0.02,
+  `global_frame: base_link`, workspace bounding_box(±0.9, z 0.1~1.3, 바닥 제외), 근거리 통합거리 제한.
+- 런치 `launch/ur16e_2f85_d405/ur16e_2f85_d405_nvblox.launch.py`: robot_segmenter(ComposableNode) + nvblox_node +
+  `base_link→static_cam_depth_optical_frame` 정적 TF 를 한 번에. depth 토픽 기본 = 정적카메라(`/static_cam/depth/*`),
+  `depth_image:=`/`depth_info:=` 로 교체 가능. `use_robot_segmenter`/`static_cam_tf` 인자.
+- Isaac `ur16e_isaac_ros2.py`: `--with-static-cam`(워크스페이스 오버룩 정적 depth 카메라, `--static-cam-xyz/-target`),
+  `--obstacle`(데모용 박스, `--obstacle-pose/-size`), 그리고 **시작 시 home 자세 초기화**(SingleArticulation;
+  USD 기본 전관절0=팔 수평 대신 팔 위로). 정적카메라 포즈는 런치 `SCAM_TF` 쿼터니언과 동기해야 함.
+- cuMotion moveit 런치: `read_esdf_world:=true` 면 RViz 설정을 `config/ur16e_2f85_d405/cumotion_nvblox.rviz`
+  (nvblox `tsdf_layer` 복셀 + workspace 마커 표시)로 자동 전환.
+
+### ★ 핵심 교훈 — eye-in-hand 가 아니라 **정적(외부) 카메라**로 매핑
+처음엔 eye-in-hand D405 로 nvblox 를 돌렸으나, 손목카메라는 시야 대부분이 로봇 자신 + 팔과 함께 움직여 TSDF 가
+로봇으로 오염 → cuMotion 이 **시작자세를 `Invalid c-space position: world collision detected` 로 거부**(모든 plan 실패).
+NVIDIA 매니퓰레이션 레퍼런스처럼 **워크스페이스를 내려다보는 정적 카메라**로 매핑하니 깔끔하게 해결. eye-in-hand
+D405 는 파지/비전 전용으로 유지(역할 분리). segmenter 는 정적카메라 시야에서도 로봇을 빼 자기충돌 잔상 방지.
+
+### 겪은 함정 (확정)
+1. **프레임 불일치(중요)**: cuMotion 은 ESDF 를 자기 로봇 base 프레임(XRDF `set_base_frame`=`base_link`)으로 요청.
+   nvblox `global_frame` 이 다르면(`world`) → `Requested ... in base_link frame but nvblox is mapping in world frame.
+   Sending empty grid` → cuMotion `World update failed`. → nvblox `global_frame: base_link` 로 맞춤(정적 base 라 OK).
+2. **segmenter 잔상**: 마스킹 버퍼 부족 시 로봇 잔상이 ESDF 에 남아 시작자세 충돌 → `additional_buffer_distance` 0.12.
+3. **eye-in-hand 자기오염**(위 교훈) → 정적 카메라로 전환.
+4. RViz 복셀 viz: `static_esdf_pointcloud`/`static_occupancy_grid` 는 미발행 → **`tsdf_layer`(~15Hz)** 사용.
+5. 노드 多 → Fast DDS SHM 포트 포화(`fastrtps_port ... open_and_lock_file failed`). plan/execute 는 정상이나
+   신규 CLI/RViz 구독이 불안정할 수 있음 → 필요시 전체를 UDP 전송(`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`)으로 재기동.
+
+### 검증 결과 (2026-06-22, sim)
+| 항목 | 결과 |
+|---|---|
+| 정적 카메라 depth 발행(`/static_cam/depth/*`, frame `static_cam_depth_optical_frame`) | ✅ (~110Hz) |
+| robot_segmenter masked depth(`/cumotion/camera_0/world_depth`) | ✅ (~70Hz; eye-in-hand 0.9Hz 대비 개선) |
+| nvblox 3D ESDF(base_link) 서빙 + cuMotion 읽기 | ✅ `Successfully wrote requested ESDF` / `Updated ESDF grid successfully` |
+| **빈 워크스페이스 plan**(home 시작) | ✅ `success: true` (18pt) |
+| **장애물(박스) 매핑 + 회피 반영** | ✅ home 시작자세는 충돌 없음(plan 성공), 장애물 영역 goal 은 `target c-space position ... invalid` 로 거부 |
+| GUI(Isaac + RViz) 기동 | ✅ (복셀 viz 는 DDS SHM 포화 시 불안정 — §함정5) |
