@@ -33,3 +33,6 @@ scaled_joint_trajectory_controller:
       - position
       - velocity
     # MoveIt2 talks to this controller via the follow_joint_trajectory action.
+    # cuMotion (GPU) trajectories end with a tiny non-zero terminal velocity; allow
+    # it so the JTC doesn't reject the goal (harmless for zero-terminal planners).
+    allow_nonzero_velocity_at_trajectory_end: true

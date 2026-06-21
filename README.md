@@ -134,6 +134,11 @@ python3 src/ur_bringup/isaac/ur16e_2f85/selfcollision_demo.py                 # 
 ros2 launch ur_bringup ur16e_2f85_d405.launch.py
 ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py                        # depth→OctoMap (기본 on)
 python3 src/ur_bringup/isaac/ur16e_2f85_d405/octomap_demo.py
+
+# ── cuMotion (GPU 모션플래닝, MoveIt 플러그인) ── 세트2/3 제어 위에서
+ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py               # move_group + cuMotion(기본 pipeline)
+python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py                # plan+execute via cuMotion
+#   설치(Isaac ROS cuMotion + CUDA13 + VPI)·함정·로봇설정은 HARDWARE.md §4 / cumotion/README.md
 ```
 
 ---
@@ -171,6 +176,7 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 | 세트 1 (팔) | ✅ plan+execute | ✅ (mock 검증) | ⏳ 로봇 연결 시 |
 | 세트 2 (+2F-85) | ✅ 그리퍼 개폐·자기충돌·plan+execute | ✅ `robotiq_driver` (mock 검증) | ⏳ 그리퍼 연결 시 |
 | 세트 3 (+D405) | ✅ 카메라·OctoMap·plan+execute | ✅ `realsense2_camera` 노드 로드+카메라 TF | ⏳ D405 USB3 연결 시 (영상 스트림·hand-eye) |
+| **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
 
 자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md).
 

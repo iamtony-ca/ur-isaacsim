@@ -32,6 +32,11 @@ scaled_joint_trajectory_controller:
     state_interfaces:
       - position
       - velocity
+    # cuMotion (GPU) trajectories end with a tiny non-zero terminal velocity
+    # (numerical, ~1e-3 rad/s); the JTC rejects the goal by default ("Velocity of
+    # last trajectory point ... is not zero"). Allow it — harmless for OMPL/other
+    # planners whose terminal velocity is already zero.
+    allow_nonzero_velocity_at_trajectory_end: true
 
 gripper_controller:
   ros__parameters:

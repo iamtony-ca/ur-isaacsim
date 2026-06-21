@@ -133,15 +133,67 @@ ros2 service call /get_planning_scene moveit_msgs/srv/GetPlanningScene "{compone
 
 ---
 
-## 4. 알아두면 좋은 함정 (실물 고유)
+## 4. cuMotion (GPU 모션플래닝, MoveIt 플러그인)
+
+NVIDIA Isaac ROS cuMotion 을 MoveIt **planning pipeline** 으로 붙여 GPU 로 플래닝하고,
+실행은 기존 `scaled_joint_trajectory_controller`(sim/real 공용)로 한다. **sim 에서 plan+execute 검증 완료**
+(오차 0.0003 rad). HW 와 무관한 SW 설정이라 실물 팔에도 그대로 적용된다.
+
+### 설치 (apt) — 전제 레포 3개 + cuMotion 패키지
+```bash
+# (a) Isaac ROS 4.x (Jazzy/Noble) 레포
+curl -fsSL https://isaac.download.nvidia.com/isaac-ros/repos.key | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-isaac-ros.gpg
+echo 'deb [signed-by=/usr/share/keyrings/nvidia-isaac-ros.gpg] https://isaac.download.nvidia.com/isaac-ros/release-4 noble main' | sudo tee /etc/apt/sources.list.d/nvidia-isaac-ros.list
+# (b) CUDA 13 레포 (cuda-toolkit-13-0 — isaac_ros_common 하드 의존, 수 GB)
+cd /tmp && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+# (c) VPI 4 레포 (libnvvpi4 — NVIDIA Jetson OTA x86_64, r38.2 고정)
+curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-jetson.gpg
+echo 'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/x86_64/noble r38.2 main' | sudo tee /etc/apt/sources.list.d/nvidia-vpi.list
+sudo apt update
+sudo apt install -y ros-jazzy-isaac-ros-cumotion ros-jazzy-isaac-ros-cumotion-moveit \
+                    ros-jazzy-isaac-ros-cumotion-examples ros-jazzy-isaac-ros-cumotion-robot-description
+```
+cuMotion **엔진은 deb 에 번들**(`libcumotion_impl.so`)이라 런타임 추가설치 불필요. CUDA 드라이버(580, CUDA13 호환)는 이미 있음.
+
+### UR16e 로봇 설정 (XRDF) — 일회성
+cuMotion 은 URDF + XRDF(충돌 sphere) 필요. UR16e 용은 standalone cuMotion 엔진 휠로 sphere 를 생성해
+`ur_bringup/cumotion/ur16e_2f85.{urdf,xrdf}` 로 vendored 되어 있다. 재생성/배경은 [`../ur_bringup/cumotion/README.md`](../ur_bringup/cumotion/README.md).
+
+### 실행
+```bash
+ros2 launch ur_bringup ur16e_2f85_d405.launch.py                         # (또는 ur16e_2f85 / *_real) 제어
+ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py         # move_group + cuMotion(기본 pipeline) + RViz
+#   real 은 use_sim_time:=false
+python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py          # 프로그램 plan+execute (cuMotion)
+# RViz: Goal State <random valid>/마커 → Plan → Execute (planner=isaac_ros_cumotion 기본)
+```
+- **`ur_only`(기본 true)**: RViz 인터랙티브 plan 을 위해 move_group/RViz 를 **UR 팔 6관절 모델**로 띄움
+  (cuMotion 플러그인이 start_state 를 cspace 로 필터 안 해서, RViz 가 보내는 full 12관절 start 가 `[12]≠[6]` 로 거부됨).
+  cuMotion 은 **그리퍼 충돌(XRDF sphere)까지 포함해 플래닝**함 — `ur_only` 는 그 RViz 의 그리퍼 *표시*만 끔.
+  `ur_only:=false` 면 풀 그리퍼 모델이지만 RViz 인터랙티브는 안 되고 프로그램 경로(빈 start_state)만 됨.
+- **pose 초기화/복구**: 반복 plan 으로 손목이 ±2π 벗어나면 MoveIt 이 "start state out of bounds" 로 모든 plan 거부
+  → `python3 src/ur_bringup/isaac/common/reset_pose.py home`(컨트롤러 직접, 범위 밖에서도 복구; `up`/`zero` 가능).
+  RViz 의 named state(home/up)는 범위 안일 때 동작.
+- **world(장애물) 실시간 회피**: `read_esdf_world:=true` + **nvblox**(D405 depth→ESDF, `/nvblox_node/get_esdf_and_gradient`).
+  기본 off(자기충돌+planning scene 만). **UR16e+그리퍼+D405 로 "보고 회피"하려면 isaac_ros_nvblox 를 띄워 연결**하는 게 다음 단계.
+
+### ★ 설치 시 겪는 함정 (이번에 확정)
+1. **`cuda-toolkit-13-0` / `libnvvpi4` "not installable"** → (b)CUDA·(c)VPI 레포 누락. 위 3개 레포 다 추가하면 `gxf-isaac-*`/`nitros` 까지 연쇄 해결.
+2. **부분 업그레이드 ABI 깨짐**: cuMotion/realsense 가 `diagnostic_updater` **4.2.7** 을 끌어오면, 구버전(4.44) `controller_manager` 가 `undefined symbol: diagnostic_updater::Updater` 로 죽어 **모든 ros2_control 이 마비**된다. → ros2_control 스택을 **같이** 4.45.2 로 올린다(실제 패키지 직접 지정, 메타패키지로는 안 올라감):
+   `sudo apt install -y ros-jazzy-controller-manager ros-jazzy-controller-interface ros-jazzy-hardware-interface ros-jazzy-controller-manager-msgs ros-jazzy-joint-trajectory-controller ros-jazzy-joint-state-broadcaster ros-jazzy-position-controllers`
+3. **컨트롤러가 cuMotion 궤적 goal 거부**: `Velocity of last trajectory point ... is not zero`. cuMotion 종단 잔여속도(~1e-3) 때문. → JTC 에 `allow_nonzero_velocity_at_trajectory_end: true`(우리 컨트롤러 yaml 에 반영됨).
+
+## 5. 알아두면 좋은 함정 (실물 고유)
 
 | 증상 | 원인 / 대처 |
 |---|---|
 | 컨트롤러 `Switch controller timed out` | (sim) `/clock` 없음 → real 은 `use_sim_time:=false`(기본). |
 | 그리퍼가 안 열림/안 잡힘 | tool I/O 24V·RS-485 설정 누락, `/tmp/ttyUR` 권한(dialout), `gripper_startup_delay` 부족. |
-| realsense 노드 `undefined symbol: diagnostic_updater::Updater` (SIGABRT) | realsense2_camera ↔ 구버전 `diagnostic_updater` ABI 불일치 → `ros-jazzy-diagnostic-updater`·`-msgs` 동반 업그레이드. |
+| realsense/cuMotion `undefined symbol: diagnostic_updater::Updater` | `diagnostic_updater` 4.2.7 ↔ 구버전 ros2_control/realsense ABI 불일치 → §4-②(ros2_control 스택 동반 업그레이드). |
 | 카메라 토픽이 `/camera/camera/...` | realsense-ros 네임스페이스 중첩 → `camera_name:=''` 또는 remap (§3). |
 | RViz↔실물 카메라 위치 어긋남 | hand-eye 미보정 → §3 캘리브 후 `cam_xyz`/`cam_rpy` 반영. |
 | `No RealSense devices were found!` | 장치 미연결/USB2 포트 → SS(USB3) 포트, 케이블 교체, `rs-enumerate-devices`. |
+| cuMotion 궤적 실행 거부(goal rejected) | 종단 잔여속도 → `allow_nonzero_velocity_at_trajectory_end: true` (§4-③). |
 
 > 더 많은 디버깅 이력/근거: [`HISTORY.md`](HISTORY.md) (특히 §6 함정, §8 그리퍼, §9 카메라).
