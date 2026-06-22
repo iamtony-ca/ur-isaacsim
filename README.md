@@ -9,6 +9,8 @@
 - 이 문서는 **현재 상태** 기준 정리. 변경 이력·검증 로그·디버깅 교훈은 [`HISTORY.md`](HISTORY.md),
   실물 HW 연결 후 절차는 [`HARDWARE.md`](HARDWARE.md), 재현 매뉴얼은 [`SETUP.md`](SETUP.md),
   개념 Q&A 는 [`qna.md`](qna.md).
+- **계획/설계(구현 전)**: 학습은 [`LEARNING.md`](LEARNING.md)(IL pick&place + RL insertion, Isaac Lab),
+  통합 pick&place 작업레이어는 [`to_do.md`](to_do.md)(foundation-model perception, sim2real 최소화).
 
 ---
 
