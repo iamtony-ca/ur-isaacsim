@@ -197,6 +197,12 @@ ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
 `target c-space position ... is invalid` 로 거부됨(=장애물이 월드 모델에 반영). RViz 에서 goal 마커를
 장애물 너머로 → Plan → 우회 궤적 → Execute 로 Isaac 에서 직접 회피 관찰.
 
+**프로그램 회피 검증(A/B)**: `python3 src/ur_bringup/isaac/ur16e_2f85_d405/nvblox_obstacle_demo.py` —
+동일 pose goal 이 장애물 부피 안일 때만 막히는지 대조(FREE 성공·OBST 실패 → `PASS`). 같은 OBST 점이
+`read_esdf_world:=false`(장애물 없음)면 성공함을 보여 "도달 가능하지만 매핑된 장애물 때문에 막힘"을 확정.
+**함정**: cuMotion **pose(task-space) goal 의 target link 는 XRDF EE(`gripper_frame`)** 여야 함 —
+`tool0` 로 보내면 `Target link 'tool0' does not match end effector 'gripper_frame'` 로 거부(joint goal 은 무관).
+
 **데모 옵션**: `--obstacle`(박스, `--obstacle-pose`/`--obstacle-size` 로 조정). Isaac 은 시작 시 **home 자세**로
 초기화(USD 기본 전관절0=팔 수평 대신 팔 위로) — 안 하면 수평 팔이 낮은 장애물에 닿아 보임. 데모 박스는 수평·home
 양쪽 팔과 안 닿도록 바닥 z≈0.35 로 띄움.

@@ -149,6 +149,7 @@ ros2 launch ur_bringup ur16e_2f85_d405.launch.py use_sim:=true                 #
 ros2 launch ur_bringup ur16e_2f85_d405_nvblox.launch.py use_sim_time:=true     # segmenter + nvblox + 정적카메라 TF
 ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
     use_sim_time:=true read_esdf_world:=true ur_only:=true                     # cuMotion 이 nvblox ESDF 읽음 + RViz 복셀
+python3 src/ur_bringup/isaac/ur16e_2f85_d405/nvblox_obstacle_demo.py           # 회피 A/B 검증(FREE 성공·OBST 실패=PASS)
 #   RViz: goal 마커를 장애물 너머로 → Plan → cuMotion 이 우회 → Execute. 원리·함정은 HARDWARE.md §4.
 ```
 
@@ -188,7 +189,7 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 | 세트 2 (+2F-85) | ✅ 그리퍼 개폐·자기충돌·plan+execute | ✅ `robotiq_driver` (mock 검증) | ⏳ 그리퍼 연결 시 |
 | 세트 3 (+D405) | ✅ 카메라·OctoMap·plan+execute | ✅ `realsense2_camera` 노드 로드+카메라 TF | ⏳ D405 USB3 연결 시 (영상 스트림·hand-eye) |
 | **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
-| **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion, 장애물 매핑+회피 검증 | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
+| **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion; plan+execute + A/B 회피 검증(`nvblox_obstacle_demo.py`) | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
 
 자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피).
 
