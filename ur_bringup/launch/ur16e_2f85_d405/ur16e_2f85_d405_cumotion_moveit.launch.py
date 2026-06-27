@@ -115,6 +115,12 @@ def launch_setup(context, *args, **kwargs):
                     "read_esdf_world": read_esdf_world,
                     "update_esdf_on_request": True,
                     "esdf_service_name": "/nvblox_node/get_esdf_and_gradient",
+                    # Known static table/floor under the UR base. nvblox can't map it
+                    # (occluded by the robot, and below workspace_bounds_min_height_m=0.1),
+                    # so give cuMotion a perception-independent ground plane. base_link is
+                    # the table top (z=0); the plane top sits at ground_plane_z_offset.
+                    "add_ground_plane": True,
+                    "ground_plane_z_offset": -0.05,
                     "joint_states_topic": "/joint_states",
                     "time_dilation_factor": 0.5,
                     "interpolation_dt": 0.05,

@@ -68,9 +68,9 @@ parser.add_argument("--obstacle", action="store_true",
 # default obstacle: a pillar in the +x/+y workspace, raised so its base clears BOTH
 # the home pose (arm up, links near x~0) and the all-zeros startup pose (arm
 # horizontal at z~0.18). cuMotion must route around it to reach goals beyond.
-parser.add_argument("--obstacle-pose", default="0.5,0.3,0.6",
+parser.add_argument("--obstacle-pose", default="0.5,0.1,0.6",
                     help="obstacle box center in the base frame (m), comma-separated")
-parser.add_argument("--obstacle-size", default="0.12,0.12,0.5",
+parser.add_argument("--obstacle-size", default="0.12,0.5,0.1",
                     help="obstacle box size x,y,z (m), comma-separated")
 args, _ = parser.parse_known_args()
 

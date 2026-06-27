@@ -647,3 +647,54 @@ nvblox 가 매핑한 장애물을 cuMotion 의 collision-aware IK 가 실제로 
 **함정(이번에 확정)**: cuMotion **task-space(pose) goal 의 target link 는 XRDF end-effector
 (`gripper_frame`)여야 함** — `tool0` 로 보내면 `Target link 'tool0' does not match end effector
 'gripper_frame'` 로 거부(joint-space goal 은 무관, 그래서 `moveit_plan_execute_demo.py` 는 안 걸림).
+
+---
+
+## 13. 테이블(베이스 바닥) 충돌 회피 + 장애물 운영 — 2026-06-28
+
+nvblox 스택을 sim 에서 재가동해 plan&execute 를 시험하던 중, cuMotion 이 **UR 베이스가 놓인 테이블/바닥을
+뚫고 내려가는 경로**를 생성하는 문제를 확인하고 cuMotion 내장 ground plane 으로 해결. 더불어 정적 장애물
+박스를 GUI 에서 조정·영속화하는 절차와, 그 과정에서 부딪힌 함정들을 정리.
+
+### ★ 테이블 충돌 — perception 이 아니라 **cuMotion ground plane** 으로
+- **원인**: nvblox `workspace_bounds_min_height_m: 0.1` 이라 **base_link 기준 z<0.1 은 ESDF 에 아예 안 담김** →
+  테이블 상판(z≈0)이 cuMotion 에 "빈 공간"으로 보임. 게다가 **베이스 밑 테이블은 정적 카메라가 봐도 로봇에 가려져
+  (occlusion) 절대 매핑 불가** → perception 으로 풀 문제가 아님(테이블은 알려진 고정 기하).
+- **해결**: cuMotion(cuRobo) 내장 파라미터 **`add_ground_plane:=true`** 사용. base_link 밑
+  `ground_plane_z_offset`(기본 -0.05) 에 2×2m 바닥면을 항상 두어 그 아래로 내려가는 경로를 거부.
+  카메라 무관·occlusion 무관. `launch/ur16e_2f85_d405/ur16e_2f85_d405_cumotion_moveit.launch.py` 의
+  `cumotion_planner` 파라미터에 `add_ground_plane: True` + `ground_plane_z_offset: -0.05` 박아 영속화.
+- **역할 분담 확정**: nvblox ESDF = **z>0.1 의 카메라가 본 동적 장애물**, ground plane = **base 밑 알려진 테이블/바닥**.
+- **튜닝**: 팔이 여전히 테이블을 긁으면 `ground_plane_z_offset` 을 0 쪽으로(-0.02~0.0), home 에서조차 충돌로
+  plan 이 막히면 더 아래로(-0.08). 값만 바꾸고 cuMotion+moveit 레이어만 재기동.
+
+### 정적 장애물 박스(`--obstacle`) 운영 — GUI 조정값 영속화
+- 박스는 Isaac 스크립트가 **매 실행 코드로 생성**: `UsdGeom.Cube`(size=1.0) + `AddScaleOp(scale)`.
+  즉 **`xformOp:scale` = 박스 실제 크기(m)** 이고 `--obstacle-size` 와 1:1.
+- GUI 스케일 기즈모로 크기를 바꾸면 `scale` 만 바뀜 → **USD stage 저장은 무의미**(스크립트가 저장 stage 를
+  재로드하지 않고 매번 새로 만듦). **영속화 = 스크립트 기본값(`--obstacle-size`) 갱신**이 정답.
+- 이번 변경: `--obstacle-size` 기본 `0.12,0.12,0.5` → **`0.12,0.5,0.1`**(GUI Scale 과 일치, y 로 넓은 슬랩),
+  `--obstacle-pose` 기본 `0.5,0.3,0.6` → **`0.5,0.1,0.6`**(GUI Translate 과 일치). 크기·위치 바뀌어도
+  nvblox 가 카메라로 재매핑 → cuMotion 자동 회피(추가 수정 불필요).
+
+### 운영 함정 (이번에 확정)
+1. **정적 카메라 prim 을 GUI 에서 끌지 말 것**: `/World/static_cam` 의 Isaac 실제 포즈는 nvblox 가 발행하는
+   **고정 TF `base_link→static_cam_depth_optical_frame`([1.10,0,1.10], look-at [0.30,0,0.15])** 와 짝.
+   GUI 에서 옮기면 카메라만 이동하고 TF 는 그대로 → **depth 역투영이 어긋나 ESDF 가 엉뚱한 곳에 매핑**.
+   실수로 옮겼으면 **Isaac 재시작**이 가장 깔끔(스크립트가 명목 포즈로 결정적 재생성). orientation 은 look-at
+   계산값이라 손으로 못 맞춤.
+2. **"plan 성공인데 팔이 안 움직임" ≠ 고장**: 보통 ① **시작자세 ≈ 목표(home→home)** 라 실행할 모션이 없거나,
+   ② RViz 에서 Plan&Execute 를 연타/마커 재조작해 앞 실행이 **PREEMPTED('stop' 이벤트)**. 로그상
+   `planning succeeded` 뒤 `Received event 'stop'`→`PREEMPTED`. 확인법: 직접 trajectory 를
+   `/scaled_joint_trajectory_controller/joint_trajectory` 로 비-home 값 publish → Isaac 팔이 따라오면 경로 정상.
+3. **GUI prim 조작 중 `KeyError: NoneType`(`omni.kit.manipulator.prim`)**: 선택/조작 핸들러의 비치명 예외 —
+   articulation/물리엔 영향 없음.
+
+### 검증 결과 (2026-06-28, sim)
+| 항목 | 결과 |
+|---|---|
+| 전체 스택 clean 재기동(Isaac→제어→nvblox→cuMotion+RViz), static cam TF=[1.10,0,1.10] 일치 | ✅ |
+| `add_ground_plane` 활성(`/cumotion_planner` 파라미터 `True`, z_offset -0.05) | ✅ |
+| 직접 trajectory(shoulder_pan 0.5/lift −0.5) → Isaac 팔 추종 후 home 복귀 (명령경로 정상) | ✅ |
+| 장애물 박스 크기 `0.12,0.5,0.1` 로 스크립트 영속화 | ✅ |
+| 테이블 관통 경로 회피(ground plane) | ⏳ 사용자 RViz plan&execute 로 확인 중 |
