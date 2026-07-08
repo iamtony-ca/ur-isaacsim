@@ -471,3 +471,549 @@ flatten 후: subLayerPaths = []            ← 서브레이어 스택 사라짐
 
 ※ recap: Explaining USD and OmniGraph concepts using this project's live Isaac Sim GUI (PID 223133, still running). Just finished the deep dive on Composition/Flatten and the Layer panel. Next: you try the GUI experiments, or tell me what to explain further. (disable recaps in /config)
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+TF 노드가 성공적으로 붙었습니다 (camera TF (/tf): parent=/UR16e/base_link -> child=.../d405_camera, 에러 없음). ROS 쪽에서 실제로 /tf가 나가는지, 프레임 이름이 뭔지 확인하겠습니다.
+
+  Ran 1 shell command
+
+완벽하게 동작합니다. /tf가 ~111 Hz로 발행되고, base_link → d405_camera 변환이 실제 값으로 나갑니다. 팔을 움직이면 이 변환도 따라 바뀝니다. 정리해 드릴게요.
+
+---
+수정 요약 — playground/ur16e_isaac_ros2_camtf.py
+
+원본 ur_bringup/isaac/common/ur16e_isaac_ros2.py를 복사해서 3곳만 바꿨습니다. 나머지는 그대로입니다.
+
+변경 1 — CLI 플래그 추가 (원본 ~line 51)
+
+parser.add_argument("--camera-tf", action="store_true",
+                    help="...publish the eye-in-hand camehTransformTree...")
+parser.add_argument("--camera-tf-parent", default="base_link",
+                    help="prim (under the robot) used as the TF parent frame; empty '' = World")
+왜: 기능을 옵션으로 토글. --camera-tf 켤 때만 TF 노드가 붙습니다(기존 동작 보존). 부모 프레임도 인자화.
+
+변경 2 — 카메라 그래프 뒤에 TF 발행 블록 추가 (기존 --with-camera 블록 끝)
+
+핵심입니다. 기존 /CameraGraph를 두 번째 og.Controller.edit로 확장해서, 이미 있는 OnTick·CamContext를 재사용하고 TF 노드만 추가합니다:
+
+if args.camera_tf:
+    _tf_parent = args.camera_tf_parent.strip()
+    _parent_path = f"{ROBOT_PRIM}/{_tf_parent}" if _tf_pa
+    _keys = og.Controller.Keys
+    _tf_edits = {
+        _keys.CREATE_NODES: [
+            ("CamReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),  # 헤더 stamp용
+            ("CameraTF", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),      # ★ TF 발행 노드
+        ],
+        _keys.CONNECT: [
+            ("/CameraGraph/OnTick.outputs:tick",        "CameraTF.inputs:execIn"),   # 기존 tick 재사용
+            ("/CameraGraph/CamContext.outputs:context", "CameraTF.inputs:context"),  # 기존 context 재사용
+            ("CamReadSimTime.outputs:simulationTime",   "
+        ],
+        _keys.SET_VALUES: [
+            ("CameraTF.inputs:topicName", "/tf"),
+            ("CameraTF.inputs:targetPrims", [usdrt.Sdf.Paild = 카메라 프림
+            ("CameraTF.inputs:parentPrim",  [usdrt.Sdf.Path(_parent_path)]),     # parent = base_link
+        ],
+    }
+    og.Controller.edit("/CameraGraph", _tf_edits)   # 문자열 경로 = 기존 그래프 편집
+
+노드 배선을 그림으로:
+(기존) OnTick.tick ────────▶ CameraTF.execIn      "언제" (매 tick)
+(기존) CamContext.context ─▶ CameraTF.context     "어느 D
+(신규) CamReadSimTime ─────▶ CameraTF.timeStamp   "헤더 시각" (sim time)
+       SET: targetPrims = /UR16e/wrist_3_link/d405_camera   (child frame)
+            parentPrim  = /UR16e/base_link                  (parent frame)
+            topicName   = /tf
+ROS2PublishTransformTree는 부모 프림 → 타깃 프림의 실제 U  방송합니다. 그래서 앞서 배운 대로 "OG 노드가 USDPrim(pose)을 읽어 ROS로 내보내는" 바로 그 패턴입니다.
+
+변경 3 — 시작 로그 한 줄 (확인용 print)
+
+---
+디버깅에서 얻은 두 가지 OmniGraph 함정 (이게 진짜 배울 점)
+
+이번에 실제로 두 번 실패했고, 둘 다 "기존 그래프를 나중에 확장"할 때의 규칙입니다:
+
+함정 A — 기존 그래프 편집은 dict가 아니라 문자열 경로로
+
+# ✗ 새로 만들려 함 → "a graph already exists at this path"
+og.Controller.edit({"graph_path": "/CameraGraph", "evaluas)
+# ✓ 기존 그래프 편집
+og.Controller.edit("/CameraGraph", edits)
+{graph_path, evaluator_name} dict는 생성 의미. 이미 있으
+
+함정 B — 나중 edit에서 기존 노드는 전체 경로로 참조
+
+# ✗ 짧은 이름은 "이번 edit에서 만든 노드"만 됨 → "Failed
+("OnTick.outputs:tick", "CameraTF.inputs:execIn")
+# ✓ 이전에 만들어진 노드는 풀 경로
+("/CameraGraph/OnTick.outputs:tick", "CameraTF.inputs:execIn")
+CameraTF·CamReadSimTime는 이번 edit의 CREATE_NODES라 짧은 앞 블록에서 만든 거라 풀 경로 필요.
+
+▎ 이걸 피하려면? 애초에 카메라 그래프를 만들 때 TF 노드도 이름으로 되고 함정 A·B 둘 다 없습니다. 지금은 "기존 그래프 확장"을 연습하려고 일부러 두 번째 edit으로 분리한 것 — 실제 통합 시엔 한 번에 넣는 게 깔끔합니다.
+
+---
+검증 결과 (실행 중, tool bg ID bd9ggi6j5)
+
+$ ros2 topic hz /tf
+average rate: 111.3          ← 매 렌더 스텝마다 발행
+
+$ ros2 topic echo /tf --once
+frame_id: base_link          ← parentPrim 프림 이름
+child_frame_id: d405_camera  ← targetPrims 프림 이름
+translation: (0.185, 0.321, 1.019)   rotation: (...)   ← 실제 카메라 포즈
+
+GUI에서 확인: RViz를 띄우면 Fixed Frame을 base_link로 두고 TF 디스플레이를 켜면 d405_camera 프레임 축이 손목 위치에 뜨고, 팔을 움직이면 따라옵니다. 또는 ros2 run tf2_tools view_frames로 트리 PD
+
+---
+
+
+---
+⚠️ 이 TF의 한계 (코드 주석에도 박아둠 — 실전 통합 전 필독)
+
+이건 학습·시각화용이지 인식 스택에 바로 꽂는 용도가 아닙니다:
+
+1. 프레임 이름이 프림 이름입니다 → child가 d405_camera. 그런데 이미지 토픽들은 camera_depth_optical_frame 같은 광학 프레임 이름을 씁니다. 이름이 안 맞아서 depth↔TF가 자동 연결 안 됩니다.
+2. 포즈가 USD 카메라 관례(–Z 정면)로 나갑니다 → ROS optical(+Z 정면)과 회전이 다릅니다.
+3. 그래서 실물처럼 쓰려면: ① 프림 이름을 광학 프레임으로 맞추거나, ② 광학 프레임용 자식 프림을 하나 더 만들어 타깃으로 잡거나, ③ ROS2PublishRawTransformTree 로 프레임 문자열·회전을 직접 지정합니다. (이게 이 프로젝트가 실제론 Isaac 대신 ROS URDF의 robot_state_publisher로 카메라 TF를 내보내는 이유 — 이름·좌표를 URDF에서 정확히 통제)
+
+---
+다음 연습으로 뭘 해볼까요? 자연스러운 후속은:
+- (a) 함정 회피판 — TF 노드를 원래 카메라 그래프 생성 edit에 통합해서 두 번째 edit 없이 만들어보기 (짧은 이름만으로),
+- (b) ROS2PublishRawTransformTree로 광학 프레임 이름·회전을 정확히 넣어 인식 스택과 호환되는 TF 만들기,
+- (c) static_cam에도 같은 방식으로 world→static_cam TF 붙여보기.
+
+sim은 계속 켜둘게요. 끄려면 pkill -f ur16e_isaac_ros2_camtf.py 하시면 됩니다.
+
+✻ Sautéed for 7m 6s · 1 shell still running
+
+※ recap: You're learning USD/OmniGraph and ROS2 bridge in the UR16e Isaac Sim project. We just added a camera TF publisher to a playground copy and verified /tf publishes at 111Hz. Next: pick a follow-up practice (integrate TF into one graph edit, use RawTransformTree for proper optical frames, or add static_cam TF).
+
+❯ 내가 실물 로봇에서 ros2 를 다뤄보았는데, 아직도 isaacsim에서의 ros2 bridge 의 용어들, API 문법  등은 익숙하지 않아. 그리고, 기존에는 AMR 에 대한 ros2 기반으로 과제를 했었어.
+
+딱 좋은 배경이에요. 이미 아는 것(실물 ROS2 + AMR/nav2)에 매핑해서 설명하면 Isaac bridge가 훨씬 빨리 붙습니다. 마침 Isaac 예제에 AMR(Carter/Nova Carter) 이 있으니, 당신 도메인 언어로 정확히 뽑아오겠습니다.
+
+  Searched for 3 patterns
+
+좋아요, 그러면 AMR/nav2로 이미 아는 것을 기준점으로 Isaac bridge를 번역해 드릴게요. 결론부터: 당신이 실물 AMR에서 짠 데이터 흐름과 Isaac bridge는 모양이 똑같습니다. 엔드포인트만 OmniGraph 노드로 바뀔 뿐이에요.
+
+---
+0. 가장 큰 사고방식 차이 하나 (이거부터)
+
+실물 ROS2에서 당신의 "노드"는 프로세스였고, create_subscr니다. Isaac은 다릅니다:
+
+┌─────────────────┬────────────────────────────┬─────────────────────────────────────────┐
+│                 │ 실물 ROS2 (당신이 하던 것) │                           Isaac Sim bridge                           │
+├─────────────────┼────────────────────────────┼─────────────────────────────────────────┤
+│ 코드가 사는 곳  │ 내 rclcpp/rclpy 프로세스   │ OmniGraph (USD 스테이지에 박힌 데이터플로우 그래프)                  │
+├─────────────────┼────────────────────────────┼─────────────────────────────────────────┤
+│ 언제 실행되나   │ 타이머/콜백 (이벤트 구동)  │ 매 시뮬 스텝 tick (OnPlaybackTick) — 클럭 구동                       │
+├─────────────────┼────────────────────────────┼─────────────────────────────────────────┤
+│ pub/sub 은      │ 내 노드의 멤버             │ 그래프 안의 노드 블록 (ROS2Publish*/ROS2Subscribe*)                  │
+├─────────────────┼────────────────────────────┼─────────────────────────────────────────┤
+│ DDS participant │ rclpy가 자동 생성          │ ROS2Context 노드 하나를 만들어 모두가 공유                           │
+├─────────────────┼────────────────────────────┼─────────────────────────────────────────┤
+│ 시계            │ 실시간(RCL_ROS_TIME)       │ /clock (sim time) — ROS2PublishClock가 발행, 다들 use_sim_time:=true │
+└─────────────────┴────────────────────────────┴─────────────────────────────────────────┘
+
+핵심: "ROS 노드를 하나 짠다"가 아니라 "OmniGraph에 pub/su백 대신 tick 실행선(execIn)이 있는 겁니다 — 앞에서 본 그선.
+
+---
+1. 용어 번역표 — 실물 ROS2 → Isaac
+
+┌────────────────────────────────────┬──────────────────────────────────────────────────────────────────────────┐
+│           실물 ROS2 개념           │             Isaac bridge 대응              │                           비고                           │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ rclpy.init() / DDS participant     │ ROS2Context 노드                           │ 도메인·QoS. 모든 pub/sub의 inputs:context에 연결         │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ create_publisher(msg, topic)       │ ROS2Publish<X> 노드                        │ 예: ROS2PublishOdometry, ROS2PublishLaserScan            │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ create_subscription(msg, topic,    │ ROS2Subscribe<X> 노드                      │ 예: ROS2SubscribeTwist (콜백 대신 outputs 포트로 값이    │
+│ cb)                                │                   옴)                                                    │
+├────────────────────────────────────┼────────────────────────────────────────────┼──────────────────────────────────────────────────────────┤
+│ 타이머 콜백 주기                   │ OnPlaybackTick (매는 OnImpulseEvent(수동 트리거)                         │
+├────────────────────────────────────┼────────────────────────────────────────────┼──────────────────────────────────────────────────────────┤
+│ use_sim_time + /clock              │ ROS2PublishClock (m의 심장박동                                           │
+│                                    │ IsaacReadSimulationTime)                   │                                                          │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ robot_state_publisher (URDF→TF)    │ ROS2PublishTransformTree                   │ 지난번 우리가 붙인 그것                                  │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ static_transform_publisher         │ ROS2PublishRawTransformTree                │ 프레임 이름/값 직접 지정                                 │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ ros2_control 컨트롤러가 관절 구동  │ IsaacArticulationController                │ robotPath로 articulation 지정                            │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ 토픽 remap (--ros-args -r)         │ 노드의 inputs:topicName SET_VALUES         │ launch remap이 아니라 그래프 값                          │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ 네임스페이스                       │ inputs:nodeNamespace                       │ 토픽 앞에 붙음                                           │
+├────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│ frame_id (헤더)                    │ inputs:frameId                             │ 카메라/센서 노드                                         │
+└────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────┘
+
+포트 발견법 (중요, 자립용): 어떤 노드의 입출력이 궁금하면
+/isaac-sim/exts/isaacsim.ros2.bridge/ogn/docs/Ogn<NodeName>.rst.
+제가 ROS2PublishTransformTree의 targetPrims/parentPrim을 I에선 노드 클릭 → Property에 포트가 다 뜹니다.
+
+---
+2. ★ 당신 도메인: AMR 파이프라인을 Isaac OG로 (그대로 매핑)
+
+실물 AMR에서 당신이 짠(또는 nav2가 준) 이 흐름 —
+teleop/nav2 ──/cmd_vel(Twist)──▶ diff_drive_controller ──
+바퀴 엔코더 ──▶ odom ──/odom + TF(odom→base_link)──▶ nav2
+lidar ──/scan(LaserScan)──▶ nav2 costmap
+— 을 Isaac OmniGraph로 옮기면 노드 이름만 바뀌고 배선은 동일합니다. 설치본에서 확인한 실제 노드 타입으로:
+
+OnPlaybackTick.tick ──┬─▶ ROS2SubscribeTwist            (/cmd_vel 구독)
+                      │        └outputs: linearVelocity,
+                      │            └─▶ DifferentialController   (v,ω → 좌/우 바퀴속도)
+                      │                    └─▶ IsaacArtic구동)
+                      ├─▶ IsaacComputeOdometry ──▶ ROS2PublishOdometry   (/odom 발행)
+                      │                        └──▶ ROS2Pe_link TF)
+                      ├─▶ ROS2RtxLidarHelper           (/scan 발행)
+                      └─▶ ROS2PublishClock             (/
+ROS2Context.context ─▶ (위 모든 ROS 노드의 inputs:context)
+
+실제 노드 타입 문자열(설치본에서 확인):
+- isaacsim.ros2.bridge.ROS2SubscribeTwist → outputs:lineaocity (m/s, rad/s)
+- isaacsim.robot.wheeled_robots.DifferentialController (v,ω + wheelRadius/wheelDistance → 바퀴 속도)
+- isaacsim.core.nodes.IsaacComputeOdometry → isaacsim.ros
+- isaacsim.ros2.bridge.ROS2RtxLidarHelper → /scan
+
+즉 nav2를 이 sim에 그대로 붙일 수 있습니다 — nav2 입장에선 /cmd_vel을 내고 /odom·/scan·/tf를 받을 뿐, 상대가 실물이든 Isaac이든 구분 못 합니다.
+(우리 팔이 sim/real 구분 못 하게 만든 것과 정확히 같은 전examples/api/isaacsim.ros2.bridge/carter_stereo.py,benchmarks/benchmark_robots_nova_carter_ros2.py.
+
+---
+3. AMR ↔ 우리 팔(UR16e): 같은 골격, 다른 엔드포인트
+
+이제 팔 bridge가 왜 익숙하게 느껴져야 하는지:
+
+┌─────────────────┬─────────────────────────────────────────────────────────────────────┐
+│      역할       │             AMR (당신이 알던 것)             │              UR16e 팔 (이 프로젝트)               │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 명령 입력(구독) │ ROS2SubscribeTwist (/cmd_vel)                │ ROS2SubscribeJointState (/isaac_joint_commands)   │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 명령→구동 변환  │ DifferentialController                       │ (변환 불필요, 관절 직접)                          │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 액추에이터 구동 │ IsaacArticulationController (바퀴)           │ IsaacArticulationController (팔 관절) ← 동일 노드 │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 상태 출력(발행) │ IsaacComputeOdometry→PublishOdometry (/odom) │ ROS2PublishJointState (/isaac_joint_states)       │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 외부 인식       │ RtxLidarHelper (/scan)                       │ ROS2CameraHelper (/camera/...)                    │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ TF              │ PublishTransformTree (odom→base)             │ (우리 팔은 ROS RSP가 담당)                        │
+├─────────────────┼─────────────────────────────────────────────────────────────────────┤
+│ 시계            │ ROS2PublishClock                             │ 동일                                              │
+└─────────────────┴─────────────────────────────────────────────────────────────────────┘
+
+→ 구동 노드(IsaacArticulationController)와 클럭은 그대로,t/Odometry ↔ JointState로 바뀐 것뿐입니다. 로봇 종류가달라도 bridge 골격은 하나예요.
+
+---
+4. API 문법 해독 — og.Controller.edit
+
+콜백 코드에 익숙한 당신에게 이 선언형 문법이 낯선 게 당연다:
+
+og.Controller.edit(
+    {"graph_path": "/ActionGraph", "evaluator_name": "execution"},  # ← 그래프 "생성"
+    {
+        og.Controller.Keys.CREATE_NODES: [        # 1) 노드 만들기
+            ("별칭", "노드타입문자열"),            #    (ROS2SubscribeTwist")
+        ],
+        og.Controller.Keys.CONNECT: [             # 2) 선
+            ("A.outputs:포트", "B.inputs:포트"),
+        ],
+        og.Controller.Keys.SET_VALUES: [          # 3) 파라미터 세팅 (= remap/설정)
+            ("Sub.inputs:topicName", "/cmd_vel"),
+        ],
+    },
+)
+
+문자열 문법만 외우면 됩니다:
+- "노드별칭.inputs:포트이름" / "노드별칭.outputs:포트이름 트명.
+- 노드타입은 확장.카테고리.클래스 문자열 (예: isaacsim.ros2.bridge.ROS2PublishClock).
+- target 타입 포트(프림을 가리키는 것)는 값이 [usdrt.Sdf.argetPrim, robotPath, parentPrim.
+
+지난번 겪은 두 함정 재확인 (기존 그래프 확장 시):
+1. 편집은 og.Controller.edit("/그래프경로", edits) (문자열). dict형은 생성이라 "already exists" 에러.
+2. 이전에 만든 노드를 CONNECT에서 참조할 땐 풀 경로 "/그  edit에서 만든 노드만 짧은 별칭 OK.
+
+콜백↔그래프 대응 직관:
+# 실물 ROS2 (당신 방식)
+self.sub = self.create_subscription(Twist, '/cmd_vel', se
+def cb(self, msg): self.drive(msg.linear.x, msg.angular.z)
+
+# Isaac — "구독→구동"을 노드 배선으로
+CREATE_NODES: ("Sub","ROS2SubscribeTwist"), ("Diff","Diff"IsaacArticulationController")
+CONNECT:      Sub.outputs:linearVelocity → Diff.inputs:linearVelocity  (콜백 바디가 "선"이 됨)
+              Diff.outputs:velocityCommand → Art.inputs:v
+SET_VALUES:   Sub.inputs:topicName = "/cmd_vel"
+콜백 함수 본문이 노드 사이의 연결선으로 바뀐다 — 이게 데
+
+---
+5. 익숙한 도구로 확인 (당신 CLI 그대로 통함)
+
+Isaac은 진짜 DDS로 나가므로 당신이 쓰던 ROS2 CLI가 100% 그대로 됩니다:
+ros2 topic list / echo / hz          # 지난번 /tf 111Hz
+ros2 node list                        # 단, bridge는 하나의 ROS 노드로 보임 (OG 전체가)
+ros2 run tf2_tools view_frames        # TF 트리 PDF
+rviz2                                 # sim/real 구분 없이 동일
+차이: 토픽을 만들거나 remap하려면 launch가 아니라 OG 그래 칩니다. 노드 내부를 보려면 ros2 node info가 아니라 GUI의Window → Visual Scripting → Action Graph.
+
+---
+원하시면 다음 연습으로, 지금 이 팔 씬은 그대로 두고 AMR   서 — ROS2SubscribeTwist → DifferentialController →ArticulationController + /odom + /scan 그래프를 손으로 배선하고 ros2 topic pub /cmd_vel로 굴려볼 수 있어요. 당신이 nav2로 하던 걸 sim에서
+재현하는 셈이라 개념이 확 붙을 겁니다. 만들어 드릴까요?  예: DifferentialController 포트, RtxLidar 설정)을 더파고들까요?
+
+✻ Sautéed for 2m 22s · 1 shell still running
+
+❯ IsaacArticulationController의 개념은 내가 잘 이해가 안 가. 그리고 articulatrion 도 아직 이해를 못 한거 같아. 설명을 더 해주고 AMR 미니 예제를
+  playground에도 만들어줘.
+
+좋아요, 개념부터 제대로 잡고 예제를 만들죠. 먼저 예제에  alController 포트, 그리고 참조 그래프를 설치본에서확인하겠습니다.
+
+  Ran 1 shell command
+
+DifferentialController 포트 확보(입력 linearVelocity/angularVelocity는 스칼라 double, Twist 출력은 vec3 → 중간에 벡터 분해 필요). 이제 예제
+로봇의 관절 이름·바퀴 파라미터를 설치본에서 확인하겠습니
+
+  Searched for 1 pattern
+
+Jetbot 파라미터 확정(left_wheel_joint/right_wheel_joint,  usage.rst). 마지막으로 에셋 경로, 벡터 분해 노드, tick의dt 출력을 확인하겠습니다.
+
+  Ran 1 shell command
+
+거의 다 됐습니다. DifferentialController의 출력(velocityCommand) 의미와 IsaacArticulationController 입력을 정확히 확인해야 배선 순서가 맞습니다.
+구현을 보겠습니다.
+
+  Ran 1 shell command
+
+핵심 확정: velocityCommand = [왼쪽바퀴, 오른쪽바퀴] rad/s[1]). 이제 odometry·articulation·벡터분해 노드의 포트이름만 확인하면 배선을 정확히 짤 수 있습니다.
+
+  Ran 1 shell command
+
+포트 전부 확인됐습니다. 마지막으로 IsaacArticulationController의 입력(대상 지정 방식)만 확인하고 예제를 작성하겠습니다.
+
+  Ran 1 shell command
+
+완벽합니다. robotPath 비우고 targetPrim으로 지정하면 서브트리에서 articulation root를 찾아줍니다. odom→base_link TF용 노드 포트만 마지막으로
+확인하고 바로 예제를 작성하겠습니다.
+
+  Ran 1 shell command
+
+모든 포트 확정. RawTransformTree의 timeStamp 포트만 확인
+
+  Ran 1 shell command
+
+모든 포트 확정됐습니다. 먼저 개념을 설명하고, AMR 미니 예
+
+먼저 예제 스크립트를 작성합니다:
+
+● Write(playground/amr_diffdrive_ros2.py)
+Wrote 174 lines to playground/amr_diffdrive_ros2.py
+# SPDX-License-Identifier: Apache-2.0
+#
+# PLAYGROUND: a minimal differential-drive AMR (Je
+# bridge -- the mobile-robot analogue of the UR16e arm bridge, wired the way a
+# nav2 stack expects:
+#
+#   nav2 / teleop --(/cmd_vel Twist)--> [ROS2Subsc
+#                                          -> [DifferentialController]  (v,w -> wheel rad/s)
+#                                          -> [Isapins the wheel joints)
+#   wheels move -> [IsaacComputeOdometry] -> [ROS2PublishOdometry]      (/odom)
+… +164 lines
+
+Syntax check, stop the arm sim, and launch the AMR exampl
+
+  Ran 1 shell command
+
+● Background command "Launch modified script (tool-managed  code 144
+
+SYNTAX OK, 이전 sim 정리됨(camtf 종료는 의도된 것). AMR
+
+  Ran 2 shell commands
+
+그래프 에러 없이 떴습니다. 이제 실제로 /cmd_vel을 쏘고 /o다 — 정지 상태 odom 확인 → cmd_vel 발행 → odom 이동 확인.
+
+  Ran 1 shell command
+
+완벽하게 동작합니다. /cmd_vel(v=0.2, ω=0.5)로 3초 주행하 , 0.66)으로 호를 그리며 이동했습니다 — 차동구동그대로입니다. /tf도 확인하고 결과를 정리하겠습니다.
+
+  Ran 1 shell command
+
+모든 게 검증됐습니다 (/tf: odom → base_link 발행 중). 실물 AMR에서 nav2가 기대하는 인터페이스(/cmd_vel·/odom·/tf)가 sim에 그대로 살아있습니다.
+이제 개념 설명 + 예제 정리입니다.
+
+---
+1. Articulation 이란? (물리 개념)
+
+Articulation = "관절로 연결된 강체들을 하나의 로봇으로 묶어 함께 푸는 물리 단위".
+
+PhysX(Isaac의 물리엔진)는 로봇을 두 방식으로 시뮬레이션할 수 있습니다:
+
+┌────────┬────────────────────────────────────────┬─────────────────────────────────┐
+│        │      느슨한 강체들 + 조인트 제약       │
+├────────┼────────────────────────────────────────┼─────────────────────────────────┤
+│ 좌표계 │ maximal (각 몸체 6 DOF, 조인트는 제약) │ reduc
+├────────┼────────────────────────────────────────┼─────────────────────────────────┤
+│ 안정성 │ 체인이 길면 늘어짐/드리프트            │ 정확·
+├────────┼────────────────────────────────────────┼─────────────────────────────────┤
+│ 쓰임   │ 박스, 잔해                             │ 로봇
+└────────┴────────────────────────────────────────┴─────────────────────────────────┘
+
+실물/URDF 비유 (당신이 아는 것으로): URDF의 <link> + <joint> 트리가 바로 하나의 articulation입니다. 실물에서 robot_state_publisher가 URDF를 읽어
+링크·조인트 트리를 만들듯, USD의 articulation은 sim 안의 (질량·관성·모터) 입니다.
+
+핵심 구성요소:
+- Root (뿌리): 베이스 링크. ArticulationRootAPI가 붙은 프림 — 앞서 본 함정5(UR16e는 /UR16e/root_joint)와 build 스크립트가 그리퍼의 root 딱지를
+떼서 "하나의 articulation"으로 만든 게 이것.
+- DOF (자유도): 움직이는 조인트 축들. UR16e = 6개 회전 DOF(+그리퍼), Jetbot = 바퀴 2 DOF. 각 DOF는 position/velocity/effort 상태를 가짐.
+- Drive (드라이브): 각 조인트의 "모터". stiffness/dampingfinger_joint drive를 20/1.0으로 키운 게 이거였죠.
+
+즉 "UR16e 팔 하나" = 1 articulation, "Jetbot 하나" = 1 ariculationRoot=1을 확인하던 이유입니다.
+
+---
+2. IsaacArticulationController 란?
+
+한 줄: articulation의 조인트 드라이브(모터)에 매 tick 명령 숫자를 써 넣는 노드 = sim의 "모터 드라이버/하드웨어 인터페이스" 계층.
+
+실물 비유가 정확히 맞습니다. 당신의 실물 UR16e에서:
+MoveIt → JTC → ros2_control → RTDE 드라이버 → 실제 모터
+sim에서는 그 "실제 모터" 자리에 IsaacArticulationController가 있습니다:
+MoveIt → JTC → topic_based → /isaac_joint_commands → SubslationController → articulation 드라이브
+
+이 노드가 하는 일은 딱 이것뿐:
+- 어느 로봇? → robotPath 또는 targetPrim (articulation 지정)
+- 어느 조인트? → jointNames (비우면 전체 DOF)
+- 무슨 명령? → positionCommand / velocityCommand / effortCommand 중 들어온 것
+
+중요: 이 노드는 ROS를 전혀 모릅니다. 그냥 입력 포트에 들어온 숫자를 named DOF에 적용할 뿐. 숫자가 ROS 구독에서 오든(팔), 차동 컨트롤러에서
+오든(AMR) 상관 안 합니다. 그래서 팔이든 바퀴든 같은 노드  :
+
+┌────────────┬──────────────────────────┬───────────┬────
+│            │        명령 소스         │ 명령 타입 │ 대상 조인트 │
+├────────────┼──────────────────────────┼───────────┼────
+│ UR16e 팔   │ SubscribeJointState(ROS) │ position  │ 6 관절      │
+├────────────┼──────────────────────────┼───────────┼────
+│ Jetbot AMR │ DifferentialController   │ velocity  │ 2 바퀴      │
+└────────────┴──────────────────────────┴───────────┴────
+
+이게 당신 질문의 핵심 답: ArticulationController = "명령 꿔주는 sim의 모터 계층. 실물의 모터 드라이버와 같은 위치.
+
+---
+3. 만든 AMR 예제 — playground/amr_diffdrive_ros2.py
+
+실물 AMR/nav2 인터페이스를 그대로 재현한 최소 Jetbot 브릿지입니다. 실행·검증 완료(tool bg b7qqqf7so).
+
+그래프 (당신이 nav2로 짜던 그 흐름)
+
+                          ┌─ 명령 경로 (/cmd_vel → 바퀴) ─────────────────────────┐
+/cmd_vel ─▶ SubTwist ─▶ BreakVector3(linear).x ─┐
+(Twist)              └▶ BreakVector3(angular).z ─┴▶ DiffController ─▶ ArtController ─▶ 바퀴 DOF
+                                                    (v,ω
+                          └─ 피드백 경로 (바퀴 → /odom, /tf) ──────────────────────┘
+바퀴 운동 ─▶ ComputeOdometry ─┬▶ PublishOdometry ─▶ /odom
+                            └▶ PublishRawTransformTree ─▶ /tf (odom→base_link)
+OnPlaybackTick ─▶ (모든 노드 execIn)   ROS2Context ─▶ (ROk ─▶ /clock
+
+핵심 배선 3가지 (여기서 배울 점)
+
+① Twist(vec3) → 스칼라 분해가 필요 — SubTwist의 출력은 벡ifferentialController 입력은 스칼라 double. 그래서 중간에**BreakVector3**로 쪼갭니다:
+("SubTwist.outputs:linearVelocity",  "BreakLin.inputs:tup
+("BreakLin.outputs:x", "DiffController.inputs:linearVelocity"),  # 전진 v (x성분)
+("BreakAng.outputs:z", "DiffController.inputs:angularVelo
+→ 실물에서 msg.linear.x, msg.angular.z 꺼내던 걸, sim에선 벡터 분해 노드로 합니다.
+
+② DifferentialController = 운동학 변환기 — v,ω를 좌/우 바퀴 각속도로 (구현 확인: [좌,우] = (2V∓ωb)/(2r)). 그래서 바퀴 반지름·간격을 알려줘야 함:
+("DiffController.inputs:wheelRadius", 0.035),
+("DiffController.inputs:wheelDistance", 0.10),
+→ 실물 diff_drive_controller의 wheel_radius/wheel_separat
+
+③ ArtController에 조인트 순서를 정확히 — velocityCommand s도 같은 순서:
+("ArtController.inputs:targetPrim", [Sdf.Path("/World/Jetbot")]),
+("ArtController.inputs:jointNames", ["left_wheel_joint",
+
+검증 결과 (실제로 굴려봄)
+
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{l 0.5}}"
+
+┌─────────────┬────────────┬────────────┐
+│             │ position x │ position y │
+├─────────────┼────────────┼────────────┤
+│ 주행 전     │ 0.018      │ -0.001     │
+├─────────────┼────────────┼────────────┤
+│ 3초 주행 후 │ 0.530      │ 0.661      │
+└─────────────┴────────────┴────────────┘
+
+→ 전진하며 좌회전(호)한 정확한 차동구동 궤적. /tf도 odom
+
+---
+4. 직접 해볼 것 (GUI 떠 있음)
+
+지금 Jetbot sim이 실행 중입니다. 다른 터미널에서(당신 CLI 그대로):
+
+source /opt/ros/jazzy/setup.bash && export ROS_DOMAIN_ID=0
+
+# 직진
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{l
+# 제자리 회전
+ros2 topic pub -r 10 /cmd_vel geometry_msgs/msg/Twist "{a
+# 상태 보기
+ros2 topic echo /odom
+ros2 run tf2_tools view_frames          # odom→base_link 트리
+rviz2                                    # Fixed Frame=od
+GUI 뷰포트에서 Jetbot이 실제로 굴러가는 게 보일 겁니다. Window → Visual Scripting → Action Graph 에서 /ActionGraph를 열면 위 그래프를 눈으로 볼
+수 있고, DiffController 노드를 클릭해 wheelRadius를 바꾸
+
+끄려면: pkill -f amr_diffdrive_ros2.py
+
+---
+5. 한 장 정리 — 팔이든 AMR이든 같은 골격
+
+        [ROS 입력]        [변환]           [모터 계층]            [articulation]
+팔:   SubscribeJointState  ─(없음)─▶  IsaacArticulationCoon)
+AMR:  SubscribeTwist ─▶ DiffController ─▶ IsaacArticulationController ─▶ 2바퀴 DOF (velocity)
+        [상태 출력]
+팔:   PublishJointState  ◀─ articulation
+AMR:  ComputeOdometry ─▶ PublishOdometry / RawTF  ◀─ arti
+- Articulation = sim 속 "로봇 한 대"(URDF 트리 + 물리).
+- IsaacArticulationController = 명령 숫자를 그 로봇의 관  모터 드라이버.
+- 로봇이 달라도 이 두 개는 그대로. 앞뒤에 붙는 ROS 노드(JointState↔Twist/Odom)만 바뀝니다.
+
+---
+다음으로 뭘 해볼까요? (a) 이 AMR에 RtxLidarHelper로 /scan기, (b) GUI Action Graph에서 이 그래프를 마우스로 뜯어보며노드별 Property 확인, (c) 팔 예제로 돌아가 position vs velocity 제어 차이를 ArticulationController 관점에서 실험. 원하는 걸 고르면 이어서 만들어
+드릴게요.
