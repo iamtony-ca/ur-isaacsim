@@ -9,6 +9,13 @@ USD (references the source, adds rotate+seat translate) so downstream stacking i
 trivial: every normalized part has base@z=0 and grows +Z by its own thickness.
 
 Per-part config knobs (parts.<name>.normalize):
+    passthrough: bool  -> TRUST THE CAD ORIGIN AS-IS. Skips all rotate/seat/centre;
+                          the delivered part frame is used verbatim (identity wrapper).
+                          Use when the mechanical team authored the origin to our
+                          convention: origin ON the mounting face, +Z = stack direction
+                          (toward the next part), x/y centred on the mount axis. A base_z
+                          sanity check warns if the mounting face is NOT actually at z=0.
+                          (overrides rpy_deg/seat/center_xy below.)
     rpy_deg  : [rx,ry,rz] degrees, XYZ order  -> rotate mount axis to +Z
     seat     : zmin | zmax | none             -> which rotated bbox face sits at z=0
     center_xy: bool                            -> centre x/y on the tool axis
@@ -47,9 +54,13 @@ def _bbox(stage, prim):
 
 
 def normalize(name, src_abs: Path, dst_abs: Path, norm: dict):
-    rpy = norm.get("rpy_deg", [0, 0, 0])
-    seat = norm.get("seat", "zmin")
-    center_xy = bool(norm.get("center_xy", True))
+    passthrough = bool(norm.get("passthrough", False))
+    if passthrough:                                    # trust the delivered CAD origin
+        rpy, seat, center_xy = [0, 0, 0], "none", False
+    else:
+        rpy = norm.get("rpy_deg", [0, 0, 0])
+        seat = norm.get("seat", "zmin")
+        center_xy = bool(norm.get("center_xy", True))
 
     dst_abs.parent.mkdir(parents=True, exist_ok=True)
     src_prim = _top_prim_path(str(src_abs))
@@ -85,8 +96,19 @@ def normalize(name, src_abs: Path, dst_abs: Path, norm: dict):
         "bbox_max": [float(smx[0]), float(smx[1]), float(smx[2])],
     }
     dst_abs.with_suffix(".json").write_text(json.dumps(sidecar, indent=2))
-    print(f"  {name:22s} rpy={rpy} seat={seat} -> base_z={smn[2]*1000:6.1f}mm "
+    mode = "PASSTHROUGH" if passthrough else f"rpy={rpy} seat={seat}"
+    print(f"  {name:22s} {mode} -> base_z={smn[2]*1000:6.1f}mm "
           f"thickness_z={s[2]*1000:6.1f}mm  size=({s[0]*1000:.1f},{s[1]*1000:.1f},{s[2]*1000:.1f})mm")
+    if passthrough:
+        # convention check: origin should sit ON the mounting face (base_z ~ 0) with the
+        # part growing +Z. Flag likely origin-convention mismatches for GUI verification.
+        if abs(smn[2]) > 5e-4:                         # mounting face > 0.5 mm off z=0
+            print(f"  {'':22s} ⚠ base_z={smn[2]*1000:.1f}mm ≠ 0 — CAD origin is NOT on the "
+                  f"mounting face (or +Z is not the stack axis). Verify in GUI, or drop "
+                  f"passthrough and use rpy_deg/seat.")
+        elif smx[2] <= 0:                              # part grows -Z, wrong stack direction
+            print(f"  {'':22s} ⚠ part extends toward -Z (thickness_z={smx[2]*1000:.1f}mm) — "
+                  f"+Z is not the stack direction. Check the delivered origin orientation.")
 
 
 def main() -> int:

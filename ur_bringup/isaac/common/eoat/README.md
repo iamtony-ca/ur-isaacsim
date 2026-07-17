@@ -11,6 +11,11 @@ P=/isaac-sim/python.sh
 # 1) STEP -> USD (미터, Z-up). 폴더째도 가능. (assets/cad/*.usd 생성)
 $P isaac/common/convert_step_to_usd.py <STEP폴더> isaac/assets/cad
 
+# 1.5) ★ CAD 인수 점검 (변환 직후) — 스케일/단위·bodies·watertight·밀도·원점 자동 리포트.
+#      실측/도면과 대조할 게 있으면 config 에 parts.<>.expected_size_mm:[x,y,z](mm) 적어두면 자동 스케일 검증.
+$P isaac/common/validate_cad.py isaac/assets/cad            # 폴더째, PASS/WARN 요약
+$P isaac/common/validate_cad.py isaac/assets/cad --config $CFG    # expected_size_mm 대조
+
 # 2) 프레임 정규화: 장착면->원점, 장착축->+Z (assets/cad/normalized/*.usd)
 $P isaac/common/eoat/normalize_part.py $CFG            # [part ...] 로 일부만도 가능
 
@@ -33,9 +38,24 @@ $P isaac/common/eoat/build_eoat_moveit.py $CFG     # mesh 있으면 <mesh> 참�
 ## config 스키마 (`eoat_*.yaml`)
 - **`parts.<name>`**
   - `cad`: `assets/cad/` 안의 소스 USD 파일명
+  - `expected_size_mm`(선택): `[x,y,z]` 도면 실측 치수(mm). 있으면 `validate_cad.py --config` 가
+    변환된 bbox 와 자동 대조 → 스케일/단위 오류(1000배 등) 경고. 없으면 사람이 눈으로 대조.
+  - `normalize.passthrough`: **CAD 원점을 그대로 신뢰**(rotate/seat/center 전부 skip, 항등 래퍼).
+    기구팀이 아래 "원점 규약"대로 저작해 주면 이걸 켜서 GUI 튜닝 없이 바로 조립. base_z≠0 이면
+    (장착면이 원점에 없으면) 자동 경고. `rpy_deg`/`seat`/`center_xy` 를 덮어씀.
   - `normalize.rpy_deg`: 장착축을 +Z 로 돌리는 회전(도, XYZ). 부품 CAD 프레임마다 다름.
   - `normalize.seat`: `zmin|zmax|none` — 회전 후 어느 bbox 면을 z=0 에 앉힐지(=장착면).
   - `normalize.center_xy`: 회전 후 x,y 중심을 tool 축에 정렬.
+
+  **원점 두 갈래** — (A) 원점 제각각으로 오면 `rpy_deg`+`seat`+`center_xy` 로 **기하에서 재원점**
+  (GUI 확인 필요). (B) 기구팀에 원점을 지정 요청할 수 있으면 아래 **규약**대로 받아 `passthrough:true` 로
+  **그대로 사용**(무튜닝). 부품마다 A/B 혼용 가능.
+
+  **★ 원점 규약(passthrough 전제, 기구팀에 요청):**
+  - 원점 = **장착면**(부모와 맞닿는 면) 위, - **+Z = 스택 방향**(장착면에서 다음 부품 쪽 바깥),
+  - **x/y = 장착축 중심**, - **Z-up, mm**.
+  - Z가 미세하게 어긋날 우려가 있으면 완전 passthrough 대신 `rpy_deg:[0,0,0], center_xy:false, seat:zmin`
+    (방향·XY는 신뢰, 장착면만 z=0 스냅)로 부분 신뢰.
 - **`chain`** (list, 위→아래 순): `{id, part, parent, joint, gap?, mount?}`
   - `id`: 링크 고유이름(생략 시 `part`). **같은 부품 다중 인스턴스**는 id 로 구분(예: 카메라 여러 대).
   - `part`: 기하 소스(`parts.<part>`).
