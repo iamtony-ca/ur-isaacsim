@@ -21,6 +21,8 @@ Config schema (see eoat_dualtool.yaml for a worked example):
         cad: <file in cad_dir>
         normalize: {rpy_deg, seat, center_xy}    # used by normalize_part.py
         physics: {density | mass, com, inertia, collision, size}   # optional override
+            # collision: convex(=default) | convexDecomposition | mesh  (per-part fidelity;
+            #   drives BOTH the USD approximation and the exported _col.obj — single source)
         sublinks: {<sub>: {cad?|geom_prim?, physics?}}   # internal DOF bodies (e.g. fingers)
         joints: [ {name, child, type, axis, origin_xyz, origin_rpy?,
                    limit:{lower,upper,effort?,velocity?}, drive:{stiffness,damping,target?},
@@ -87,7 +89,7 @@ class Physics:
     mass: float                       # kg
     com: list                         # [x,y,z] m, in the link frame
     inertia: list                     # [ixx,iyy,izz,ixy,ixz,iyz] kg·m² about com
-    collision: str                    # convexHull | convexDecomposition | boundingCube | none
+    collision: str                    # convexHull | convexDecomposition | meshSimplification | boundingCube | none
     density: float | None = None      # kg/m³ if mass was derived from density (informational)
     approx: bool = True               # True = box-from-bbox placeholder, False = supplied
     # fidelity (physics material) — DEFAULT values until measured/spec supplied
@@ -153,10 +155,21 @@ def _box_inertia(mass: float, size: list) -> list:
     return [ixx, iyy, izz, 0.0, 0.0, 0.0]
 
 
+# Per-part collision fidelity — friendly aliases -> USD-valid MeshCollisionAPI tokens.
+# ONE knob (physics.collision) drives BOTH emitters: the USD approximation AND which
+# collision OBJ export_eoat_meshes.py writes (convex hull / CoACD decomposition / decimated
+# real mesh). Mirrors the obstacle pipeline's mesh|convexDecomposition|convex levels.
+#   convex  -> convexHull        (DEFAULT: lightest, fills concavities — current behavior)
+#   mesh    -> meshSimplification(exact decimated surface — grasp/insertion contact)
+#   convexDecomposition          (CoACD convex parts — follows concavity, still light)
+_COLL_ALIAS = {"convex": "convexHull", "mesh": "meshSimplification"}
+
+
 def _resolve_physics(spec: dict, defaults: dict, size: list | None) -> Physics:
     """Turn a (possibly empty) physics spec + bbox size into final mass props.
     Priority: explicit mass/inertia > density×bbox-volume box approx > defaults."""
     coll = spec.get("collision", defaults.get("collision", "convexHull"))
+    coll = _COLL_ALIAS.get(coll, coll)                    # normalize friendly alias -> USD token
     size = spec.get("size", size) or [0.05, 0.05, 0.05]
     fric = float(spec.get("friction", defaults.get("friction", 0.8)))
     rest = float(spec.get("restitution", defaults.get("restitution", 0.0)))

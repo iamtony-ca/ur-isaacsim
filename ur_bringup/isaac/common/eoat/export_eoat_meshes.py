@@ -4,9 +4,15 @@ geometry (matching the Isaac USD) instead of a bounding box. Without this the UR
 emitter falls back to box primitives and RViz looks different from Isaac (함정 #7 gap).
 
 Per graph link with a real `geom` (normalized USD stem):
-    meshes/eoat/<id>.obj       full mesh   -> URDF <visual>
-    meshes/eoat/<id>_col.obj   convex hull -> URDF <collision>  (matches USD convexHull)
+    meshes/eoat/<id>.obj       full (decimated) mesh -> URDF <visual>   (always the REAL shape)
+    meshes/eoat/<id>_col.obj   collision proxy       -> URDF <collision>
+The collision proxy fidelity is chosen PER PART by `physics.collision` (the SAME single-source
+knob the USD emitter reads), mirroring the obstacle pipeline's three levels:
+    convex (=convexHull, DEFAULT) -> single convex hull       (lightest; fills concavities)
+    convexDecomposition           -> CoACD convex parts merged (follows concavity, still light)
+    mesh   (=meshSimplification)  -> decimated real surface    (exact; grasp/insertion contact)
 Links with no CAD (placeholder fingers) get no OBJ -> the URDF keeps a box for them.
+(convexDecomposition needs `pip install coacd`; falls back to a single hull if unavailable.)
 The mesh is in the link (normalized) frame, so the URDF references it at identity —
 same as build_eoat_usd references the normalized USD as the link's `geo` child.
 
@@ -70,7 +76,26 @@ def convex_hull(V):
     return V[used], [[remap[int(a)], remap[int(b)], remap[int(c)]] for a, b, c in h.simplices]
 
 
+def convex_decomposition(V, F):
+    """CoACD -> convex parts merged into one triangle soup (follows concavity, unlike a
+    single hull, while staying light). Falls back to a single convex hull if CoACD missing."""
+    try:
+        import coacd
+        m = coacd.Mesh(np.asarray(V, dtype=np.float64), np.asarray(F, dtype=np.int32))
+        parts = coacd.run_coacd(m)                       # [(vertices, faces), ...]
+        mv, mf, off = [], [], 0
+        for pv, pf in parts:
+            mv.extend(np.asarray(pv).tolist())
+            mf.extend([[a + off, b + off, c + off] for a, b, c in np.asarray(pf)])
+            off += len(pv)
+        return np.asarray(mv, dtype=float), mf
+    except Exception as e:
+        print(f"  convexDecomposition unavailable ({e}); using single convex hull")
+        return convex_hull(V)
+
+
 VIS_MAX_TRIS = 20000        # decimate the VISUAL mesh (RViz render only) to keep OBJs small
+COL_MAX_TRIS = 10000        # decimate the 'mesh' collision proxy (still needs to be light for FCL)
 
 
 def decimate(V, F, max_tris):
@@ -107,10 +132,18 @@ def main() -> int:
             continue
         dv, df = decimate(V, F, VIS_MAX_TRIS)          # visual: real shape, capped tri count
         write_obj(out / f"{l.id}.obj", dv, df)
-        hv, hf = convex_hull(V)                         # collision: convex hull (matches USD)
-        write_obj(out / f"{l.id}_col.obj", hv, hf)
+        # collision proxy: fidelity per part from physics.collision (same knob as USD).
+        # DEFAULT convexHull -> convex hull (current behavior). See eoat_model._COLL_ALIAS.
+        approx = l.physics.collision if l.physics else "convexHull"
+        if approx == "convexDecomposition":
+            cv, cf = convex_decomposition(V, F)         # CoACD parts merged (concave-aware)
+        elif approx == "meshSimplification":            # 'mesh': exact (decimated) real surface
+            cv, cf = decimate(V, F, COL_MAX_TRIS)
+        else:                                           # convexHull / boundingCube / none -> hull
+            cv, cf = convex_hull(V)
+        write_obj(out / f"{l.id}_col.obj", cv, cf)
         print(f"[export-mesh] {l.id}: {usd.name} -> {l.id}.obj ({len(df)}f, from {len(F)}) "
-              f"+ {l.id}_col.obj ({len(hf)}f)")
+              f"+ {l.id}_col.obj [{approx}] ({len(cf)}f)")
         n += 1
     print(f"[export-mesh] exported {n} part mesh(es) -> {out}")
     _app.close()

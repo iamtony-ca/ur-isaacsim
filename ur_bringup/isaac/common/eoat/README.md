@@ -8,6 +8,10 @@ STEP(요소품) → 정규화 → 단일 조립 USD 를 **YAML 하나로** 굴�
 CFG=isaac/common/eoat/eoat_gripper_branch.yaml
 P=/isaac-sim/python.sh
 
+# 0) ★ 원본 STEP 인수 점검 (변환 전, pure python·Isaac 불필요) — 포맷/AP스키마/단위(mm)/솔리드수/faceted.
+#    요청서(CAD_DELIVERY_REQUEST.md)의 "소스측" 항목 검사. validate_cad(변환 후)와 상보적.
+python3 isaac/common/check_step_delivery.py <STEP폴더> [--expect a.step,b.step]
+
 # 1) STEP -> USD (미터, Z-up). 폴더째도 가능. (assets/cad/*.usd 생성)
 $P isaac/common/convert_step_to_usd.py <STEP폴더> isaac/assets/cad
 
@@ -40,6 +44,10 @@ $P isaac/common/eoat/build_eoat_moveit.py $CFG     # mesh 있으면 <mesh> 참�
   - `cad`: `assets/cad/` 안의 소스 USD 파일명
   - `expected_size_mm`(선택): `[x,y,z]` 도면 실측 치수(mm). 있으면 `validate_cad.py --config` 가
     변환된 bbox 와 자동 대조 → 스케일/단위 오류(1000배 등) 경고. 없으면 사람이 눈으로 대조.
+  - `physics.collision`(선택, 부품별): `convex`(기본) | `convexDecomposition` | `mesh`. **단일 knob 이
+    USD 근사와 export 되는 `_col.obj` 를 함께 결정**(장애물 3레벨과 동형). `convex`=단일 hull(가벼움·오목메움),
+    `convexDecomposition`=CoACD 조각(오목추종, `pip install coacd` 필요·없으면 hull 폴백),
+    `mesh`=decimate 실메시(정밀·파지/삽입 접촉용). 시각 `<id>.obj` 는 항상 실메시.
   - `normalize.passthrough`: **CAD 원점을 그대로 신뢰**(rotate/seat/center 전부 skip, 항등 래퍼).
     기구팀이 아래 "원점 규약"대로 저작해 주면 이걸 켜서 GUI 튜닝 없이 바로 조립. base_z≠0 이면
     (장착면이 원점에 없으면) 자동 경고. `rpy_deg`/`seat`/`center_xy` 를 덮어씀.
