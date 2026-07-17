@@ -225,3 +225,8 @@ depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그�
 
 ### 상태
 🅿️ **보류(추후 검토).** 옵션1 완료 + 동적성 요구가 실제로 생기면 재평가.
+
+
+
+### to do
+실제 STEP 파일로 quick_start 전체 한번 따라가서 검증해보기.
