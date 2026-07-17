@@ -1,0 +1,34 @@
+# Source dependencies for the UR16e sim+real stack (vcstool).
+# Import into the workspace src/ with:
+#     cd /isaac-sim/ur_ws && vcs import src < src/ur16e.repos
+#
+# Only deps that must be built from SOURCE are listed here. Everything else is apt:
+#   - core: ros-jazzy-ur, -moveit, -moveit-ros-perception, -ros2-control, -ros2-controllers
+#   - Set 2 (gripper): ros-jazzy-robotiq-description  (the driver itself = source, below)
+#   - Set 3 real camera: ros-jazzy-realsense2-camera, -librealsense2,
+#                        -diagnostic-updater, -diagnostic-msgs  (NOT vcs — apt only)
+# See ../README.md (install) / ../HARDWARE.md (real bring-up) / ../SETUP.md (manual).
+repositories:
+  topic_based_hardware_interfaces:
+    type: git
+    url: https://github.com/ros-controls/topic_based_hardware_interfaces.git
+    # Pin 0.2.1: it uses the classic export_state_interfaces() API and works with
+    # the apt ros-jazzy ros2_control binary. main/1.x use set_state(name,value),
+    # which does NOT update exported state interfaces on Jazzy 4.44 -> /joint_states
+    # becomes all-NaN and MoveIt/RViz break. See SETUP.md "Known issues".
+    version: 0.2.1
+  # Real Robotiq 2F-85 gripper driver (hardware interface). Not in apt for Jazzy
+  # (only robotiq_description/robotiq_controllers are). Build from source.
+  ros2_robotiq_gripper:
+    type: git
+    url: https://github.com/PickNikRobotics/ros2_robotiq_gripper.git
+    # No Jazzy tag exists; main is the Jazzy-compatible branch (tag 0.0.1 is the
+    # old Humble-era release). Provides robotiq_driver (RobotiqGripperHardwareInterface)
+    # + robotiq_controllers (RobotiqActivationController). robotiq_description comes
+    # from apt; we use our own robotiq_2f85_macro for the URDF.
+    version: main
+  # robotiq_driver depends on this serial library (tylerjw/serial, ros2 branch).
+  serial:
+    type: git
+    url: https://github.com/tylerjw/serial.git
+    version: ros2

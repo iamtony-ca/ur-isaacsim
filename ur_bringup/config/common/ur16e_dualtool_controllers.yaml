@@ -1,0 +1,49 @@
+# ros2_control configuration for the UR16e + dual-tool EOAT (set 4) Isaac Sim backend.
+# Standalone copy of ur16e_controllers.yaml (arm-only file left untouched) with a
+# gripper_controller for the 2FG14 driven finger. Mirrors ur16e_2f85_controllers.yaml.
+controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz. Keep BELOW the Isaac /clock rate (~250 Hz) under
+                      # use_sim_time, else the CM loop starves the topic_based
+                      # hardware callback (NaN states).
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Named to match ur_moveit_config's default so MoveIt config is reused.
+    scaled_joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    # 2FG14 parallel gripper: GripperCommand action on the single DRIVEN finger.
+    # The mirror finger follows via <mimic> (RSP) + the Isaac asset coupling
+    # (build_eoat_usd.py with the physx-mimic flag), so ROS commands one joint.
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+scaled_joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    # cuMotion (GPU) trajectories end with a tiny non-zero terminal velocity;
+    # the JTC rejects the goal by default. Allow it (harmless for OMPL too).
+    allow_nonzero_velocity_at_trajectory_end: true
+
+gripper_controller:
+  ros__parameters:
+    joint: gripper_2fg14__finger_left_joint
+    # 2FG14 driven finger travel: 0.0 (open) .. 0.025 m (closed), prismatic.
+    allow_stalling: true        # holding a grip stalls the joint; treat as success
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
+    goal_tolerance: 0.002       # 2 mm
+    max_effort: 140.0           # datasheet 140 N per finger

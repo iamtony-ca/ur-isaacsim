@@ -1,0 +1,36 @@
+# nvblox overrides for the cuMotion manipulation workflow (UR16e + D405).
+# Loaded ON TOP OF nvblox_examples_bringup/config/nvblox/nvblox_base.yaml, so this
+# only lists what differs from the (navigation-oriented) base.
+#
+# Goal: build a 3D ESDF in a box around the arm workspace and serve it to cuMotion
+# via /nvblox_node/get_esdf_and_gradient (cuMotion: read_esdf_world:=true).
+/**:
+  ros__parameters:
+    # finer voxels for arm-scale obstacles (base uses 0.05 for navigation)
+    voxel_size: 0.02
+    use_color: false                 # depth-only ESDF is enough for collision
+    # *** cuMotion needs a 3D ESDF, not a 2D ground slice ***
+    esdf_mode: "3d"
+    publish_esdf_distance_slice: false
+    mapping_type: "static_tsdf"
+    # cuMotion requests the ESDF in its robot BASE frame (XRDF set_base_frame =
+    # base_link), so nvblox MUST map in that same frame or it returns an empty grid
+    # ("Requested ... in base_link frame but nvblox is mapping in world frame").
+    # base_link is world-fixed for a static-base arm, so this is fine.
+    global_frame: "base_link"
+    # keep the map tight to the workspace (the eye-in-hand camera sweeps around)
+    map_clearing_radius_m: 2.0
+    map_clearing_frame_id: "base_link"
+
+    static_mapper:
+      # box around the UR16e workspace (~0.9 m reach), in the world frame
+      workspace_bounds_type: "bounding_box"   # ["unbounded","height_bounds","bounding_box"]
+      workspace_bounds_min_corner_x_m: -0.9
+      workspace_bounds_min_corner_y_m: -0.9
+      workspace_bounds_min_height_m: 0.1
+      workspace_bounds_max_corner_x_m: 0.9
+      workspace_bounds_max_corner_y_m: 0.9
+      workspace_bounds_max_height_m: 1.3
+      # close-range D405: integrate only nearby depth
+      projective_integrator_max_integration_distance_m: 1.5
+      esdf_integrator_max_distance_m: 1.0

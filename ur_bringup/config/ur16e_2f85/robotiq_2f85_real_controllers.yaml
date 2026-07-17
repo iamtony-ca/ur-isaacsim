@@ -1,0 +1,43 @@
+# ros2_control configuration for the REAL Robotiq 2F-85 gripper (standalone
+# /gripper controller_manager). The arm runs under its own UR controller_manager
+# (ur16e.launch.py use_sim:=false); this file only configures the gripper.
+#
+# Mirrors config/ur16e_2f85_controllers.yaml's gripper_controller so the same
+# GripperCommand action and gripper_demo.py work against the real hardware.
+# NOTE: wildcard node names (/**/...) because this controller_manager runs in
+# the `gripper` namespace (/gripper/controller_manager). A plain
+# `controller_manager:` key would not match the fully-qualified node name, so
+# the controllers would load with "The 'type' param was not defined".
+/**/controller_manager:
+  ros__parameters:
+    update_rate: 100  # Hz. The 2F-85 Modbus link is slow; 100 Hz is ample.
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # Same controller/type/name as the sim set -> /gripper_controller/gripper_cmd
+    # (GripperCommand action) is identical, so gripper_demo.py is unchanged.
+    # parallel_gripper_action_controller is not in apt on this Jazzy, so we use
+    # position_controllers/GripperActionController (same control_msgs action).
+    gripper_controller:
+      type: position_controllers/GripperActionController
+
+    # Real-only: claims the reactivate_gripper GPIO so the gripper can be
+    # (re)activated after an e-stop via the ~/reactivate_gripper Trigger service.
+    # Spawned only when use_fake_hardware:=false (see launch).
+    robotiq_activation_controller:
+      type: robotiq_controllers/RobotiqActivationController
+
+/**/gripper_controller:
+  ros__parameters:
+    joint: finger_joint
+    # 2F-85 finger_joint travel: 0.0 (open) .. ~0.8 rad (closed).
+    allow_stalling: true        # closing onto an object stalls the joint; treat as success
+    stall_velocity_threshold: 0.001
+    stall_timeout: 1.0
+    goal_tolerance: 0.05
+    max_effort: 100.0
+
+/**/robotiq_activation_controller:
+  ros__parameters:
+    default: true   # activate the gripper automatically on startup

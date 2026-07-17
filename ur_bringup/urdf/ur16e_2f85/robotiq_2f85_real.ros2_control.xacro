@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control block for the REAL Robotiq 2F-85 gripper.
+
+  Companion to ur16e_2f85_sim.ros2_control.xacro (the Isaac/topic_based block).
+  This one drives the physical gripper over serial (Modbus RTU) using the
+  source-built robotiq_driver/RobotiqGripperHardwareInterface, or a mock backend
+  (mock_components/GenericSystem) when use_fake_hardware:=true so the launch can
+  be validated with no hardware attached (mirrors the arm's use_mock_hardware).
+
+  The actuated joint is named `finger_joint` (NOT robotiq_description's native
+  robotiq_85_left_knuckle_joint) so the real and sim gripper sets share one
+  joint name, one demo (gripper_demo.py -> /gripper_controller/gripper_cmd) and
+  one SRDF. The robotiq_driver reads info_.joints[0] by name, so it works with
+  any joint name; the other 5 gripper joints follow via <mimic> in the URDF.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="robotiq_2f85_real_ros2_control"
+               params="name prefix
+                       use_fake_hardware:=false
+                       mock_sensor_commands:=false
+                       com_port:=/dev/ttyUSB0
+                       gripper_speed_multiplier:=1.0
+                       gripper_force_multiplier:=0.5
+                       gripper_max_speed:=0.150
+                       gripper_max_force:=235.0
+                       gripper_closed_position:=0.8">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <xacro:if value="${use_fake_hardware}">
+          <!-- No serial/hardware needed; GenericSystem loops command->state and
+               propagates the URDF <mimic> joints. Lets us prove the controller
+               stack + GripperCommand action with nothing plugged in. -->
+          <plugin>mock_components/GenericSystem</plugin>
+          <param name="mock_sensor_commands">${mock_sensor_commands}</param>
+          <param name="state_following_offset">0.0</param>
+        </xacro:if>
+        <xacro:unless value="${use_fake_hardware}">
+          <!-- Real 2F-85: USB-to-RS485 adapter on com_port, Modbus RTU. -->
+          <plugin>robotiq_driver/RobotiqGripperHardwareInterface</plugin>
+          <param name="gripper_closed_position">${gripper_closed_position}</param>
+          <param name="COM_port">${com_port}</param>
+          <param name="gripper_speed_multiplier">${gripper_speed_multiplier}</param>
+          <param name="gripper_force_multiplier">${gripper_force_multiplier}</param>
+          <param name="gripper_max_speed">${gripper_max_speed}</param>
+          <param name="gripper_max_force">${gripper_max_force}</param>
+        </xacro:unless>
+      </hardware>
+
+      <!-- Actuated joint: 1 position command + position/velocity state, exactly
+           what robotiq_driver validates (1 cmd, 2 state). -->
+      <joint name="${prefix}finger_joint">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+
+      <!-- reactivate_gripper GPIO: real driver exports these so the
+           robotiq_activation_controller can (re)activate the gripper after an
+           e-stop. GenericSystem also exposes them in fake mode. -->
+      <gpio name="${prefix}reactivate_gripper">
+        <command_interface name="reactivate_gripper_cmd"/>
+        <command_interface name="reactivate_gripper_response"/>
+      </gpio>
+    </ros2_control>
+  </xacro:macro>
+</robot>

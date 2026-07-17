@@ -1,0 +1,13 @@
+# CAD-kernel authoring deps for make_placeholder_step.py (STEP generation).
+# The Isaac container ships NO CAD kernel; install these in an ISOLATED venv so
+# Isaac's embedded python is untouched. cadquery uses OpenCASCADE (OCP) and is
+# fully headless (no X11), unlike gmsh which needs libXcursor et al.
+#
+# Setup (one-time, on any PC with the Isaac python + network):
+#   /isaac-sim/kit/python/bin/python3 -m venv /isaac-sim/volume/ur_dualtool_ws/.venv-cad
+#   /isaac-sim/volume/ur_dualtool_ws/.venv-cad/bin/python -m pip install -r requirements-cad.txt
+# Run:
+#   /isaac-sim/volume/ur_dualtool_ws/.venv-cad/bin/python make_placeholder_step.py <out_dir>
+# Then convert to USD with Isaac python (separate env):
+#   /isaac-sim/python.sh isaac/common/convert_step_to_usd.py <out_dir> isaac/assets/cad
+cadquery

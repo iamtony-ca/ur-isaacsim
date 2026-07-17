@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!--
+  Standalone REAL Intel RealSense D405 description (camera TF only).
+
+  On the real robot the UR16e arm is driven by ur_robot_driver and the 2F-85 by
+  robotiq_driver (namespace `gripper`); each publishes its own TF subtree that
+  joins the others at tool0. The D405 is a SEPARATE USB3 device on this PC (not on
+  the UR tool bus), so it needs its OWN robot_state_publisher to place the camera
+  frames on the TF tree. This URDF is exactly that: root link tool0 (no geometry,
+  never publishes a transform INTO tool0) + the eye-in-hand camera_link/optical
+  subtree hanging off it. The trees join cleanly at tool0.
+
+  Frames MATCH the sim set (ur16e_2f85_d405_sim.urdf.xacro + Isaac camera flag):
+    camera_link -> camera_{depth,color}_optical_frame
+  so the perception stack (OctoMap / cuMotion / FoundationPose) is byte-identical
+  sim vs real. The realsense2_camera driver runs with publish_tf:=false so THIS
+  URDF is the single source of camera TF.
+
+  tool0 -> camera_link extrinsic = HAND-EYE calibration result. The defaults below
+  are the sim nominal mount (PickNik bracket-derived). In the sim URDF the camera
+  mounts on camera_adapter_link, which is flush on tool0 (zero offset), so mounting
+  directly on tool0 with the same transform is identical. On the real robot run a
+  hand-eye calibration (easy_handeye2 / MoveIt HandEye) and pass the result via
+  cam_xyz / cam_rpy (see README §9).
+    cam_rpy default = "0  -pi/2+8deg  pi/2" = "0  -1.4311700  1.5707963"
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="d405">
+  <xacro:arg name="prefix" default=""/>
+  <!-- tool0 -> camera_link extrinsic (override with the hand-eye result). -->
+  <xacro:arg name="cam_xyz" default="0 -0.067 0.01847"/>
+  <xacro:arg name="cam_rpy" default="0 -1.4311700 1.5707963"/>
+
+  <xacro:include filename="$(find ur_bringup)/urdf/ur16e_2f85_d405/realsense_d405_macro.xacro"/>
+
+  <!-- Reference frame: the arm's tool0 (published by the UR driver's RSP). -->
+  <link name="$(arg prefix)tool0"/>
+
+  <!-- Camera subtree off tool0. Visual-only (collision=false): this camera-only
+       RSP feeds TF/RViz, not MoveIt. Collision-aware planning uses the combined
+       sim URDF; on the real robot obstacle avoidance comes from the OctoMap
+       (depth), not the camera body. -->
+  <xacro:realsense_d405 prefix="$(arg prefix)" parent="$(arg prefix)tool0" collision="false">
+    <origin xyz="$(arg cam_xyz)" rpy="$(arg cam_rpy)"/>
+  </xacro:realsense_d405>
+</robot>

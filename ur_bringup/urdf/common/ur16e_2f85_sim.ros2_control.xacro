@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control block for the Isaac Sim backend, UR16e + Robotiq 2F-85 variant.
+
+  Standalone copy of ur16e_sim.ros2_control.xacro (the arm-only file is left
+  untouched) with the gripper's single actuated joint (finger_joint) added.
+  Uses joint_state_topic_hardware_interface/JointStateTopicSystem to exchange
+  joint data with Isaac Sim over ROS2 topics (the Isaac OmniGraph bridge).
+
+  Only finger_joint is exchanged for the gripper; the remaining 5 Robotiq
+  joints follow inside Isaac via the asset's PhysxMimicJointAPI, so ROS never
+  commands them.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="ur16e_2f85_sim_ros2_control"
+               params="name tf_prefix
+                       joint_commands_topic:=/isaac_joint_commands
+                       joint_states_topic:=/isaac_joint_states">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <plugin>joint_state_topic_hardware_interface/JointStateTopicSystem</plugin>
+        <param name="joint_commands_topic">${joint_commands_topic}</param>
+        <param name="joint_states_topic">${joint_states_topic}</param>
+        <param name="sum_wrapped_joint_states">true</param>
+      </hardware>
+      <!-- Isaac's PublishJointState emits position+velocity+effort, so all
+           three state interfaces must be declared (also matches the real UR
+           driver). -->
+      <xacro:macro name="joint_iface" params="jname">
+        <joint name="${tf_prefix}${jname}">
+          <command_interface name="position"/>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+          <state_interface name="effort"/>
+        </joint>
+      </xacro:macro>
+      <xacro:joint_iface jname="shoulder_pan_joint"/>
+      <xacro:joint_iface jname="shoulder_lift_joint"/>
+      <xacro:joint_iface jname="elbow_joint"/>
+      <xacro:joint_iface jname="wrist_1_joint"/>
+      <xacro:joint_iface jname="wrist_2_joint"/>
+      <xacro:joint_iface jname="wrist_3_joint"/>
+      <!-- gripper: only the actuated finger_joint is exchanged with Isaac -->
+      <xacro:joint_iface jname="finger_joint"/>
+    </ros2_control>
+  </xacro:macro>
+</robot>

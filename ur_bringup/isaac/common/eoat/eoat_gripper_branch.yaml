@@ -1,0 +1,50 @@
+# ============================================================================
+# EOAT 선언적 조립 config  —  UR16e 그리퍼 가지 (rough offsets)
+# ----------------------------------------------------------------------------
+# 이 파일 하나가 CAD->sim 조립의 단일 진실원천이다. 실제 전체 조립 STEP 을 받으면
+# extract 스크립트로 아래 normalize/chain 숫자만 덮어쓰면 되고, 구조는 그대로다.
+#
+# 파이프라인:
+#   1) convert_step_to_usd.py : STEP -> assets/cad/<part>.usd (미터, Z-up)
+#   2) normalize_part.py      : 이 config 의 normalize 로 각 부품의 "장착면->원점,
+#                               장착축->+Z" 재정렬 -> assets/cad/normalized/<part>.usd
+#   3) build_eoat_usd.py      : 이 config 의 chain 으로 정규화 부품을 쌓아 단일 조립 USD
+#
+# 부품을 새로 받으면: (a) convert -> (b) parts 에 항목 추가(cad + normalize rpy/seat)
+#   -> (c) chain 에 한 줄 추가 -> 재실행. 코드 수정 없이 파라미터만.
+# ============================================================================
+meta:
+  name: ur16e_gripper_branch
+  root_link: tool0            # UR16e tool flange = EOAT 체인 루트 (+Z = 플랜지 바깥)
+  cad_dir: ../../assets/cad            # eoat/ 기준 (isaac/common/eoat -> isaac/assets/cad)
+  out_normalized: ../../assets/cad/normalized
+  out_assembly: ../../assets/ur16e_gripper_branch.usd
+
+# ---- 부품별 프레임 정규화 --------------------------------------------------
+# rpy_deg : 장착축을 +Z 로 돌리는 coarse 회전(도, XYZ 순). 부품 CAD 프레임마다 다름.
+# seat    : 회전 후 어느 bbox 면을 z=0 에 앉힐지 (zmin|zmax|none). 장착면이 바닥에 오게.
+# center_xy: 회전 후 x,y 중심을 원점으로 (true 면 축대칭 부품이 tool 축에 정렬).
+# (inspect_parts.py 로 본 각 부품 프레임 근거의 초기 추정값 — Isaac GUI 로 미세튜닝)
+parts:
+  damper:
+    cad: damper.usd
+    normalize: {rpy_deg: [0, 0, 0], seat: zmin, center_xy: true}
+  dual_quick_changer:
+    cad: dual_quick_changer.usd
+    normalize: {rpy_deg: [0, 0, 0], seat: zmin, center_xy: true}
+  hex_qc:
+    cad: hex_qc.usd
+    normalize: {rpy_deg: [-90, 0, 0], seat: zmin, center_xy: true}
+  2fg14:
+    cad: 2fg14.usd
+    normalize: {rpy_deg: [-90, 0, 0], seat: zmin, center_xy: true}
+
+# ---- 운동학 체인 (tool0 -> ... -> 그리퍼) ----------------------------------
+# 각 부품은 parent 의 윗면(정규화로 base@z=0 이므로 top = 두께)에 gap(m) 만큼 띄워 장착.
+# joint: fixed | revolute | prismatic (구동부는 뒤에서 axis/limit 추가).
+# gap: 결합면 여유/커플링 두께 튜닝용(+Z, m).
+chain:
+  - {part: damper,             parent: tool0,              joint: fixed, gap: 0.0}
+  - {part: dual_quick_changer, parent: damper,             joint: fixed, gap: 0.0}
+  - {part: hex_qc,             parent: dual_quick_changer, joint: fixed, gap: 0.0}
+  - {part: 2fg14,              parent: hex_qc,             joint: fixed, gap: 0.0}

@@ -1,0 +1,125 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="$(arg name)">
+  <xacro:arg name="name" default="ur16e"/>
+  <xacro:include filename="$(find ur_moveit_config)/srdf/ur_macro.srdf.xacro"/>
+  <xacro:ur_srdf/>
+  <group name="gripper">
+    <joint name="gripper_2fg14__finger_left_joint"/>
+  </group>
+  <group_state name="open" group="gripper">
+    <joint name="gripper_2fg14__finger_left_joint" value="0"/>
+  </group_state>
+  <group_state name="closed" group="gripper">
+    <joint name="gripper_2fg14__finger_left_joint" value="0.025"/>
+  </group_state>
+  <disable_collisions link1="damper" link2="dual_quick_changer" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="hex_qc" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="gripper_2fg14" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="gripper_2fg14__finger_left" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="gripper_2fg14__finger_right" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="hex_qc" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="gripper_2fg14" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="gripper_2fg14__finger_left" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="gripper_2fg14__finger_right" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="dual_quick_changer" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="gripper_2fg14" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="gripper_2fg14__finger_left" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="gripper_2fg14__finger_right" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="hex_qc" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="gripper_2fg14__finger_left" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="gripper_2fg14__finger_right" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="gripper_2fg14__finger_right" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="qc_tool_side_B" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="qc_tool_side_B" link2="adapter" reason="Adjacent"/>
+  <disable_collisions link1="qc_tool_side_B" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="qc_tool_side_B" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="qc_tool_side_B" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="adapter" link2="screwdriver" reason="Adjacent"/>
+  <disable_collisions link1="adapter" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="adapter" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="screwdriver" link2="camera_adapter" reason="Adjacent"/>
+  <disable_collisions link1="screwdriver" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="camera_adapter" link2="copick" reason="Adjacent"/>
+  <disable_collisions link1="damper" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="damper" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="damper" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="damper" link2="tool0" reason="Never"/>
+  <disable_collisions link1="damper" link2="flange" reason="Never"/>
+  <disable_collisions link1="dual_quick_changer" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="dual_quick_changer" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="dual_quick_changer" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="dual_quick_changer" link2="tool0" reason="Never"/>
+  <disable_collisions link1="dual_quick_changer" link2="flange" reason="Never"/>
+  <disable_collisions link1="hex_qc" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="hex_qc" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="hex_qc" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="hex_qc" link2="tool0" reason="Never"/>
+  <disable_collisions link1="hex_qc" link2="flange" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14" link2="tool0" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14" link2="flange" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="tool0" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_left" link2="flange" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="tool0" reason="Never"/>
+  <disable_collisions link1="gripper_2fg14__finger_right" link2="flange" reason="Never"/>
+  <disable_collisions link1="qc_tool_side_B" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="qc_tool_side_B" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="qc_tool_side_B" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="qc_tool_side_B" link2="tool0" reason="Never"/>
+  <disable_collisions link1="qc_tool_side_B" link2="flange" reason="Never"/>
+  <disable_collisions link1="adapter" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="adapter" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="adapter" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="adapter" link2="tool0" reason="Never"/>
+  <disable_collisions link1="adapter" link2="flange" reason="Never"/>
+  <disable_collisions link1="screwdriver" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="screwdriver" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="screwdriver" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="screwdriver" link2="tool0" reason="Never"/>
+  <disable_collisions link1="screwdriver" link2="flange" reason="Never"/>
+  <disable_collisions link1="camera_adapter" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="camera_adapter" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="camera_adapter" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="camera_adapter" link2="tool0" reason="Never"/>
+  <disable_collisions link1="camera_adapter" link2="flange" reason="Never"/>
+  <disable_collisions link1="copick" link2="wrist_3_link" reason="Never"/>
+  <disable_collisions link1="copick" link2="wrist_2_link" reason="Never"/>
+  <disable_collisions link1="copick" link2="wrist_1_link" reason="Never"/>
+  <disable_collisions link1="copick" link2="tool0" reason="Never"/>
+  <disable_collisions link1="copick" link2="flange" reason="Never"/>
+</robot>

@@ -1,0 +1,276 @@
+<?xml version="1.0" ?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="ur16e_dualtool_eoat" params="parent prefix">
+    <link name="${prefix}damper">
+      <inertial>
+        <origin xyz="0 0 0.0125" rpy="0 0 0"/>
+        <mass value="0.19845"/>
+        <inertia ixx="7.59733e-05" iyy="7.59733e-05" izz="0.000131275" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/damper_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/damper.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}dual_quick_changer">
+      <inertial>
+        <origin xyz="0 0 0.0355" rpy="0 0 0"/>
+        <mass value="1.76912"/>
+        <inertia ixx="0.00213175" iyy="0.00317272" izz="0.00381812" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/dual_quick_changer_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/dual_quick_changer.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}hex_qc">
+      <inertial>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <mass value="0.891983"/>
+        <inertia ixx="0.000946732" iyy="0.000763572" izz="0.00133864" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/hex_qc_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/hex_qc.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}gripper_2fg14">
+      <inertial>
+        <origin xyz="0 0 0.0832" rpy="0 0 0"/>
+        <mass value="3.99102"/>
+        <inertia ixx="0.0138871" iyy="0.0110747" izz="0.00654393" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/gripper_2fg14_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/gripper_2fg14.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}gripper_2fg14__finger_left">
+      <inertial>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <mass value="0.0567"/>
+        <inertia ixx="1.27386e-05" iyy="1.6065e-05" izz="5.1786e-06" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.03 0.014 0.05"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.03 0.014 0.05"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}gripper_2fg14__finger_right">
+      <inertial>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <mass value="0.0567"/>
+        <inertia ixx="1.27386e-05" iyy="1.6065e-05" izz="5.1786e-06" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.03 0.014 0.05"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.03 0.014 0.05"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}qc_tool_side_B">
+      <inertial>
+        <origin xyz="0 0 0.0142" rpy="0 0 0"/>
+        <mass value="0.572271"/>
+        <inertia ixx="0.000518943" iyy="0.000518943" izz="0.000960958" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/qc_tool_side_B_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/qc_tool_side_B.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}adapter">
+      <inertial>
+        <origin xyz="0 0 0.01075" rpy="0 0 0"/>
+        <mass value="0.43"/>
+        <inertia ixx="0.000374897" iyy="0.000374897" izz="0.000716667" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/adapter_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/adapter.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}screwdriver">
+      <inertial>
+        <origin xyz="0 0 0.1131" rpy="0 0 0"/>
+        <mass value="1.82102"/>
+        <inertia ixx="0.00849548" iyy="0.00827507" izz="0.00124139" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/screwdriver_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/screwdriver.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}camera_adapter">
+      <inertial>
+        <origin xyz="0 0 0.006" rpy="0 0 0"/>
+        <mass value="0.1728"/>
+        <inertia ixx="5.39136e-05" iyy="0.000209434" izz="0.0002592" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/camera_adapter_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/camera_adapter.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="${prefix}copick">
+      <inertial>
+        <origin xyz="0 0 0.0918284" rpy="0 0 0"/>
+        <mass value="1.2"/>
+        <inertia ixx="0.00385111" iyy="0.00539506" izz="0.00250022" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/copick_col.obj"/>
+        </geometry>
+      </collision>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://ur_bringup/meshes/eoat/copick.obj"/>
+        </geometry>
+      </visual>
+    </link>
+    <joint name="${prefix}damper_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="${prefix}damper"/>
+      <origin xyz="0 0 0" rpy="0 -0 0"/>
+    </joint>
+    <joint name="${prefix}dual_quick_changer_joint" type="fixed">
+      <parent link="${prefix}damper"/>
+      <child link="${prefix}dual_quick_changer"/>
+      <origin xyz="0 -0.03516 0.07125" rpy="-1.57254 -0 0"/>
+    </joint>
+    <joint name="${prefix}hex_qc_joint" type="fixed">
+      <parent link="${prefix}dual_quick_changer"/>
+      <child link="${prefix}hex_qc"/>
+      <origin xyz="-0.04748 -0.015489 0.033993" rpy="-1.74872 -1.44392 2.28005"/>
+    </joint>
+    <joint name="${prefix}gripper_2fg14_joint" type="fixed">
+      <parent link="${prefix}hex_qc"/>
+      <child link="${prefix}gripper_2fg14"/>
+      <origin xyz="-5e-06 0 0.05" rpy="0 0 0"/>
+    </joint>
+    <joint name="${prefix}gripper_2fg14__finger_left_joint" type="prismatic">
+      <parent link="${prefix}gripper_2fg14"/>
+      <child link="${prefix}gripper_2fg14__finger_left"/>
+      <origin xyz="0 0.013 0.08" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit lower="0" upper="0.025" effort="140" velocity="0.45"/>
+      <dynamics damping="0" friction="0"/>
+    </joint>
+    <joint name="${prefix}gripper_2fg14__finger_right_joint" type="prismatic">
+      <parent link="${prefix}gripper_2fg14"/>
+      <child link="${prefix}gripper_2fg14__finger_right"/>
+      <origin xyz="0 -0.013 0.08" rpy="0 0 0"/>
+      <axis xyz="0 -1 0"/>
+      <limit lower="0" upper="0.025" effort="140" velocity="0.45"/>
+      <dynamics damping="0" friction="0"/>
+      <mimic joint="${prefix}gripper_2fg14__finger_left_joint" multiplier="1" offset="0"/>
+    </joint>
+    <joint name="${prefix}qc_tool_side_B_joint" type="fixed">
+      <parent link="${prefix}dual_quick_changer"/>
+      <child link="${prefix}qc_tool_side_B"/>
+      <origin xyz="0.04464 -0.016901 0.035011" rpy="1.71583 1.18509 1.1955"/>
+    </joint>
+    <joint name="${prefix}adapter_joint" type="fixed">
+      <parent link="${prefix}qc_tool_side_B"/>
+      <child link="${prefix}adapter"/>
+      <origin xyz="-3e-06 -7e-06 0.028402" rpy="0 -0 -0"/>
+    </joint>
+    <joint name="${prefix}screwdriver_joint" type="fixed">
+      <parent link="${prefix}adapter"/>
+      <child link="${prefix}screwdriver"/>
+      <origin xyz="1.2e-05 4e-06 0.021498" rpy="0 -0 -0"/>
+    </joint>
+    <joint name="${prefix}camera_adapter_joint" type="fixed">
+      <parent link="${prefix}adapter"/>
+      <child link="${prefix}camera_adapter"/>
+      <origin xyz="1.8e-05 0.049998 0.010008" rpy="0 -0 -0"/>
+    </joint>
+    <joint name="${prefix}copick_joint" type="fixed">
+      <parent link="${prefix}camera_adapter"/>
+      <child link="${prefix}copick"/>
+      <origin xyz="0.094887 0.033517 0.067575" rpy="-0.976756 -1.48111 0.92974"/>
+    </joint>
+  </xacro:macro>
+</robot>

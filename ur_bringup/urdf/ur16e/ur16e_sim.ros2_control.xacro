@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  ros2_control block for the Isaac Sim backend.
+  Uses joint_state_topic_hardware_interface/JointStateTopicSystem so the
+  controller_manager exchanges joint data with Isaac Sim over ROS2 topics
+  published/subscribed by the Isaac Sim OmniGraph (ROS2 bridge):
+    controller_manager sends position commands on joint_commands_topic to Isaac
+    controller_manager reads joint states on joint_states_topic from Isaac
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="ur16e_sim_ros2_control"
+               params="name tf_prefix
+                       joint_commands_topic:=/isaac_joint_commands
+                       joint_states_topic:=/isaac_joint_states">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <plugin>joint_state_topic_hardware_interface/JointStateTopicSystem</plugin>
+        <param name="joint_commands_topic">${joint_commands_topic}</param>
+        <param name="joint_states_topic">${joint_states_topic}</param>
+        <!-- sum_wrapped_joint_states keeps continuous joints unwrapped to match Isaac -->
+        <param name="sum_wrapped_joint_states">true</param>
+      </hardware>
+      <!-- Isaac's PublishJointState emits position+velocity+effort, and
+           JointStateTopicSystem maps each into a matching state interface, so
+           all three must be declared (also matches the real UR driver). -->
+      <xacro:macro name="joint_iface" params="jname">
+        <joint name="${tf_prefix}${jname}">
+          <command_interface name="position"/>
+          <state_interface name="position"/>
+          <state_interface name="velocity"/>
+          <state_interface name="effort"/>
+        </joint>
+      </xacro:macro>
+      <xacro:joint_iface jname="shoulder_pan_joint"/>
+      <xacro:joint_iface jname="shoulder_lift_joint"/>
+      <xacro:joint_iface jname="elbow_joint"/>
+      <xacro:joint_iface jname="wrist_1_joint"/>
+      <xacro:joint_iface jname="wrist_2_joint"/>
+      <xacro:joint_iface jname="wrist_3_joint"/>
+    </ros2_control>
+  </xacro:macro>
+</robot>

@@ -1,0 +1,117 @@
+# ============================================================================
+# EOAT 선언적 조립 config  —  UR16e DUAL-TOOL 전체 (그리퍼 가지 + 스크류드라이버 가지)
+# ----------------------------------------------------------------------------
+# Dual Quick Changer 는 두 툴을 동시 장착 -> 단일 articulation + Y분기.
+#   포트 A(gripper)      : ... -> dual_quick_changer -> hex_qc -> 2fg14
+#   포트 B(screwdriver)  : ... -> dual_quick_changer -> qc_tool_side -> adapter -> screwdriver
+#                          + camera_adapter -> Copick3D ×1
+# 오프셋/자세는 rough(GUI 튜닝 대상). 전체 조립 STEP 오면 이 숫자만 교체.
+# ============================================================================
+meta:
+  name: ur16e_dualtool
+  root_link: tool0
+  cad_dir: ../../assets/cad
+  out_normalized: ../../assets/cad/normalized
+  out_assembly: ../../assets/ur16e_dualtool.usd
+  out_urdf: ../../assets/ur16e_dualtool.urdf        # emit_urdf 산출물(MoveIt2/cuMotion 충돌모델)
+  # 물리 fallback: 부품에 physics 가 없으면 이 밀도로 bbox-box 근사(mass/inertia).
+  # 실측 오면 parts.<>.physics 에 mass/com/inertia 로 덮어쓰면 이 값은 무시됨.
+  defaults:
+    density: 2000            # kg/m³ (알루미늄+플라스틱 혼합 rough). 부품별로 override 권장
+    collision: convexHull    # convexHull | convexDecomposition | boundingCube | none
+    # ── fidelity 파라미터: 아래는 전부 DEFAULT 값(실측/스펙 오면 수정). ──
+    # 마찰재질(파지 결정적): 부품별 parts.<>.physics.{friction,restitution} 로 override.
+    friction: 0.8           # DEFAULT static=dynamic 마찰계수. 실측 마찰 오면 수정
+    restitution: 0.0        # DEFAULT 반발계수(0=비탄성)
+    # 아티큘레이션 솔버 반복수(무거운 체인 안정성). 값 크면 안정·느림.
+    solver_position_iterations: 32   # DEFAULT. 결합 sim 불안정하면 상향
+    solver_velocity_iterations: 1    # DEFAULT
+    # 조인트 fidelity: 조인트별 joints[].{armature,joint_friction} 로 override.
+    joint_armature: 0.0     # DEFAULT 반사관성(모터관성×기어비²). 실 액추에이터 값 오면 수정
+    joint_friction: 0.0     # DEFAULT 조인트 쿨롱마찰
+
+# ---- 부품별 프레임 정규화 (장착면->원점, 장착축->+Z) -----------------------
+parts:
+  damper:                  {cad: damper.usd,                  normalize: {rpy_deg: [0, 0, 0],   seat: zmin, center_xy: true}}
+  dual_quick_changer:      {cad: dual_quick_changer.usd,      normalize: {rpy_deg: [0, 0, 0],   seat: zmin, center_xy: true}}
+  # 포트 A
+  hex_qc:                  {cad: hex_qc.usd,                  normalize: {rpy_deg: [-90, 0, 0], seat: zmin, center_xy: true}}
+  # 2FG14 = 몸체(base) + 핑거 2개(prismatic). "1 STEP=1 링크"를 깨는 유일한 부품.
+  # ★ 제어방식(조사확정): 평행 그리퍼 = 단일 액추에이터 1-DOF + mimic. 두 핑거는 독립제어가
+  #   아니라 하나의 폭/힘 목표로 대칭 동시 이동. → finger_left 구동, finger_right 는 mimic.
+  #   근거: OnRobot 2FG14 사양(parallel two-finger, 140N/핑거·280N합, 1450g) + 검증 Isaac 모델
+  #   (oht_bolting: drive finger_joint + finger_mimic_joint). 힘/속도/PD 는 그 값 채택.
+  # 핑거 기하: 타깃 (a)=기구팀 분해 STEP(finger_left.usd 등)이면 sublinks.<>.cad, (b)=blob 분할이면
+  #   geom_prim. 지금은 placeholder(기하 없이 물리 box만) — 구조 완비.
+  # ⚠️ upper(스트로크/핑거)=0.025 는 검증모델(총 50mm) 채택. 제품페이지의 "160mm stroke" 는
+  #   조절식 핑거 장착범위로 추정 — 실 데이터시트 PDF 로 확정 필요(pdftoppm 미설치라 미확인).
+  2fg14:
+    cad: 2fg14.usd
+    normalize: {rpy_deg: [-90, 0, 0], seat: zmin, center_xy: true}
+    physics: {density: 2700, collision: convexDecomposition}    # 몸체(오목형상)
+    # ★ 열림 축 = Y (정규화 bbox Y=119mm ≈ 데이터시트 2FG14 폭 115mm; 툴축=Z=166mm=몸체103+핑거).
+    #   핑거 판은 Y로 얇고(그립면=XZ평면), X로 깊이, Z로 길이. (2026-07-17: 축을 X→Y로 정정 — 이전 값은
+    #   90° 어긋나 핑거가 깊이 방향으로 움직였음. imgs/fingers_2026_07_17.png 참고.)
+    sublinks:  # friction 1.0 = DEFAULT override 시연(파지 결정적; 실 핑거패드 재질 오면 수정)
+      finger_left:  {physics: {density: 2700, collision: convexHull, size: [0.03, 0.014, 0.05], friction: 1.0}}
+      finger_right: {physics: {density: 2700, collision: convexHull, size: [0.03, 0.014, 0.05], friction: 1.0}}
+    joints:
+      # name              child        type       origin_xyz(m)          axis(=Y 열림)  limit(m, effort=N/핑거, vel=m/s)
+      - {name: finger_left_joint,  child: finger_left,  type: prismatic,
+         origin_xyz: [0,  0.013, 0.080], axis: [0,  1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
+         drive: {stiffness: 4000, damping: 80, target: 0.0}}
+      - {name: finger_right_joint, child: finger_right, type: prismatic,
+         origin_xyz: [0, -0.013, 0.080], axis: [0, -1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
+         mimic: finger_left_joint}                              # 평행 그리퍼: 왼쪽을 대칭으로 따라감
+  # 포트 B
+  quick_changer_tool_side: {cad: quick_changer_tool_side.usd, normalize: {rpy_deg: [90, 0, 0],  seat: zmin, center_xy: true}}
+  adapter_t:               {cad: adapter_t.usd,               normalize: {rpy_deg: [90, 0, 0],  seat: zmin, center_xy: true}}
+  screwdriver_estic:       {cad: screwdriver_estic.usd,       normalize: {rpy_deg: [0, 0, 0],   seat: zmin, center_xy: true}}
+  camera_adapter:          {cad: camera_adapter.usd,          normalize: {rpy_deg: [0, 0, 0],   seat: zmin, center_xy: true}}
+  # copick3d = 본체-only STEP(CoPick3D 150S.STEP, FOV 없음)에서 재변환 — 원뿔 제거 완료(2026-07-17).
+  #   원점이 카메라 본체가 되어 GUI 정렬 쉬움 + boundingCube 콜라이더가 본체와 일치. 실측 REAL 142×69×184mm.
+  #   기구팀이 나중에 copick 본체만 줘도 동일 경로. mass 는 rough(실 스펙 오면 override).
+  copick3d_150s:
+    cad: copick3d_150s.usd
+    normalize: {rpy_deg: [0, 0, 0], seat: zmin, center_xy: true}
+    physics: {mass: 1.2, collision: boundingCube}   # Copick3D 150S 본체 ~1.2kg(rough). 충돌=실제 본체 bbox
+
+# ---- 운동학 체인 --------------------------------------------------------
+# id: 링크 고유이름(다중 인스턴스는 id 로 구분). part: 기하 소스. parent: 부모 링크(id).
+# 위치 지정 3가지(우선순위: tcp_pose > mount > 자동스택):
+#   · (기본) parent 윗면에 +Z 면-대-면 스택(gap[m]).
+#   · mount: {xyz[m], rpy[deg]}  — parent 프레임 기준 명시 자세(Y분기/직교 포트).
+#   · tcp_pose: {xyz[m], rpy[deg]} — ★ root_link(tool0/UR TCP) 기준 절대 상대포즈.
+#     기구설계팀이 TCP 기준으로 준 데이터를 그대로 입력 → 모델이 parent-local mount 를 자동 역산.
+#     (rpy = ROS 규약 roll-X/pitch-Y/yaw-Z, R=Rz·Ry·Rx. USD·URDF 와 일치.)
+#     예:  - {id: copick, part: copick3d_150s, parent: camera_adapter, joint: fixed,
+#              tcp_pose: {xyz: [0.09, 0.06, 0.22], rpy: [0, 35, 0]}}
+#     GUI 로 튜닝했으면 extract_poses.py --tcp 로 tool0 기준 값을 뽑아 여기 붙여도 됨.
+chain:
+  # ★ tcp_pose(tool0 기준) = 2026-07-17 Isaac GUI 러프 정렬 실측값(extract_poses.py --tcp).
+  #   rpy 가 지저분한 건 자유 드래그라 정상 — 러프 단계. 전체 조립 STEP 오면 이 숫자만 교체.
+  # --- 공통 스템 ---
+  - {id: damper,             part: damper,             parent: tool0,              joint: fixed,
+     tcp_pose: {xyz: [0.0, 0.0, 0.0], rpy: [0.0, 0.0, 0.0]}}
+  - {id: dual_quick_changer, part: dual_quick_changer, parent: damper,             joint: fixed,
+     tcp_pose: {xyz: [0.0, -0.03516, 0.07125], rpy: [-90.1, 0.0, 0.0]}}
+
+  # --- 포트 A: 그리퍼 ---
+  - {id: hex_qc,             part: hex_qc,             parent: dual_quick_changer, joint: fixed,
+     tcp_pose: {xyz: [-0.04748, -0.00114, 0.08668], rpy: [-59.32, 5.61, 94.75]}}
+  - {id: gripper_2fg14,      part: 2fg14,              parent: hex_qc,             joint: fixed,      # 몸체 장착=고정. 파지 DOF 는 parts.2fg14.joints(핑거)
+     tcp_pose: {xyz: [-0.09054, -0.00222, 0.11207], rpy: [-59.32, 5.61, 94.75]}}
+
+  # --- 포트 B: 스크류드라이버 ---
+  - {id: qc_tool_side_B,     part: quick_changer_tool_side, parent: dual_quick_changer, joint: fixed,
+     tcp_pose: {xyz: [0.04464, -0.00012, 0.08809], rpy: [-58.67, 20.39, -81.54]}}
+  - {id: adapter,            part: adapter_t,          parent: qc_tool_side_B,     joint: fixed,
+     tcp_pose: {xyz: [0.06939, -0.00164, 0.10194], rpy: [-58.67, 20.39, -81.54]}}
+  - {id: screwdriver,        part: screwdriver_estic,  parent: adapter,            joint: fixed,
+     tcp_pose: {xyz: [0.08813, -0.0028, 0.11241], rpy: [-58.67, 20.39, -81.54]}}
+  # 카메라 1대 (adapter 측면에 camera_adapter, 그 위 Copick 1대)
+  - {id: camera_adapter,     part: camera_adapter,     parent: adapter,            joint: fixed,
+     tcp_pose: {xyz: [0.10164, 0.01635, 0.06678], rpy: [-58.67, 20.39, -81.54]}}
+  # copick: 원뿔 제거 후 원점=본체 → GUI 정렬한 실측값(2026-07-17, extract --tcp). camera_adapter 로부터 ~12cm.
+  - {id: copick,             part: copick3d_150s,      parent: camera_adapter,     joint: fixed,
+     tcp_pose: {xyz: [0.18939, -0.06281, 0.03982], rpy: [-68.6, -24.16, -4.8]}}
