@@ -281,6 +281,7 @@ source install/setup.bash
 
 > ★ `--asset-path` 는 **절대경로** 필수(상대경로는 에셋서버 기준으로 붙어 로봇이 안 뜸).
 > 뷰포트가 까맣게만 보이면 환경(조명) 미로드 — `--no-env` 를 빼세요.
+> **초기(HOME) 자세 변경**: `isaac/common/home_pose.py` 의 `HOME_DEG` 6줄만 수정(단일소스 — Isaac·RViz·reset_pose 모두 반영). 값 바꾸면 `build_ur16e_dualtool.py` 재실행해 USD 재베이크. RViz 는 `/joint_states` 를 미러하므로 별도 설정 없음.
 
 ### 터미널 B — ros2_control (topic_based ↔ Isaac)
 

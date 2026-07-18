@@ -23,6 +23,10 @@ import argparse
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # isaac/common (for home_pose, asset_paths)
+from home_pose import HOME_RAD                              # single-source arm init pose
+from asset_paths import resolve_asset                       # local-first vendored USD, else Isaac root
+
 import numpy as np
 from isaacsim import SimulationApp
 
@@ -80,6 +84,13 @@ parser.add_argument("--obstacles", default=None,
                     help="path to obstacles.yaml — load its static obstacles into the "
                          "Isaac scene as static colliders (visual + physics), matching "
                          "the MoveIt planning scene. sim-only (real obstacles are physical).")
+# --- Isaac default ground plane (floor). ON by default; later we rebuild the cell
+#     (ground plane + mech-STEP surroundings + the base plate) on top of this. ---
+parser.add_argument("--no-ground", action="store_true",
+                    help="skip the Isaac default ground plane (added by default under the robot)")
+parser.add_argument("--ground-z", type=float, default=-0.05,
+                    help="ground plane height (m) in the base frame; default -0.05 = the bottom "
+                         "face of the ~50mm base_plate (obstacles.yaml). Tune with the plate.")
 args, _ = parser.parse_known_args()
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
@@ -99,21 +110,27 @@ simulation_app.update()
 
 simulation_context = SimulationContext(stage_units_in_meters=1.0)
 
+# NOT fatal anymore: vendored (local-first) assets can satisfy everything without the
+# Isaac asset server. resolve_asset() consults get_assets_root_path() lazily, and only
+# when a vendored copy is missing — so a machine with the vendored USDs runs offline.
 assets_root_path = get_assets_root_path()
 if assets_root_path is None:
-    carb.log_error("Could not find Isaac Sim assets folder")
-    simulation_app.close()
-    sys.exit()
+    print("  [assets] Isaac assets root unresolved — relying on vendored copies "
+          "(ur_bringup/isaac/assets/vendor); non-vendored assets will fail if referenced")
 
 ROBOT_PRIM = args.robot_prim
 # The Isaac UR16e USD has no default prim and applies ArticulationRootAPI to the
 # fixed base joint, so the articulation root is a child prim, not ROBOT_PRIM.
 ARTICULATION_ROOT = args.articulation_root or (ROBOT_PRIM + "/root_joint")
 
-# resolve robot USD path: allow absolute / omniverse URLs, else relative to assets root
+# resolve robot USD path: absolute local / omniverse URLs used as-is; Isaac-relative
+# paths go through the LOCAL-first resolver (vendored copy in ur_bringup, else Isaac root).
 robot_usd = args.asset_path
 if robot_usd.startswith("/Isaac") or not (robot_usd.startswith("/") or "://" in robot_usd):
-    robot_usd = assets_root_path + (robot_usd if robot_usd.startswith("/") else "/" + robot_usd)
+    robot_usd, _r_src = resolve_asset(robot_usd, log=lambda m: print("  " + m))
+    if robot_usd is None:
+        print("  FAILED to resolve UR16e USD (no vendored copy AND no Isaac assets root)")
+        simulation_app.close(); sys.exit()
 
 import os as _os0  # optional viewport override for inspection: VIEW_EYE/VIEW_TARGET="x,y,z"
 _veye = _os0.environ.get("VIEW_EYE"); _vtgt = _os0.environ.get("VIEW_TARGET")
@@ -124,11 +141,14 @@ if _os0.environ.get("NO_DOF") == "1":  # disable depth-of-field blur (sharp clos
     import carb as _carb0
     _carb0.settings.get_settings().set("/rtx/post/dof/enabled", False)
 
-# background environment (optional)
+# background environment (optional) — local-first vendored copy, else Isaac root
 if not args.no_env:
-    stage.add_reference_to_stage(
-        assets_root_path + "/Isaac/Environments/Simple_Room/simple_room.usd", "/background"
-    )
+    _room, _room_src = resolve_asset(
+        "Isaac/Environments/Simple_Room/simple_room.usd", log=lambda m: print("  " + m))
+    if _room:
+        stage.add_reference_to_stage(_room, "/background")
+    else:
+        print("  [env] no Simple_Room asset found; continuing without background")
 
 # load the UR16e at the world origin (fixed base comes from the USD)
 prims.create_prim(
@@ -437,6 +457,20 @@ if args.obstacle:
     simulation_app.update()
     print(f"  demo obstacle       : {OBS_PRIM} @ {list(_op)} size {list(_osz)}")
 
+# ---- Isaac default ground plane (floor under the robot / base plate) ----
+# A render mesh + UsdPhysics.Plane collider at z=--ground-z. The base_plate (obstacles
+# .yaml) sits on it (plate bottom = --ground-z by default). Later the whole cell is
+# rebuilt on this ground plane from mech-team STEP; for now it's just floor + plate.
+if not args.no_ground:
+    import omni.usd as _omni_usd
+    from omni.physx.scripts import physicsUtils as _physx_utils
+    from pxr import Gf as _Gf_g
+    _gstage = _omni_usd.get_context().get_stage()
+    _physx_utils.add_ground_plane(_gstage, "/World/groundPlane", "Z", 50.0,
+                                  _Gf_g.Vec3f(0.0, 0.0, float(args.ground_z)),
+                                  _Gf_g.Vec3f(0.40, 0.40, 0.42))
+    print(f"  ground plane        : /World/groundPlane @ z={args.ground_z}")
+
 # ---- KNOWN static obstacles from obstacles.yaml (single source w/ MoveIt) ----
 # Same config as load_obstacles_moveit.py -> the Isaac scene mirrors the collision
 # world. box -> a Cube collider; cad -> the prepared obstacle USD, both STATIC
@@ -506,8 +540,7 @@ try:
         simulation_context.step(render=False)          # let the articulation register
     _art = SingleArticulation(ARTICULATION_ROOT)
     _art.initialize()
-    _home = {"shoulder_pan_joint": 0.0, "shoulder_lift_joint": -1.5708, "elbow_joint": 0.0,
-             "wrist_1_joint": 0.0, "wrist_2_joint": 0.0, "wrist_3_joint": 0.0}
+    _home = HOME_RAD                                     # single-source (home_pose.py)
     _names = list(_art.dof_names)
     _pos = _art.get_joint_positions()
     for _n, _v in _home.items():

@@ -86,10 +86,21 @@ $P isaac/common/eoat/build_eoat_moveit.py $CFG     # mesh 있으면 <mesh> 참�
 - 방향이 틀리면(예: 그리퍼가 팔쪽을 봄) `rpy_deg` 를 90° 단위로 조정, 장착면이 위/아래 바뀌면
   `seat` 를 zmin↔zmax 교체. **숫자는 Isaac GUI 확인이 최종** (headless 는 치수만 검증 가능).
 
-## 실제 전체 조립 STEP 을 받으면 (정밀화)
-개별 부품 대신 **전체 조립 STEP** 이 오면: 변환 후 부품별 world transform 을 추출해 `parts.*.normalize`
-와 `chain.*`(gap/상대자세)를 그 값으로 덮어쓴다. **구조(스크립트·트리·조인트)는 그대로**, 숫자만 교체.
-(추출 스크립트는 조립 STEP 도착 시 작성 — 부품 매칭 기준 필요.)
+## 실제 전체 조립 STEP 을 받으면 (정밀화) — `extract_poses.py`
+개별 부품 + **전체 조립 STEP** 을 함께 받으면(권장): 개별 STEP = 부품별 깨끗한 기하·물성,
+조립 STEP = 부품 간 상대 pose. 조립 STEP 을 변환·정렬한 USD 에서 자세를 뽑아 config 숫자만 덮어쓴다.
+**구조(스크립트·트리·조인트)는 그대로**, 방향/자세 눈대중이 사라진다.
+```bash
+# 조립 USD 를 열고(또는 GUI 로 링크 정렬 후 저장) 자세를 config 형식으로 추출:
+$P isaac/common/eoat/extract_poses.py <assembly.usd> $CFG          # 부모기준 mount 값
+$P isaac/common/eoat/extract_poses.py <assembly.usd> $CFG --tcp    # tool0(TCP) 기준 tcp_pose 값
+```
+- **`--tcp`** = 각 링크를 root_link(tool0) 기준으로 출력 → 조립본이 tool0/루트 프림을 포함하면 전체
+  EOAT↔TCP 앵커까지 확정(별도 상대좌표 표 불필요). 부모기준(mount)은 기본 모드.
+- **조립 STEP 필수 3조건**(CAD_DELIVERY_REQUEST.md §1-A): ① 개별과 **동일 부품·좌표계·이름**,
+  ② mm/Z-up/AP242/솔리드 동일, ③ **tool0 앵커 포함**. 이 3개가 어긋나면 부품 매칭(geometric
+  registration)을 수동으로 해야 해 자동 붙여넣기가 깨진다.
+- 매칭 기준 = 프림 이름(=chain id). 조립본의 부품 이름을 개별 파일명과 맞춰 받으면 무손실.
 
 ## config 예시
 - `eoat_gripper_branch.yaml`: 포트 A 만 (tool0→damper→dual_quick_changer→hex_qc→2fg14). 학습용 최소 예.

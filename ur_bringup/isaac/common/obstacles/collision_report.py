@@ -51,6 +51,8 @@ def report(node, cli, q):
     js.name = ARM
     js.position = [float(x) for x in q]
     rs.joint_state = js
+    rs.is_diff = True          # diff on the live planning scene -> KEEP its attached objects
+                               # (e.g. a gripped wheel); is_diff=False would drop them.
     req.robot_state = rs
     fut = cli.call_async(req)
     rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)

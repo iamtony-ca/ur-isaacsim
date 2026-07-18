@@ -1,3 +1,9 @@
+find . -type f -exec du -h {} + | sort -rh | head -n 100
+
+
+
+
+
 Part documents (*.par)
 
 Parasolid documents (.x_b;.x_t)

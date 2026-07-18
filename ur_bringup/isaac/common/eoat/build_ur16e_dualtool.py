@@ -42,9 +42,11 @@ _args = _ap.parse_args()
 # Arm-up HOME pose (deg) baked as the articulation default so ANY loader (GUI /
 # verify_articulation / a raw stage-open) starts CLEAR OF THE FLOOR — the all-zeros
 # USD default is the arm stretched horizontal and can spawn in floor collision.
-# Mirrors the runtime teleport in ur16e_isaac_ros2.py (_home, shoulder_lift=-90deg).
-HOME_DEG = {"shoulder_pan_joint": 0.0, "shoulder_lift_joint": -90.0, "elbow_joint": 0.0,
-            "wrist_1_joint": 0.0, "wrist_2_joint": 0.0, "wrist_3_joint": 0.0}
+# SINGLE-SOURCED from isaac/common/home_pose.py (shared with the ur16e_isaac_ros2.py
+# runtime teleport and reset_pose.py, so the three can't drift). Edit the pose there.
+import sys as _sys  # noqa: E402
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # isaac/common
+from home_pose import HOME_DEG  # noqa: E402
 
 from isaacsim import SimulationApp  # noqa: E402
 sim_app = SimulationApp({"headless": True})
@@ -55,7 +57,6 @@ try:
     from pxr import PhysxSchema  # noqa: E402
 except Exception:
     PhysxSchema = None
-from isaacsim.storage.native import get_assets_root_path  # noqa: E402
 
 THIS_DIR = Path(__file__).resolve().parent
 ASSETS = THIS_DIR.parent.parent / "assets"           # isaac/assets
@@ -76,12 +77,14 @@ def info(m: str) -> None:
     print(f"[build-full] {m}", flush=True)
 
 
-assets_root = get_assets_root_path()
-if assets_root is None:
-    info("FAILED to resolve Isaac assets root")
+# UR16e USD: LOCAL vendored copy first (ur_bringup/isaac/assets/vendor/...), else the
+# live Isaac assets root — for reproducibility on machines without the Isaac asset mount.
+from asset_paths import resolve_asset  # noqa: E402
+UR16E_URL, _ur_src = resolve_asset("Isaac/Robots/UniversalRobots/ur16e/ur16e.usd", log=info)
+if UR16E_URL is None:
+    info("FAILED to resolve UR16e USD (no vendored copy AND no Isaac assets root)")
     sim_app.close(); sys.exit(1)
-UR16E_URL = assets_root + "/Isaac/Robots/UniversalRobots/ur16e/ur16e.usd"
-info(f"UR16e: {UR16E_URL}")
+info(f"UR16e: {UR16E_URL}  [{_ur_src}]")
 info(f"EOAT : {EOAT_USD}")
 
 out = Usd.Stage.CreateInMemory()

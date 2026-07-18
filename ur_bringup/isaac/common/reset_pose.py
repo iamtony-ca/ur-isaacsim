@@ -14,6 +14,7 @@ Usage (sim or real, after the control stack is up):
 Named poses match ur_moveit_config's SRDF group_states (home/up).
 """
 import sys
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
@@ -22,10 +23,12 @@ from control_msgs.action import FollowJointTrajectory
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 
-ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
-       "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # isaac/common (for home_pose)
+from home_pose import ARM_JOINTS, home_list_rad            # single-source "home"
+
+ARM = ARM_JOINTS
 POSES = {
-    "home": [0.0, -1.5707, 0.0, 0.0, 0.0, 0.0],
+    "home": home_list_rad(ARM),                            # single-source (home_pose.py)
     "up":   [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0],
     "zero": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
 }

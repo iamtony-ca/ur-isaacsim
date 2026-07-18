@@ -58,14 +58,17 @@ THIS_DIR = Path(__file__).resolve().parent
 ASSETS = THIS_DIR.parent / "assets"   # isaac/assets (shared bucket, one level up from isaac/common)
 ASSETS.mkdir(exist_ok=True)
 
-UR16E_URL = (
-    "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
-    "/Assets/Isaac/5.1/Isaac/Robots/UniversalRobots/ur16e/ur16e.usd"
-)
-EE_URL = (
-    "https://omniverse-content-production.s3-us-west-2.amazonaws.com"
-    "/Assets/Isaac/5.1/Isaac/Robots/Robotiq/2F-85/Robotiq_2F_85_edit.usd"
-)
+# LOCAL vendored copy first (ur_bringup/isaac/assets/vendor/...), else the original
+# S3 URL — reproducibility on machines without the Isaac asset mount / network.
+# (ur16e is vendored; the Robotiq 2F-85 falls back to S3 until vendored.)
+from asset_paths import resolve_asset  # noqa: E402
+_S3 = "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1"
+UR16E_URL, _ur_src = resolve_asset(
+    "Isaac/Robots/UniversalRobots/ur16e/ur16e.usd",
+    fallback_url=_S3 + "/Isaac/Robots/UniversalRobots/ur16e/ur16e.usd")
+EE_URL, _ee_src = resolve_asset(
+    "Isaac/Robots/Robotiq/2F-85/Robotiq_2F_85_edit.usd",
+    fallback_url=_S3 + "/Isaac/Robots/Robotiq/2F-85/Robotiq_2F_85_edit.usd")
 
 EE_FIXED = ASSETS / "robotiq_2f85_fixed.usda"
 COMPOSED = Path(_args.out).resolve() if _args.out else ASSETS / "ur16e_with_2f85.usd"

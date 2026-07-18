@@ -914,3 +914,36 @@ Isaac 물리는 native convexDecomposition. **핵심 원리**: 계획된 궤적�
 - 연속 충돌 모니터(실행 중 실시간 감지·로깅) — 지금은 계획시 회피 + 온디맨드 리포트(`collision_report.py --watch` 프리뷰).
 - cuMotion(GPU, real) 장애물 월드 연동(world 별도 주입), 세트4 nvblox/cuMotion 경로.
 - density-box 과대질량·핑거 기하 분리(여전히 placeholder box), 통합 테이블/지그 실 CAD 도착 시 config 교체.
+
+## 16. 세트 4 — quick_start 튜토리얼 · CAD 인수 확장(조립STEP·plate·wheel/shaft) · HOME 단일소스 — 2026-07-18
+
+§15 이후 사용자 Q&A로 파이프라인의 인수 규격과 초기 pose 관리를 정비.
+
+- **`src/quick_start.md` 신규** — CAD 요청→변환/조립→Isaac+MoveIt+RViz 충돌체크까지 복붙 튜토리얼(단계별 기대출력 포함). CLAUDE.md 문서목록에 등록.
+- **조립 STEP 활용 확정(#1)** — 개별 STEP(부품별 기하·물성) + 전체 조립 STEP(부품 간 상대 pose)을 함께 받는다. `extract_poses.py`(기존, `--tcp` = tool0 앵커 모드)로 자세 자동 추출 → config 숫자만 교체(방향 눈대중 소멸). **조립 STEP 3필수조건**: ①개별과 동일 부품·좌표계·이름 ②mm/Z-up/AP242/솔리드 ③tool0 앵커 포함. 위반 시 수동 geometric registration 필요. `CAD_DELIVERY_REQUEST.md §1-A`, `eoat/README.md` 갱신(낡은 "추출 스크립트 도착 시 작성" 문구 제거 — 이미 존재).
+- **UR 베이스 플레이트(#2)** — 로봇 본체가 아니라 **정적 장애물**로 처리. 원점 `base_link` 일치(①) 또는 조립 STEP 동봉(②). 로봇이 얹혀 있으므로 ACM `allowed_collisions:[base_link, base_link_inertia]`. `obstacles.yaml` 에 base_plate 템플릿(주석) 추가. `CAD_DELIVERY_REQUEST.md §6`.
+- **조작 대상물 Wheel/Shaft(#3)** — Wheel=별도 STEP·동적강체(파지면/보어 defeaturing 금지, 원점=보어축+Z, 물성 필수) → 파지 시 MoveIt attached object + Isaac 동적물체. Shaft=별도 STEP(축=+Z, 입구 원점) → 정적 장애물. 셀 전체 조립 STEP 으로 pick/삽입/place 위치 실측 추출. `obstacles.yaml` shaft 템플릿·wheel 주석, `CAD_DELIVERY_REQUEST.md §7`.
+- **초기 HOME pose 단일소스(#4)** — 세 파일(`build_ur16e_dualtool.py` deg, `ur16e_isaac_ros2.py` rad, `reset_pose.py` rad)에 중복되고 -1.5707/-1.5708 불일치였던 arm HOME 을 **`isaac/common/home_pose.py` 하나**로 통합(`HOME_DEG`/`HOME_RAD`/`home_list_rad`, 순수 파이썬). 초기 pose 변경=이 6줄만 수정. py_compile·import 검증 완료. **RViz 별도 init pose 없음**(sim 은 `/joint_states` 미러 → Isaac 만 고치면 따라옴). 함정: Isaac↔USD baked HOME 은 반드시 동일값(어긋나면 로드≠재생).
+
+### 재현성 — Isaac 자산 local-first vendoring (2026-07-18)
+다른 PC 재현성을 위해 Isaac 자산(로봇/환경 USD)을 **ws 내로 vendoring + local-first 해석**으로 전환.
+- **`isaac/common/asset_paths.py` 신규** — `resolve_asset(rel, fallback_url, log)`: `isaac/assets/vendor/<Isaac상대경로>` 에 **로컬 사본이 있으면 그걸 먼저**, 없으면 fallback_url, 그것도 없으면 `get_assets_root_path()`(라이브 Isaac 루트, lazy). source ∈ {local,url,isaac,none}.
+- **`ur16e.usd` vendored** → `isaac/assets/vendor/Isaac/Robots/UniversalRobots/ur16e/`(+`configuration/` 8.5MB, **상대참조라 폴더째 복사로 self-contained**). ★mesh 카운트는 instanceable 프로토타입이라 `TraverseInstanceProxies` 필요, 익명 세션레이어는 realPath 없음(오탐 주의).
+- **★ 정품 소스 재-vendoring(2026-07-18 후속)**: 처음엔 타 ws(`test_ws/robot/ur16e`) 사본을 vendoring 했으나 **구버전**임이 판명(`ur16e_robot.usd` vs 정품 `ur16e_robot_schema.usd`, 조립 시 20 body vs 정품 19 body). `get_assets_root_path()` = `.../Assets/Isaac/6.0`(네트워크 가능) 에서 `omni.client.copy` 로 5개 usd 직접 복사·교체. 검증: 100 prims·root_joint·15 link·14 mesh·누락 0, **조립 full.usd = 19 RigidBody/19 Joint = eoat/README 문서값 복원**. 교훈: vendored 자산은 **반드시 `get_assets_root_path()` 정품에서** 복사(떠도는 로컬 사본 금지).
+- **적용**: `build_ur16e_dualtool.py`(선택부 = get_assets_root_path→resolve_asset), `ur16e_isaac_ros2.py`(로봇 기본 USD + Simple_Room, + assets_root None 시 **hard-abort→경고**로 완화해 vendored 만으로 오프라인 구동), `build_ur16e_2f85.py`(S3 URL 하드코딩→resolve_asset, robotiq/ur16e 각각 fallback URL 보존). robotiq 2F-85·simple_room 은 로컬 사본 없어 아직 fallback(나중에 vendor/ 에 넣으면 자동 local).
+- **함정**: `ur16e_isaac_ros2.py` 의 `--asset-path` 절대경로(우리 조립 USD)는 그대로, `/Isaac/...` 상대경로만 resolver 경유.
+
+### 최소 환경 — ground plane + base_plate (2026-07-18)
+배경(Simple_Room)은 나중에 안 쓰고 Isaac ground plane + 기구팀 STEP 으로 셀을 재구성할 예정 → 지금은 **ground plane + UR 베이스 플레이트(임의 box)** 만 먼저 구성.
+- **ground plane**: `ur16e_isaac_ros2.py` 에 `physicsUtils.add_ground_plane`(render mesh + `UsdPhysics.Plane`) 추가. `--no-ground`(끄기)·`--ground-z`(기본 -0.05 = plate 바닥) 파라미터. 두 API(`isaacsim.core.api...GroundPlane` 클래스 / `omni.physx...add_ground_plane`) 검증 후 후자 채택.
+- **base_plate**: `obstacles.yaml` 에서 데모 `table` 을 주석화하고 **`base_plate` box 활성**(`size:[0.30,0.30,0.05]`, 윗면 z=0=base 장착면, `allowed_collisions:[base_link, base_link_inertia]` ACM). 단일소스라 Isaac(`--obstacles`)·MoveIt(`load_obstacles_moveit`) 동시 반영. **임의 치수 플레이스홀더 — STEP 오면 이 항목만 교체**(`box+size`→`cad:base_plate.step`, 또는 숫자만).
+- **검증(실부팅)**: `--headless --no-env --obstacles` 로 `/World/groundPlane @ z=-0.05` + `/World/obstacles/base_plate [box]` + home 스폰 확인. vendored ur16e 도 정상 로드.
+- **wheel 충돌체크 접근 단순화(§to_do 8.3)**: 런타임 attach/detach 대신 **정적 2-state(gripped/not-gripped)** 부터 — 휠을 MoveIt AttachedCollisionObject 로 한 번 부착한 상태 vs 미부착 상태로만 모션+충돌체크. pick/place/insert/extract 생애주기는 phase-1 로 미룸.
+
+### wheel 2-state 충돌체크 — live 검증 + is_diff 버그 수정 (2026-07-18)
+- **휠 자산**: `temp_assets/factory_wheel_held.usd`(사용자 단순화 테스트본, 실제 OHT 휠=메탈허브+우레탄트레드, Ø125×20mm) → `isaac/assets/manip/wheel.usd` 로 복사(ur_bringup 내 "oht" 미사용). GUI 렌더로 3개 후보 비교 후 선택.
+- **`isaac/common/manip/attach_wheel.py`**: MoveIt `AttachedCollisionObject` 로 휠 부착/`--detach`. parent=`gripper_2fg14`, touch_links=[body+양핑거], shape=cylinder(Ø125×20 기본)|mesh. grasp xyz/rpy 파라미터.
+- **★ 잡은 버그(중요)**: `collision_report.py`·`approach_to_collision.py` 가 `/check_state_validity` 요청에서 `robot_state.is_diff` 를 안 켜서, 요청 RobotState 가 planning scene 을 **통째로 덮어써 부착 object(휠 등)를 전부 무시**하고 있었음 → 항상 VALID. **`rs.is_diff=True` 로 수정**(diff 로 적용 → scene 의 attached object 유지). attached-object 충돌체크의 전제 조건.
+- **live 검증(3터미널 스택)**: not-gripped home=VALID. 휠을 EOAT 쪽으로 오프셋(grasp z=−0.10/−0.25)하면 gripped=**INVALID** with `damper↔wheel`(16.5mm)·`dual_quick_changer↔wheel`(23.8mm)·`copick↔wheel`(28mm) 접촉점+깊이. 그리퍼 body 관통(z=+0.10)은 **touch_links 로 허용→VALID**. 2-state 충돌체크 동작 확인.
+- **`isaac/common/manip/place_wheel_gui.py`**: Isaac GUI 로 휠을 그리퍼에 물린 위치로 gizmo 조정 → local grasp(xyz m·rpy deg) 실시간 출력(attach_wheel 형식). grasp 자세 realism 튜닝용(현재 rough).
+- **남은 튜닝**: 실제 파지 자세(휠이 핑거 끝에 물린, body 비관통) — place_wheel_gui 로 확정 예정.

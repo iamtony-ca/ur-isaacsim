@@ -62,6 +62,7 @@ def valid(node, cli, q):
     js.name = ARM
     js.position = [float(x) for x in q]
     rs.joint_state = js
+    rs.is_diff = True          # diff on the live planning scene -> KEEP attached objects (gripped wheel)
     req.robot_state = rs
     fut = cli.call_async(req)
     rclpy.spin_until_future_complete(node, fut, timeout_sec=10.0)

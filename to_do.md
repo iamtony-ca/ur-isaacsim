@@ -230,3 +230,65 @@ depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그�
 
 ### to do
 실제 STEP 파일로 quick_start 전체 한번 따라가서 검증해보기.
+
+---
+
+## 8. Wheel 매니퓰레이션 충돌 처리 — pick / place / insert / extract (TODO)
+
+Wheel 은 **정적 장애물(`obstacles.yaml`)이 아니다.** 매니퓰레이션 스텝마다 MoveIt planning scene 을
+런타임에 바꾸는 **관리 대상**이다. 두 층으로 분리해서 다룬다:
+- **MoveIt(충돌 감지/계획)**: wheel 을 **월드 CollisionObject ↔ AttachedCollisionObject** 로 상태 전환 +
+  포즈 갱신 + place 인스턴스 추가. 의도된 접촉(파지·삽입)은 **ACM 한시 허용**.
+- **Isaac(물리)**: wheel = 동적 강체. 파지 = 마찰 grip **또는** kinematic attach joint(테스트엔 후자가 안정).
+  삽입/추출 접촉 = 물리. ← 감지 층과 독립.
+
+### 8.1 생애주기 (다중 wheel, 목표 형태)
+| 단계 | planning scene 조작 | 비고 |
+|---|---|---|
+| pick 전 | wheel = 월드 CollisionObject(현재 pick 포즈) | 접근 회피, grasp 순간만 접촉 허용 |
+| grasp | 월드 제거 + 그리퍼에 ATTACH(touch_links=핑거) | wheel째 주변 회피, 핑거↔wheel ACM 자동 |
+| insert | attached wheel ↔ **shaft 한시 ACM 허용**, 축 따라 하강 | 안 풀면 삽입계획이 충돌로 거부 |
+| place | DETACH + 월드에 **새 고유 id** ADD(place 포즈) | 정적 장애물화 → 이후 계획 회피 |
+| extract | 샤프트 위 wheel(월드) → grasp→ATTACH, wheel↔shaft ACM, 축 상승 | 삽입 역순 |
+
+- **place 누적**: place 마다 고유 id 새 객체 → 스택 전체가 장애물로 쌓임.
+- **샤프트 유무**: shaft 위 wheel 을 표현하던 월드 객체가 grasp 시 attached 로 전환→월드에서 소멸(=샤프트 빔).
+  shaft 자체 객체는 유지.
+- **pick 위치 가변**: 각 wheel 고유 id, 포즈는 perception(§0~M3) 또는 알려진 피더/지그 인덱스에서 매 사이클 갱신.
+
+### 8.2 필요한 것
+- **있음**: `obstacles/load_obstacles_moveit.py`(월드 CollisionObject + ACM, 정적).
+- **신설(핵심)**: 런타임 **scene manager / pick-place 노드** — 매 스텝 attach/detach, 포즈 갱신,
+  place 인스턴스 추가, insertion 구간 ACM 토글. 전부 MoveIt 표준(`ApplyPlanningScene`,
+  `AttachedCollisionObject`)이라 저작 가능.
+- **Isaac 물리**: wheel rigid body spawn + grasp attach joint(생성/해제) 또는 마찰 grip.
+- **인식 연동**: pick 포즈 소스(perception 또는 지그 인덱스) — §0~M3 파이프라인과 연결.
+
+### 8.3 phase-0 — 충돌체크만: 2-state (gripped / not-gripped) ★ 가장 먼저
+1차 목표가 **충돌 체크**이므로, 런타임 attach/detach/ACM 토글을 **전부 생략**하고 **정적 2-state** 로 시작:
+- **(a) not-gripped**: 로봇+EOAT 만. 모션 주고 충돌 체크(= 지금 되는 그대로, `collision_report`/`plan_execute`).
+- **(b) gripped (휠 잡은 채로 시작)**: 휠을 그리퍼에 **MoveIt AttachedCollisionObject 로 한 번 부착**(고정 grasp
+  transform, `touch_links`=핑거)해 두고 모션 → **충돌 질의가 자동으로 휠까지 포함**해서 검사.
+- **런타임 전환 없음**: pick/place/insert/extract 순서 없이, 부착/미부착 **두 시작상태**로만 각각 모션+충돌체크.
+- **구현 = 작음**: `AttachedCollisionObject` ADD(gripped)/없음(not-gripped)만 발행하면, 기존 충돌도구
+  (`collision_report.py`·`approach_to_collision.py`·`plan_execute`)가 **수정 없이** gripped 상태를 반영.
+  휠 지오메트리는 plate 처럼 **임의 placeholder box/OBJ 로 먼저** 두고, 실제 wheel STEP 오면 mesh 만 교체.
+- **산출물(작성됨 2026-07-18)**: `isaac/common/manip/attach_wheel.py` — MoveIt `AttachedCollisionObject` 로
+  휠 부착(기본)/`--detach`(미부착). parent=`gripper_2fg14`, touch_links=[body+양핑거], shape=cylinder(Ø125×20mm,
+  기본)|mesh(OBJ). grasp xyz/rpy 파라미터(rough, RViz 튜닝). 휠 자산 = `isaac/assets/manip/wheel.usd`
+  (temp_assets 의 factory_wheel_held 복사, "oht" 미사용, 사용자 단순화 테스트본 — 실 CAD 오면 교체).
+  ★ live move_group 필요 → 3터미널 스택 뜬 뒤 `collision_report`/`plan_execute` 로 gripped/not-gripped 검증.
+  Isaac 물리(gripped 시 fixed-joint)는 별도 층(선택, 나중).
+
+### 8.4 phase-1 — 단일 wheel 생애주기 (그 다음)
+2-state 이후, 같은 4연산(add/attach/detach/ACM)으로 pick·place·insert·extract 를 한 번 도는 **최소 슬라이스**.
+다중 처리(다수 id·스택·perception)는 **다 빼고**. scene manager 의 phase-1 이 곧 이것.
+- **포즈는 전부 KNOWN 고정값**(perception 불필요): pick 포즈 · shaft 삽입 접근/하강 · place 포즈 —
+  Isaac 씬 배치에서 하드코딩/config.
+- **wheel 1개**: MoveIt CollisionObject id=`wheel`(wheel USD 메시), Isaac 엔 동적 강체 1개.
+- **shaft**: 정적 장애물(`obstacles.yaml` 템플릿 해제).
+- **파지 모델**: 감지=AttachedCollisionObject, 물리=**kinematic attach joint 권장**(마찰 튜닝 회피).
+- **연산 순서**: add(pick) → grasp/attach → (insert: wheel↔shaft ACM on, 하강) → (extract: 상승, ACM off) →
+  move → detach(place). 다중 처리에서 빠지는 것 = 고유 id 다수·스택 누적·포즈 갱신·perception.
+- **산출물(예정)**: `isaac/common/manip/` (신규) — 단일 wheel scene-manager 노드 + known-pose config.
+  → 이후 8.1 형태로 다중 인스턴스·perception 만 얹으면 확장.
