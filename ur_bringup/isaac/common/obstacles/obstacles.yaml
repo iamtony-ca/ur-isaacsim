@@ -39,8 +39,8 @@ obstacles:
   #   로봇 베이스가 이 판에 얹혀 "닿아 있으므로" 그 접촉만 ACM 으로 허용(팔/EOAT 충돌은 정상 검출).
   - id: base_plate
     collision: box
-    size: [0.30, 0.30, 0.05]                          # ★ 임의 치수(30×30cm·두께 50mm) — STEP 오면 교체
-    pose: {xyz: [0.0, 0.0, -0.025], rpy: [0, 0, 0]}   # 중심 z=-0.025 → 윗면 z=0, 바닥 z=-0.05
+    size: [0.70, 0.70, 0.30]                          # ★ 임의 치수(70×70cm·높이 300mm) — STEP 오면 교체
+    pose: {xyz: [0.0, 0.0, -0.15], rpy: [0, 0, 0]}    # 중심 z=-0.15 → 윗면 z=0, 바닥 z=-0.30
     allowed_collisions: [base_link, base_link_inertia]  # 로봇이 얹힘 → 접촉 허용(ACM)
 
   # ── (선택/데모) 큰 작업대 테이블 — 최소 씬에선 비활성. 필요하면 주석 해제 ──

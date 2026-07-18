@@ -947,3 +947,9 @@ Isaac 물리는 native convexDecomposition. **핵심 원리**: 계획된 궤적�
 - **live 검증(3터미널 스택)**: not-gripped home=VALID. 휠을 EOAT 쪽으로 오프셋(grasp z=−0.10/−0.25)하면 gripped=**INVALID** with `damper↔wheel`(16.5mm)·`dual_quick_changer↔wheel`(23.8mm)·`copick↔wheel`(28mm) 접촉점+깊이. 그리퍼 body 관통(z=+0.10)은 **touch_links 로 허용→VALID**. 2-state 충돌체크 동작 확인.
 - **`isaac/common/manip/place_wheel_gui.py`**: Isaac GUI 로 휠을 그리퍼에 물린 위치로 gizmo 조정 → local grasp(xyz m·rpy deg) 실시간 출력(attach_wheel 형식). grasp 자세 realism 튜닝용(현재 rough).
 - **남은 튜닝**: 실제 파지 자세(휠이 핑거 끝에 물린, body 비관통) — place_wheel_gui 로 확정 예정.
+
+### grasp 확정(0,0,0.145) + 깨끗한 휠 충돌 데모 + detach 버그 수정 (2026-07-18)
+- **grasp 확정**: place_wheel_gui 로 `--grasp-xyz 0,0,0.145` (휠이 핑거 끝, body 비관통) → attach_wheel 기본값 반영. home not-gripped·gripped 모두 VALID(오탐 없음).
+- **★ detach 2번째 버그**: MoveIt 은 attached object 를 detach 하면 **월드 object 로 되돌려 놓음** → bare detach 후 not-gripped 에 유령 `gripper↔wheel` 잔존(attached=0 인데도). `attach_wheel.py --detach` 가 **월드에서도 `wheel` REMOVE** 하도록 수정 → not-gripped 완전 무휠.
+- **깨끗한 충돌 데모**: 앞으로 나온 휠이 작고 중앙인 base_plate 를 안 향해(공구축 방향) 자연 자세로는 EOAT 가 먼저 닿음. → home 에서 그리퍼 TF(FK)로 **휠 중심 world 좌표 계산**([0.125,0.477,1.235] = 그리퍼[0.122,0.403,1.110] + 0.145·공구축), 휠 트레드 rim([0.125,0.542,1.197])에 작은 probe box 배치. 결과: not-gripped=`gripper↔box`만, gripped=`gripper↔box` + **`wheel↔box`(14.3mm)** → **두 상태 차이=휠 접촉**, 휠 충돌감지 확정.
+- base_plate 는 사용자 요청으로 확대(0.7×0.7×0.3, ground-z=-0.30 동반), 테스트용 demo_wall 은 제거.

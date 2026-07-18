@@ -88,9 +88,9 @@ parser.add_argument("--obstacles", default=None,
 #     (ground plane + mech-STEP surroundings + the base plate) on top of this. ---
 parser.add_argument("--no-ground", action="store_true",
                     help="skip the Isaac default ground plane (added by default under the robot)")
-parser.add_argument("--ground-z", type=float, default=-0.05,
-                    help="ground plane height (m) in the base frame; default -0.05 = the bottom "
-                         "face of the ~50mm base_plate (obstacles.yaml). Tune with the plate.")
+parser.add_argument("--ground-z", type=float, default=-0.30,
+                    help="ground plane height (m) in the base frame; default -0.30 = the bottom "
+                         "face of the base_plate (obstacles.yaml). Tune with the plate.")
 args, _ = parser.parse_known_args()
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}

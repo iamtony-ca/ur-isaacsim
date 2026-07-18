@@ -23,8 +23,8 @@ Shape: default a CYLINDER proxy (wheel outer envelope: Ø125 x 20 mm, axis = bor
 triangle mesh instead (export the wheel visual mesh to OBJ first). The bore hole doesn't
 matter for "carrying" collision; the shaft-insertion contact is a separate (phase-1) ACM.
 
-★ The grasp transform (--grasp-xyz/--grasp-rpy, wheel pose in the gripper link frame) and
-the parent --link are ROUGH defaults — confirm in RViz once the stack is up.
+The grasp transform default (--grasp-xyz 0,0,0.145) is GUI-tuned via place_wheel_gui.py so
+the wheel sits at the fingertips (clear of the gripper body); override for a different grasp.
 
 Run (system python3, with move_group up):
     /usr/bin/python3 attach_wheel.py                 # gripped (cylinder proxy)
@@ -131,8 +131,10 @@ def main() -> int:
     ap.add_argument("--mesh", default=None, help="OBJ path for --shape mesh")
     ap.add_argument("--dia", type=float, default=0.125, help="cylinder proxy diameter (m)")
     ap.add_argument("--height", type=float, default=0.020, help="cylinder proxy thickness along +Z (m)")
-    # ROUGH grasp pose (wheel center in the gripper link frame) — tune in RViz.
-    ap.add_argument("--grasp-xyz", default="0,0,0.10", dest="grasp_xyz",
+    # Grasp pose (wheel center in the gripper link frame). Default = the finger cradle
+    # centre (gripper-Z 0.179) so the collision wheel matches where the physical ㄷ-channel
+    # fingers grip it (finger origin Z=0.1144 + cradle centre 0.065). Tune with the fingers.
+    ap.add_argument("--grasp-xyz", default="0,0,0.179", dest="grasp_xyz",
                     help="wheel center xyz in the gripper link frame (m)")
     ap.add_argument("--grasp-rpy", default="0,0,0", dest="grasp_rpy",
                     help="wheel rpy in the gripper link frame (deg); bore axis = +Z")
@@ -149,6 +151,15 @@ def main() -> int:
     scene.is_diff = True
     scene.robot_state.is_diff = True
     scene.robot_state.attached_collision_objects = [build_aco(args)]
+    if args.detach:
+        # MoveIt detaches an attached object back INTO the world by default, so a bare
+        # detach leaves a stray world "wheel" colliding with the gripper. Also REMOVE it
+        # from the world so the not-gripped state is truly wheel-free.
+        wr = CollisionObject()
+        wr.id = WHEEL_ID
+        wr.header.frame_id = args.link
+        wr.operation = CollisionObject.REMOVE
+        scene.world.collision_objects = [wr]
 
     req = ApplyPlanningScene.Request()
     req.scene = scene

@@ -52,17 +52,24 @@ parts:
     # ★ 열림 축 = Y (정규화 bbox Y=119mm ≈ 데이터시트 2FG14 폭 115mm; 툴축=Z=166mm=몸체103+핑거).
     #   핑거 판은 Y로 얇고(그립면=XZ평면), X로 깊이, Z로 길이. (2026-07-17: 축을 X→Y로 정정 — 이전 값은
     #   90° 어긋나 핑거가 깊이 방향으로 움직였음. imgs/fingers_2026_07_17.png 참고.)
-    sublinks:  # friction 1.0 = DEFAULT override 시연(파지 결정적; 실 핑거패드 재질 오면 수정)
-      finger_left:  {physics: {density: 2700, collision: convexHull, size: [0.03, 0.014, 0.05], friction: 1.0}}
-      finger_right: {physics: {density: 2700, collision: convexHull, size: [0.03, 0.014, 0.05], friction: 1.0}}
+    sublinks:  # 커스텀 핑거 CAD(휠 Ø125 감싸 잡는 L-브래킷). friction 1.0=파지 결정적(실 패드재질 오면 수정)
+      finger_left:  {cad: finger_left,  physics: {density: 2700, collision: convexDecomposition, friction: 1.0}}
+      finger_right: {cad: finger_right, physics: {density: 2700, collision: convexDecomposition, friction: 1.0}}
     joints:
       # name              child        type       origin_xyz(m)          axis(=Y 열림)  limit(m, effort=N/핑거, vel=m/s)
+      # origin_xyz = GUI 조정값(2026-07-19, 최대 open 가정). left = 사용자 조정, right = Y 대칭.
+      # axis 뒤집음(2026-07-19): origin=max-open 이라 q 증가 시 안쪽(close)으로 움직여 휠을 잡게.
+      #   left  Y=0.0308−q, right Y=−0.0308+q → 둘 다 중심으로(대칭 close). q=0=open, q=0.025=close.
       - {name: finger_left_joint,  child: finger_left,  type: prismatic,
-         origin_xyz: [0,  0.013, 0.080], axis: [0,  1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
+         origin_xyz: [0.0,  0.03105, 0.1144], axis: [0, -1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
          drive: {stiffness: 4000, damping: 80, target: 0.0}}
       - {name: finger_right_joint, child: finger_right, type: prismatic,
-         origin_xyz: [0, -0.013, 0.080], axis: [0, -1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
+         origin_xyz: [0.0, -0.03105, 0.1144], axis: [0,  1, 0], limit: {lower: 0.0, upper: 0.025, effort: 140, velocity: 0.45},
          mimic: finger_left_joint}                              # 평행 그리퍼: 왼쪽을 대칭으로 따라감
+  # 커스텀 핑거(placeholder, 휠 파지용) — make_placeholder_step.py --fingers 로 생성. 이미 마운트@원점·base z=0
+  #   프레임이라 passthrough(무회전). sublinks.finger_*.cad 가 이 정규화 USD 를 참조.
+  finger_left:  {cad: finger_left.usd,  normalize: {passthrough: true}}
+  finger_right: {cad: finger_right.usd, normalize: {passthrough: true}}
   # 포트 B
   quick_changer_tool_side: {cad: quick_changer_tool_side.usd, normalize: {rpy_deg: [90, 0, 0],  seat: zmin, center_xy: true}}
   adapter_t:               {cad: adapter_t.usd,               normalize: {rpy_deg: [90, 0, 0],  seat: zmin, center_xy: true}}
