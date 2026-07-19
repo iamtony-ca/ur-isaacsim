@@ -28,7 +28,7 @@ from eoat_model import load_graph  # noqa: E402
 
 
 def _box_for(link):
-    return link.size or (link.physics.size if link.physics else None) or [0.05, 0.05, 0.05]
+    return link.size or [0.05, 0.05, 0.05]   # link.size = physics.size override or cad sidecar bbox
 
 
 def _xyz(v):

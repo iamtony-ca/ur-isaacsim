@@ -262,13 +262,15 @@ def load_graph(cfg_path: Path) -> Graph:
         pspec = parts[part]
         for sub, subspec in (pspec.get("sublinks") or {}).items():
             sub_id = f"{pid}__{sub}" if pid != part else f"{part}__{sub}"
-            sub_phys = _resolve_physics(subspec.get("physics", {}), defaults,
-                                        subspec.get("physics", {}).get("size"))
             geom = subspec.get("cad") or subspec.get("geom_prim")
+            # size: explicit physics.size override wins; else the cad's normalized sidecar
+            # bbox (a broken-out finger CAD carries its real size in normalized/<cad>.json).
+            sub_size = subspec.get("physics", {}).get("size") or (
+                sidecar(subspec["cad"]).get("size") if subspec.get("cad") else None)
+            sub_phys = _resolve_physics(subspec.get("physics", {}), defaults, sub_size)
             # placed by its joint origin below; link local pose starts at identity
             g.links.append(Link(sub_id, subspec.get("part"), geom, pid,
-                                [0, 0, 0], [0, 0, 0], sub_phys,
-                                subspec.get("physics", {}).get("size")))
+                                [0, 0, 0], [0, 0, 0], sub_phys, sub_size))
         for j in (pspec.get("joints") or []):
             child_id = f"{pid}__{j['child']}" if pid != part else f"{part}__{j['child']}"
             jparent = j.get("parent")

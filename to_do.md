@@ -264,7 +264,10 @@ Wheel 은 **정적 장애물(`obstacles.yaml`)이 아니다.** 매니퓰레이�
 - **Isaac 물리**: wheel rigid body spawn + grasp attach joint(생성/해제) 또는 마찰 grip.
 - **인식 연동**: pick 포즈 소스(perception 또는 지그 인덱스) — §0~M3 파이프라인과 연결.
 
-### 8.3 phase-0 — 충돌체크만: 2-state (gripped / not-gripped) ★ 가장 먼저
+### 8.3 phase-0 — 충돌체크만: 2-state (gripped / not-gripped) ★ 가장 먼저  ✅ 검증 완료(2026-07-19)
+> **완료**: 커스텀 핑거 반영 후 풀 스택에서 probe box 로 재검증 — not-gripped(휠X, 핑거 open)=VALID,
+> gripped=`wheel↔probe_box`(11.17mm) 검출. ②↔③ 차이=파지 휠. 상세 HISTORY §16. 육안(RViz) 확인만 남음(다음).
+
 1차 목표가 **충돌 체크**이므로, 런타임 attach/detach/ACM 토글을 **전부 생략**하고 **정적 2-state** 로 시작:
 - **(a) not-gripped**: 로봇+EOAT 만. 모션 주고 충돌 체크(= 지금 되는 그대로, `collision_report`/`plan_execute`).
 - **(b) gripped (휠 잡은 채로 시작)**: 휠을 그리퍼에 **MoveIt AttachedCollisionObject 로 한 번 부착**(고정 grasp
@@ -291,4 +294,31 @@ Wheel 은 **정적 장애물(`obstacles.yaml`)이 아니다.** 매니퓰레이�
 - **연산 순서**: add(pick) → grasp/attach → (insert: wheel↔shaft ACM on, 하강) → (extract: 상승, ACM off) →
   move → detach(place). 다중 처리에서 빠지는 것 = 고유 id 다수·스택 누적·포즈 갱신·perception.
 - **산출물(예정)**: `isaac/common/manip/` (신규) — 단일 wheel scene-manager 노드 + known-pose config.
+
+---
+
+## 9. 세트4 2FG14 실물 그리퍼 드라이버 — Compute Box Modbus TCP `ros2_control` HW 인터페이스 (TODO, 다음)
+
+설계는 확정(2026-07-19). 문서: [`qna.md`](qna.md) Q7 · [`HARDWARE.md`](HARDWARE.md) §6, 메모리 `gripper-sim-real-parity`.
+목적 = 실물 2FG14 를 sim 과 **같은 `GripperCommand` 액션 1벌**로 굴리기(위는 sim/real 동일, `<hardware>` 만 스왑).
+
+### 왜 신규 작성인가
+- 2F-85(세트2/3)는 `ros2_robotiq_gripper`(vendored) 로 끝. **2FG14 는 성숙한 1st-party ROS2 드라이버가 없음**
+  (커뮤니티는 대부분 ROS1 + OnRobot Compute Box Modbus TCP). → **얇은 `ros2_control` 하드웨어 인터페이스** 자작.
+- **URCap 단독 금지**(Isaac 파리티와 배타 — 제어 루프가 로봇 컨트롤러에 갇힘). tool I/O = Controlled-by-User.
+
+### 구현 스케치 (2F-85 배선 미러링)
+- `<hardware>` 플러그인: OnRobot Compute Box **Modbus TCP** 레지스터맵 read/write(파지 위치/힘/속도 command,
+  현재 폭/상태 state) → URDF finger joint 1개 command/state 인터페이스에 매핑. 반대쪽 핑거는 `<mimic>`.
+- 배선: 그리퍼 전용 **`gripper` 네임스페이스 별도 CM**(팔=RTDE 이더넷 / 그리퍼=Modbus TCP, 별개 채널),
+  컨트롤러 yaml **wildcard 노드키**(`/**/controller_manager`), TF subtree 는 `tool0`→EOAT 밑. 조인트 이름은 sim 과 동일.
+- `use_sim` 분기: sim=`topic_based_ros2_control/TopicBasedSystem`(이미 검증) / real=신규 플러그인 / 점검=`mock_components/GenericSystem`.
+
+### 선행/차단 (blocked)
+- **실물 EOAT/2FG14 부품 + 물성 도착 필요**: 파지 스트로크·힘·속도 **레지스터 스케일**, 개폐 범위(현 sim `lower 0~upper 0.025`),
+  Compute Box **IP/포트**, Dual Quick Changer 포트 A 전기 커넥터 **핀맵**. → 오면 `HARDWARE.md §6` 을 §2 형식 런북으로 채우고 컨트롤러 yaml 한계값 갱신.
+
+### 산출물(예정)
+- 신규 `ros2_control` 하드웨어 인터페이스 패키지/플러그인(2FG14 Modbus TCP) + `gripper` 네임스페이스 컨트롤러 yaml
+  + 실물 런치(2F-85 `ur16e_2f85_real.launch.py` 대응). mock 으로 컨트롤러/액션 경로 먼저 검증.
   → 이후 8.1 형태로 다중 인스턴스·perception 만 얹으면 확장.

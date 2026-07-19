@@ -953,3 +953,24 @@ Isaac 물리는 native convexDecomposition. **핵심 원리**: 계획된 궤적�
 - **★ detach 2번째 버그**: MoveIt 은 attached object 를 detach 하면 **월드 object 로 되돌려 놓음** → bare detach 후 not-gripped 에 유령 `gripper↔wheel` 잔존(attached=0 인데도). `attach_wheel.py --detach` 가 **월드에서도 `wheel` REMOVE** 하도록 수정 → not-gripped 완전 무휠.
 - **깨끗한 충돌 데모**: 앞으로 나온 휠이 작고 중앙인 base_plate 를 안 향해(공구축 방향) 자연 자세로는 EOAT 가 먼저 닿음. → home 에서 그리퍼 TF(FK)로 **휠 중심 world 좌표 계산**([0.125,0.477,1.235] = 그리퍼[0.122,0.403,1.110] + 0.145·공구축), 휠 트레드 rim([0.125,0.542,1.197])에 작은 probe box 배치. 결과: not-gripped=`gripper↔box`만, gripped=`gripper↔box` + **`wheel↔box`(14.3mm)** → **두 상태 차이=휠 접촉**, 휠 충돌감지 확정.
 - base_plate 는 사용자 요청으로 확대(0.7×0.7×0.3, ground-z=-0.30 동반), 테스트용 demo_wall 은 제거.
+
+### 커스텀 2FG14 핑거 CAD(placeholder) + 대칭 개폐 + 마무리 반영 (2026-07-19)
+placeholder box 핑거 → 실제 휠(Ø125)을 잡는 커스텀 핑거로 저작·조립 반영.
+- **핑거 STEP 생성** `make_placeholder_step.py --fingers`(cadquery, `make_gripper_finger`): L-브래킷(마운트블록 없이 elbow 얇은바+jaw), jaw 안쪽 **ㄷ 채널**(오목 cradle Ø125 + 위·아래 립으로 휠 축방향 고정, `channel_clearance=0.5mm`→채널 21mm vs 휠 20mm), **X폭=body 핑거장착부 70mm**(FT커플링 74.9 아님, Z[55,105] 실측). `finger_left/right.step`(좌우 미러). GUI 반복 검토로 형상 확정(imgs/finger_*·oc_* 다수).
+- **config 반영**: `parts.finger_left/right`(passthrough) + `sublinks.finger_*.cad`. 핑거 조인트 origin=GUI 조정값 `±0.03105, Z=0.1144`(대칭), **axis 뒤집음 `[0,-1,0]/[0,1,0]`**(origin=max-open 이라 q↑=close). physics play 로 검증: OPEN ±0.031↔CLOSE ±0.006 **1축 대칭**, 휠 파지는 q≈0.018 에서 cradle↔휠OD 접촉.
+- **휠 grasp 정렬**: 핑거 +Z 이동으로 cradle 이 올라가 휠(0.145)과 어긋남 → 휠을 **cradle 중심 0.179** 로. `attach_wheel` 기본 grasp·`view_gui` 휠 0.145→0.179.
+- **버그 2건 수정**: ① `eoat_model` sublink 가 cad 의 정규화 sidecar 에서 size 를 읽게(핑거 box→cad 로 `link.size`=None 됐던 것). ② `build_eoat_urdf._box_for` 의 `link.physics.size`(Physics 엔 size 없음) 참조 제거.
+- **마무리**: `export_eoat_meshes`(핑거 실메시+convexDecomp 충돌) → `build_eoat_urdf`/`build_eoat_moveit`(xacro 가 핑거 메시 참조) → `build_ur16e_dualtool`(_full.usd). colcon: **`--symlink-install` 이 meshes 디렉터리+개별파일 심링크 충돌 → 일반 빌드로 우회**(clean 후 `colcon build --packages-select ur_bringup`).
+- **live 검증(스택)**: attach_wheel(grasp 0.179) 부착 OK. FK 프로브(휠 rim)로 not-gripped 는 `finger_right↔probe`(10mm, **새 큰 핑거가 충돌모델에 반영됨 증거**), gripped 는 +`wheel↔probe`(13.9mm) → **새 핑거+휠 모두 충돌체크 반영 확인**.
+- **view_gui 개선**: `print(flush=True)` + 선택 prim transform 을 `_view_last.txt` 사이드카로 기록(터미널 버퍼링으로 로그 못 읽던 문제 해결).
+
+### 커스텀 핑거 반영 후 gripped/not-gripped 충돌체크 재검증(풀 스택) (2026-07-19)
+- 풀 스택 재기동(Isaac GUI `ur16e_dualtool_full.usd` → `ur16e_dualtool.launch.py` → `ur16e_dualtool_moveit.launch.py`), 컨트롤러 3개 active(arm+gripper finger)·`/check_state_validity` 라이브 확인.
+- **probe box 검증**(`isaac/common/manip/probe_box.py` — 라이브 TF `base_link→gripper_2fg14` 로 휠중심=그리퍼+0.179·Z 계산, 트레드 rim(그리퍼+X 0.062, 핑거 ±Y 회피)에 20mm cube 배치): ① not-gripped(휠X, 핑거 fully open)=VALID → ② not-gripped+box=VALID(그 자리에 아무것도 없음=detach 유령휠 없음 재확인) → ③ gripped+box=**IN COLLISION `probe_box↔wheel` 11.17mm**. ②↔③ 유일차이=파지 휠 → **파지 휠이 실제 충돌체크에 참여함 재증명**.
+- 검증 후 씬을 clean not-gripped 로 리셋(box REMOVE + `--detach`). 육안(RViz) 확인은 다음으로 미룸.
+- **★ 종료**: 워크로드 전용 정리(Isaac + `ros2 launch ur_bringup` 자식 move_group/rviz2/ros2_control_node 는 cmdline 에 `ur_dualtool_ws`/`ur_moveit_config` 확인 후 특정 PID 만 kill — 공유 GPU/ROS 보호). broad pkill 금지 준수.
+
+### 그리퍼 sim/real 연동 설계 문서화 (2026-07-19)
+- 실물 그리퍼 제어 방식(URCap vs ROS2 드라이버) + sim 호환 설계를 문서·메모리에 정리. **결정**: 팔의 `use_sim` 패턴 복제 — 단일 계약 `GripperCommand` 액션 + `ros2_control <hardware>` 플러그인만 스왑. **URCap 단독은 Isaac 파리티와 배타**(제어 루프가 로봇 컨트롤러에 갇힘, ROS 메시지 안 됨). tool I/O=Controlled-by-User.
+- **그리퍼별 현황**: 2F-85(세트2/3)=`ros2_robotiq_gripper` vendored 완료. **2FG14(세트4)=성숙한 1st-party ROS2 드라이버 없음 → Compute Box Modbus TCP 용 `ros2_control` 하드웨어 인터페이스 신규 작성 필요**(2F-85 배선 미러링). sim 2FG14 는 이미 topic_based→Isaac 검증됨(액션 계약 확보).
+- 문서: `qna.md` **Q7**(URCap 소유권·Isaac 연동 여부·그리퍼별 현황), `HARDWARE.md` **§6**(2FG14 실물 연결 설계·부품 도착 전). 메모리 `gripper-sim-real-parity`.

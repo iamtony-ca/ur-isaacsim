@@ -231,3 +231,52 @@ color 에 자동 정렬. 그래서 인식 노드는 sim/real 무수정으로 동
 
 > 정리: 카메라는 **PC USB3 직결** + **표준 optical frame/camera_info/토픽** + **hand-eye(실물)/USD(sim) 로 맞춘
 > tool0→camera** 가 핵심. 이 인터페이스 한 벌이 octomap·cuMotion·FoundationPose 입력으로 그대로 재사용된다.
+
+---
+
+## Q7. 실물 그리퍼를 URCap 으로 제어해도 되나? sim(Isaac)과 호환되게 하려면? (2FG14 dual-tool)
+
+Q5 는 2F-85(세트2/3)의 sim/real 스왑을 다뤘다. 여기서는 **URCap vs ROS2 드라이버 "소유권"** 과, ROS2 오픈소스
+드라이버가 없는 **세트4 OnRobot 2FG14** 를 어떻게 호환되게 설계하는지를 다룬다. (실물 런북 예정은
+[`HARDWARE.md`](HARDWARE.md) §6.)
+
+### 핵심 원칙 — 팔의 `use_sim` 패턴을 그리퍼에 그대로
+sim/real 호환의 정답은 팔과 똑같다: **위(액션)는 sim/real 1벌, 아래(`ros2_control` `<hardware>` 플러그인)만
+교체.** 단일 계약 = `control_msgs/GripperCommand` 액션. 지금 sim `gripper_controller`(=`GripperActionController`)가
+이미 이 계약으로 도는 것을 확인함 → **top-level 계약은 이미 확보, 남은 건 real 백엔드뿐.**
+
+```
+상위앱/MoveIt ──GripperCommand──▶ gripper_controller ── ros2_control <hardware> (use_sim 로 스왑) ──┐
+   sim  → topic_based_ros2_control/TopicBasedSystem → Isaac finger joint                            │
+   real → 벤더 하드웨어 인터페이스(2F-85=robotiq_driver / 2FG14=신규) → 실물 그리퍼 ─────────────────┘
+```
+
+### 실물 제어 경로 3가지 — 그리고 URCap 의 위치
+| 경로 | 그리퍼 소유자 | ROS2/Isaac 연동 |
+|---|---|---|
+| **(A) URCap 단독** | UR 펜던트(PolyScope) 프로그램이 tool RS-485/URScript 로 개폐 | ❌ 제어 루프가 로봇 컨트롤러 안에 갇힘 — PC/ROS 못 봄 |
+| **(B) tool-comm 브리지 + ROS2 HW** | tool I/O = **User(ROS)** 소유, `ur_robot_driver` 가 `/tmp/ttyUR` 미러 | ✅ **2F-85 실물 방식**(Q5) |
+| **(C) 외부 직결** | USB-RS485(Robotiq) 또는 OnRobot **Compute Box** Modbus TCP(이더넷) | ✅ **2FG14 권장** |
+
+**(A)와 (B)/(C)는 배타적**이다 — 그리퍼를 누가 소유하느냐가 갈린다(둘이 동시에 tool 포트를 못 잡음). 그래서
+§2 2F-85 설정에도 tool I/O **Controlled by = User**(URCap 이 tool I/O 를 잡지 못하게)라고 못박혀 있다.
+
+### "실물을 URCap 으로 제어해도 Isaac 과 연동되나?"
+- **순수 URCap → 안 된다.** URScript 명령은 로봇 컨트롤러 내부 이벤트일 뿐 ROS2 메시지가 되지 않아 Isaac 에
+  도달할 방법이 없다(Isaac 엔 PolyScope 도 실물 그리퍼도 없음).
+- **연동시키려면 명령의 출발점을 ROS2(액션)로 올려야** 한다. sim/real 차이는 액션 **아래(하드웨어 백엔드)**에만 둔다.
+- (절충) ROS 에서 `ur_robot_driver` 의 `urscript_interface` 로 개폐 URScript 스니펫을 쏘는 방법도 가능하지만,
+  sim 엔 그 개념이 없어 여전히 별도 경로가 필요 → 결국 "위는 액션 통일 + real 은 그 액션을 URScript 전송으로
+  구현하는 어댑터"가 된다. `ros2_control` 하드웨어 인터페이스보다 덜 깔끔하니 (B)/(C) 를 권장.
+
+### 우리 그리퍼별 ROS2 wrapper 현황
+- **Robotiq 2F-85 (세트2/3) — 있음, 이미 vendored+빌드.** `ros2_robotiq_gripper`(PickNik): `robotiq_driver`
+  (`RobotiqGripperHardwareInterface`, Modbus RTU/serial) + `robotiq_controllers` + `serial`. → 경로(B), 해결됨.
+- **OnRobot 2FG14 (세트4 dual-tool, 지금 그리퍼) — 성숙한 1st-party ROS2 드라이버 없음.** 커뮤니티는 대부분
+  ROS1 + Compute Box Modbus TCP 라 ROS2 포팅 필요. → **얇은 `ros2_control` 하드웨어 인터페이스(또는 action-server)**
+  를 신규 작성해 Compute Box Modbus TCP 레지스터맵을 위 `GripperCommand` 에 연결한다(2F-85 배선 미러링:
+  `gripper` 네임스페이스 별도 CM, wildcard 노드키, `tool0`→EOAT 밑 TF, 조인트 이름 sim 과 동일 + `<mimic>`).
+
+> 정리: **URCap 단독은 sim 과 호환 불가**(로봇 컨트롤러에 갇힘). 호환의 핵심은 **`GripperCommand` 액션 1벌 +
+> `<hardware>` 플러그인만 스왑**. 2F-85 는 끝났고(`robotiq_driver`), 2FG14 는 **Compute Box Modbus TCP 용
+> ros2_control 하드웨어 인터페이스를 신규 작성**해 같은 구조로 붙이면 된다. sim 2FG14 는 이미 topic_based→Isaac 검증됨.

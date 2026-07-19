@@ -249,3 +249,47 @@ RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvbl
 | cuMotion 궤적 실행 거부(goal rejected) | 종단 잔여속도 → `allow_nonzero_velocity_at_trajectory_end: true` (§4-③). |
 
 > 더 많은 디버깅 이력/근거: [`HISTORY.md`](HISTORY.md) (특히 §6 함정, §8 그리퍼, §9 카메라).
+
+---
+
+## 6. 세트4 dual-tool 그리퍼 (OnRobot 2FG14) — 실물 연결 설계 (부품 도착 전)
+
+> 실물 EOAT/2FG14 미도착. 아래는 **연결 방식·SW 설계만** 확정해 둔 것(개념은 [`qna.md`](qna.md) Q7).
+> 부품·물성이 오면 이 절을 §2(2F-85)처럼 "물리/펜던트 설정 → 실행 & 검증" 런북으로 채운다.
+
+### 대전제 — 팔과 같은 "공통 인터페이스 + 교체형 백엔드"
+그리퍼도 팔의 `use_sim` 패턴을 그대로 복제한다: 위(액션)는 sim/real 동일, **`ros2_control` `<hardware>`
+플러그인만** 스왑. 단일 계약 = `control_msgs/GripperCommand` 액션(현재 sim `gripper_controller`
+=`GripperActionController` 가 이미 이 계약으로 동작). → **sim 쪽 2FG14 는 topic_based→Isaac 로 검증 완료,
+남은 건 real 백엔드뿐.**
+
+```
+상위앱/MoveIt ──GripperCommand──▶ gripper_controller(GripperActionController)
+                                     │  (URDF finger joint 1개 + mimic, sim/real 동일)
+   sim  → topic_based_ros2_control/TopicBasedSystem → /isaac_joint_commands → Isaac finger joint
+   real → OnRobot 2FG14 하드웨어 인터페이스(신규 작성) → Modbus TCP → Compute Box → 그리퍼
+```
+
+### 실물 제어 경로 3가지 — URCap 은 쓰지 않는다
+| 경로 | 그리퍼 소유자 | ROS2/Isaac 연동 |
+|---|---|---|
+| (A) URCap 단독 | PolyScope 프로그램이 tool 포트/URScript 로 개폐 | ❌ 제어 루프가 로봇 컨트롤러 안에 갇힘 — PC/ROS/Isaac 못 봄 |
+| (B) tool-comm 브리지 + ROS2 HW 인터페이스 | tool I/O = **User(ROS)** 소유, `/tmp/ttyUR` 경유 | ✅ (2F-85 방식, §2) |
+| (C) 외부 직결(Compute Box) | PC ↔ **OnRobot Compute Box** Modbus TCP(이더넷) | ✅ **2FG14 권장 경로** |
+
+- **(A)와 (B)/(C)는 배타적**(누가 tool/장치를 소유하느냐). sim/real 파리티가 목적이면 **URCap 단독 금지** —
+  URCap 명령은 ROS2 메시지가 되지 않아 Isaac 에 도달할 방법이 없다. tool I/O 는 §2 처럼 **Controlled by = User**.
+- 2FG14 는 OnRobot 특성상 **Compute Box Modbus TCP(경로 C)** 가 자연스럽다(이더넷 직결, 팔 RTDE 와 독립 채널).
+
+### 신규로 작성할 것 (2F-85 구조 미러링)
+- OnRobot 2FG14 성숙한 1st-party ROS2 드라이버는 없음(커뮤니티는 대부분 ROS1/Compute Box Modbus TCP).
+  → **얇은 `ros2_control` 하드웨어 인터페이스**(또는 action-server 노드)를 신규 작성: Compute Box Modbus TCP
+  레지스터맵(문서화됨)을 read/write 해 위 `GripperCommand` 액션에 연결.
+- 배선은 §2 2F-85 를 미러링: 그리퍼 전용 **`gripper` 네임스페이스 별도 CM**(팔=RTDE 이더넷, 그리퍼=Modbus TCP
+  로 채널이 다른 별개 장치), 컨트롤러 yaml 은 **wildcard 노드키**(`/**/controller_manager`), TF subtree 는
+  `tool0`(→ EOAT) 밑에 붙음. 조인트 이름은 sim 과 동일(`gripper_2fg14__finger_left_joint`) 유지, 반대쪽은 `<mimic>`.
+- 점검은 하드웨어 없이 `mock_components/GenericSystem` 으로 컨트롤러/액션 경로까지 먼저 검증.
+
+### 도착 시 확정할 실측/물성 (지금은 rough)
+파지 스트로크·힘·속도 레지스터 스케일, 손가락 개폐 범위(현 sim: `lower 0 ~ upper 0.025`), Compute Box IP/포트,
+Dual Quick Changer 포트 A 전기 커넥터 핀맵. → 오면 §2 형식 런북 + 컨트롤러 yaml 한계값 갱신.
