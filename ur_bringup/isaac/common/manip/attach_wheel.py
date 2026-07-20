@@ -23,7 +23,7 @@ Shape: default a CYLINDER proxy (wheel outer envelope: Ø125 x 20 mm, axis = bor
 triangle mesh instead (export the wheel visual mesh to OBJ first). The bore hole doesn't
 matter for "carrying" collision; the shaft-insertion contact is a separate (phase-1) ACM.
 
-The grasp transform default (--grasp-xyz 0,0,0.145) is GUI-tuned via place_wheel_gui.py so
+The grasp transform default (--grasp-xyz 0,0,0.179) is GUI-tuned via place_wheel_gui.py so
 the wheel sits at the fingertips (clear of the gripper body); override for a different grasp.
 
 Run (system python3, with move_group up):

@@ -158,7 +158,7 @@ collision:=true`). 하지만 팔 전용 SRDF 에는 그리퍼 링크용 disable 
 
 | | sim (Isaac) | 실물 |
 |---|---|---|
-| 하드웨어 플러그인 | `joint_state_topic_hardware_interface/JointStateTopicSystem` (Isaac 토픽) | `robotiq_driver/RobotiqGripperHardwareInterface` (USB-RS485, Modbus RTU) / 점검용 `mock_components/GenericSystem` |
+| 하드웨어 플러그인 | `joint_state_topic_hardware_interface/JointStateTopicSystem` (Isaac 토픽) | `robotiq_driver/RobotiqGripperHardwareInterface` (Modbus RTU; 손목장착=`/tmp/ttyUR` tool-comm 브리지, 벤치=USB-RS485) / 점검용 `mock_components/GenericSystem` |
 | 런치 | `ur16e_2f85.launch.py` (팔+그리퍼 한 CM) | 손목 장착: `ur16e_2f85_real.launch.py` / 벤치: `robotiq_2f85_real.launch.py` (`gripper` 네임스페이스 별도 CM) |
 | 액추에이트 조인트 | `finger_joint` | `finger_joint` (동일) |
 | 컨트롤러/액션/데모 | `gripper_controller` · `GripperCommand` · `gripper_demo.py` | **동일** (데모는 `--action`/`--joint-states-topic` 로 네임스페이스만) |
@@ -256,10 +256,14 @@ sim/real 호환의 정답은 팔과 똑같다: **위(액션)는 sim/real 1벌, �
 |---|---|---|
 | **(A) URCap 단독** | UR 펜던트(PolyScope) 프로그램이 tool RS-485/URScript 로 개폐 | ❌ 제어 루프가 로봇 컨트롤러 안에 갇힘 — PC/ROS 못 봄 |
 | **(B) tool-comm 브리지 + ROS2 HW** | tool I/O = **User(ROS)** 소유, `ur_robot_driver` 가 `/tmp/ttyUR` 미러 | ✅ **2F-85 실물 방식**(Q5) |
-| **(C) 외부 직결** | USB-RS485(Robotiq) 또는 OnRobot **Compute Box** Modbus TCP(이더넷) | ✅ **2FG14 권장** |
+| **(C) 외부 직결** | USB-RS485(Robotiq) 또는 OnRobot **Compute Box** Modbus TCP(이더넷) | ✅ (B/C 둘 다 sim 호환) |
 
 **(A)와 (B)/(C)는 배타적**이다 — 그리퍼를 누가 소유하느냐가 갈린다(둘이 동시에 tool 포트를 못 잡음). 그래서
 §2 2F-85 설정에도 tool I/O **Controlled by = User**(URCap 이 tool I/O 를 잡지 못하게)라고 못박혀 있다.
+
+**B vs C 는 sim 문제가 아니다** — B·C 는 **둘 다 실물 백엔드**라 sim 에선 topic_based 로 스왑되므로 sim 호환은
+동일(비호환은 A 뿐). 그리퍼 1개면 **B 가 배선 간단**(tool I/O 끝, 박스 불필요), HEX F/T 센서·F/T 데이터 쓰면
+**C**(Compute Box 허브). SW(레지스터맵·GripperCommand)는 B/C 거의 동일 → 부품 후 결정. 경로 상세는 [`HARDWARE.md`](HARDWARE.md) §6.
 
 ### "실물을 URCap 으로 제어해도 Isaac 과 연동되나?"
 - **순수 URCap → 안 된다.** URScript 명령은 로봇 컨트롤러 내부 이벤트일 뿐 ROS2 메시지가 되지 않아 Isaac 에
@@ -272,11 +276,74 @@ sim/real 호환의 정답은 팔과 똑같다: **위(액션)는 sim/real 1벌, �
 ### 우리 그리퍼별 ROS2 wrapper 현황
 - **Robotiq 2F-85 (세트2/3) — 있음, 이미 vendored+빌드.** `ros2_robotiq_gripper`(PickNik): `robotiq_driver`
   (`RobotiqGripperHardwareInterface`, Modbus RTU/serial) + `robotiq_controllers` + `serial`. → 경로(B), 해결됨.
-- **OnRobot 2FG14 (세트4 dual-tool, 지금 그리퍼) — 성숙한 1st-party ROS2 드라이버 없음.** 커뮤니티는 대부분
-  ROS1 + Compute Box Modbus TCP 라 ROS2 포팅 필요. → **얇은 `ros2_control` 하드웨어 인터페이스(또는 action-server)**
-  를 신규 작성해 Compute Box Modbus TCP 레지스터맵을 위 `GripperCommand` 에 연결한다(2F-85 배선 미러링:
-  `gripper` 네임스페이스 별도 CM, wildcard 노드키, `tool0`→EOAT 밑 TF, 조인트 이름 sim 과 동일 + `<mimic>`).
+- **OnRobot 2FG14 (세트4 dual-tool, 지금 그리퍼) — 성숙한 1st-party ROS2 드라이버 없음.** 단 **참고 구현 확보**
+  (tonydle `OnRobot_ROS2_Driver`, MIT — ROS2 `ros2_control` ActuatorInterface, `IModbusConnection` 로 **RS-485[B]/TCP[C]
+  통일**, RG 레지스터맵 격리; 형제 `UR_OnRobot_ROS2`/`ur_onrobot`). → 신규 드라이버는 "새로 짜기"가 아니라 **이 레퍼런스를
+  2FG14 레지스터맵으로 포팅 + `GripperActionController` 추가**. Modbus 는 **경로 B/C 어느 쪽이든**(둘 다 sim 호환) 위
+  `GripperCommand` 에 연결(2F-85 배선 미러링: `gripper` 네임스페이스 별도 CM, wildcard 노드키, `tool0`→EOAT 밑 TF,
+  조인트 이름 sim 과 동일 + `<mimic>`).
 
 > 정리: **URCap 단독은 sim 과 호환 불가**(로봇 컨트롤러에 갇힘). 호환의 핵심은 **`GripperCommand` 액션 1벌 +
-> `<hardware>` 플러그인만 스왑**. 2F-85 는 끝났고(`robotiq_driver`), 2FG14 는 **Compute Box Modbus TCP 용
-> ros2_control 하드웨어 인터페이스를 신규 작성**해 같은 구조로 붙이면 된다. sim 2FG14 는 이미 topic_based→Isaac 검증됨.
+> `<hardware>` 플러그인만 스왑**. 2F-85 는 끝났고(`robotiq_driver`), 2FG14 는 **참고구현(tonydle `OnRobot_ROS2_Driver`)을
+> 2FG14 레지스터맵으로 포팅**해 같은 구조로 붙이면 된다(Modbus 경로 B/C 는 배선/HEX-F/T 로 갈리고 **둘 다 sim 호환** —
+> 부품 후 결정). sim 2FG14 는 이미 topic_based→Isaac 검증됨.
+
+## Q8. STEP(CAD)→Isaac 반영 시 자주 나오는 개념들 (핑거 분할·원점·collider·import 방향)
+
+세트4 CAD 파이프라인(`STEP_TO_SIM.md`)을 돌리며 반복되는 4가지 개념 질문. 파이프라인 스크립트의 *왜* 에 해당.
+
+### Q8-a. 핑거 STEP 은 왜 left/right 를 나눠 받나? 모터 1축·대칭이면 세트로 받으면 안 되나?
+**STEP 자체는 정지 형상이라 open/close 와 무관**하다 — 세트로 받든 나눠 받든 파일 안에 움직임은 없다. 나누는
+이유는 *변환 결과물(sim 링크 구조)* 때문:
+- Isaac/URDF 에서 개폐하려면 **움직이는 관절 1개 = 서로 다른 rigid body 2개**가 필요. 관절은 "부모 바디→자식
+  바디" 사이에만 생긴다. 두 핑거가 **하나의 solid 로 융합(boolean union)** 되어 오면 sim 에선 **단일 rigid link
+  1개** → 낄 관절이 없어 개폐 불가 + collision mesh 도 통째로 얼어붙어 파지 충돌체크가 무의미해진다.
+- "모터 1축이라 자동 대칭"은 맞다(그래서 관절도 하나만 구동하고 나머지는 `<mimic>` 미러). 하지만 *대칭으로
+  움직이려면 그 전에 좌·우가 독립 링크로 존재*해야 mimic 이 걸린다. 대칭은 "안 나눠도 되는 이유"가 아니라
+  "나눈 두 링크를 어떻게 구동하냐"의 문제.
+- **진짜 요구는 "파일 개수"가 아니라 "solid body 분리"** 다: ①파일 2개, 또는 ②파일 1개 + **solid body 2개**
+  (assembly STEP) 는 둘 다 OK(HOOPS 가 바디별 Xform 으로 넣어줌 → 스크립트로 좌/우 분리 가능). ③파일 1개 +
+  **body 1개로 융합** 만 ❌(경계·관절축을 손으로 추정해 잘라야 함). 즉 **"boolean union 하지 말고 좌·우를 별개
+  바디로"** 가 핵심이고, 별도 파일로 주면 그게 자동 보장될 뿐.
+- CAD 저장 자세(열림/닫힘)는 무관 — 변환 후 `normalize_part.py` 로 정규화하고 개폐 범위는 config 가 정한다.
+
+### Q8-b. 핑거 링크의 원점(origin)은 어디에 잡나? 바디 접촉면 중심을 좌·우 공유하면?
+먼저 "원점 두 개"를 구분: **①링크 프레임**(핑거 mesh 원점, `normalize_part.py` 가 잡음) vs **②관절 원점**
+(`joint origin`, 부모 프레임에서 q=0 시 자식이 앉는 위치). 튜닝·충돌에 실제로 영향 주는 건 ①.
+
+**권장: 바디 중심 공유 ✕ → 각 핑거의 "자기 슬라이더 장착면 중심"에 개별로.**
+- **Z = 장착면 법선(=접근/툴 축)**, 단 **슬라이드(개폐) 축은 Z 에 수직인 Y**(현재 `axis [0,∓1,0]`)까지 같이
+  고정해야 한다. Z 만 맞추면 부족 — "Z=법선 + Y=개폐방향" 둘 다 정규화해야 mimic 이 깔끔.
+- 개별 원점이 나은 이유: ①개폐 오프셋이 **관절에 남아** `q` 가 "장착면에서 이동량"으로 직접 읽힘(우리가 튜닝한
+  `OPEN ±0.031 ↔ CLOSE ±0.006` 이 관절 limit 로 그대로 보임; 바디중심 공유면 ±31mm 가 mesh 에 파묻힘) ②mesh 가
+  자기 프레임에 얹혀 충돌 geometry 가 링크와 함께 이동 ③`normalize_part.py` 규약("모든 부품=자기 장착면→원점")과 일치.
+- **바디중심 공유가 노리던 "대칭(left=mirror(right))"은 개별 원점이어도 공짜로 따라온다** — 두 장착면 자체가 Y=0
+  에 대해 거울상이라 관절 원점 `(0,+Δ,h)`↔`(0,−Δ,h)`·축 `+Y`↔`−Y`·mesh 미러 → 정확한 거울 대칭. 이점만 얻고 손해 없음.
+- 파지 접촉점(ㄷ-채널 접촉)은 링크 원점으로 삼지 말 것 — **TCP/grasp 프레임으로 따로**(우리는 이미
+  `--grasp-xyz 0,0,0.179`). 링크 원점은 관절이 물리적으로 있는 장착면이어야 q=0 정의가 물리와 일치.
+
+### Q8-c. "collider" 가 뭐야?
+**PhysX(물리엔진)가 충돌·접촉 판정에 쓰는 보이지 않는 충돌 형상** — 눈에 보이는 render mesh 와 별개 레이어.
+- STEP 을 넣으면 기본은 **render-only** → 물리적으로 "유령"(관통·미끄러짐). prim 에 **Collider 활성화**하면
+  `UsdPhysics.CollisionAPI` 가 붙어 PhysX 가 충돌 물체로 인식(접촉력·마찰·파지). GUI: prim 우클릭 → Add →
+  Physics → Colliders Preset (Property 패널 Collider 체크).
+- **충돌 세계가 둘**임을 기억: **Isaac PhysX = USD Collider**(물리 재생 — 핑거가 휠을 실제 잡는 검증) vs
+  **MoveIt = URDF collision mesh**(`export_eoat_meshes.py`, 모션플래닝 충돌체크). collider 는 Isaac 물리 재생용.
+- **함정 — 근사 타입(`approximation`) 선택이 중요**(collider = 이 셋을 말함):
+  - `convexHull` — 빠르나 **오목부를 메꿈**. 핑거 ㄷ-채널·휠 보어에 쓰면 속이 꽉 차 헛충돌/삽입 불가.
+  - `convexDecomposition` — 오목을 볼록 조각들로 분해. **오목 EOAT 부품엔 이게 정답**(정적 장애물 파이프라인도 이래서 3종 제공).
+  - `none`(triangle mesh) — 정확하나 **static 전용**(dynamic rigid body 불가). 테이블·지그용.
+  - `sdf` — 오목 dynamic 까지 정확(무겁지만 정밀 파지/삽입).
+
+### Q8-d. GUI import 시 원점 orientation 을 바꿀 수 있나?
+**부분적으로만.** "원점을 이 면에, Z 를 이 축으로" 같은 임의 재배치는 import 단계에서 **안 된다.**
+- Import 다이얼로그에서 되는 것 = **Up Axis(Y↔Z, 우리 `iUpAxis=2`)** 와 **Units/metersPerUnit(`0.001`)** 뿐.
+  up-axis 는 **전체 import 를 통째로 회전**시키는 것이지 부품별 장착면 정렬이 아니다.
+- 안 되는 것 = 개별 부품 원점을 특정 면/점으로 옮기기, 장착축을 +Z 로 맞추기. **local 원점 = STEP 저작 CAD
+  글로벌 좌표계 그대로**이기 때문. CAD 에서 정렬해 저장했으면 그대로, 아니면 import 로는 못 고침.
+- Import **후** GUI 에서 Xform translate/orient·Edit Pivot 은 가능하나 **mesh 위에 xformOp 를 얹는 것**이지 원점을
+  재저작(bake)하는 게 아님 → reference/관절 시 원점이 CAD 원점 기준이라 헷갈리고 **재현 안 됨**(손 정렬).
+- **그래서 GUI 대신 `normalize_part.py`** — 장착면→원점, 축→+Z 를 mesh 에 **baked** 해서 `assets/cad/normalized/`
+  로 내보냄(config 숫자만 있으면 항상 같은 결과, 손 정렬 0). GUI 는 그 결과를 **눈으로 확인·미세 튜닝**하는 용도
+  (CLAUDE.md "headless 는 치수만, 방향/자세 최종 튜닝은 Isaac GUI 확인 필수"의 역할 분담).
+- 정석: mech 팀이 **CAD 저작 단계에서 원점=장착면·축 정렬로 저장**(Q8-a/b 요청과 이어짐) → import·normalize 둘 다 깔끔.

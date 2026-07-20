@@ -267,29 +267,56 @@ RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvbl
 상위앱/MoveIt ──GripperCommand──▶ gripper_controller(GripperActionController)
                                      │  (URDF finger joint 1개 + mimic, sim/real 동일)
    sim  → topic_based_ros2_control/TopicBasedSystem → /isaac_joint_commands → Isaac finger joint
-   real → OnRobot 2FG14 하드웨어 인터페이스(신규 작성) → Modbus TCP → Compute Box → 그리퍼
+   real → OnRobot 2FG14 하드웨어 인터페이스(신규 작성) → Modbus(RS-485 tool I/O[B] 또는 TCP Compute Box[C]) → 그리퍼
 ```
 
-### 실물 제어 경로 3가지 — URCap 은 쓰지 않는다
-| 경로 | 그리퍼 소유자 | ROS2/Isaac 연동 |
-|---|---|---|
-| (A) URCap 단독 | PolyScope 프로그램이 tool 포트/URScript 로 개폐 | ❌ 제어 루프가 로봇 컨트롤러 안에 갇힘 — PC/ROS/Isaac 못 봄 |
-| (B) tool-comm 브리지 + ROS2 HW 인터페이스 | tool I/O = **User(ROS)** 소유, `/tmp/ttyUR` 경유 | ✅ (2F-85 방식, §2) |
-| (C) 외부 직결(Compute Box) | PC ↔ **OnRobot Compute Box** Modbus TCP(이더넷) | ✅ **2FG14 권장 경로** |
+### 실물 제어 경로 3가지 — 핵심은 "누가 그리퍼를 제어하냐"
+| 경로 | 그리퍼 제어 주체 | URCap 역할 | 전송 | ROS2/Isaac(sim) 연동 |
+|---|---|---|---|---|
+| **(A) OnRobot URCap 단독** | **PolyScope**(펜던트 프로그램) | **OnRobot URCap = 드라이버 본체**(직접 제어) | — | ❌ 제어가 UR 컨트롤러에 갇힘, ROS 메시지 안 됨 |
+| **(B) tool-comm 브리지 + ROS2 HW** | **PC/ROS**(ros2_control) | **ToolComm Forwarder URCap = dumb 시리얼 통과**(제어 안 함) | RS-485 `/tmp/ttyUR` (Modbus RTU) | ✅ (2F-85 방식, §2) |
+| **(C) 외부 직결(Compute Box)** | **PC/ROS**(ros2_control) | 없음 | **Modbus TCP :502**(이더넷) | ✅ |
 
-- **(A)와 (B)/(C)는 배타적**(누가 tool/장치를 소유하느냐). sim/real 파리티가 목적이면 **URCap 단독 금지** —
-  URCap 명령은 ROS2 메시지가 되지 않아 Isaac 에 도달할 방법이 없다. tool I/O 는 §2 처럼 **Controlled by = User**.
-- 2FG14 는 OnRobot 특성상 **Compute Box Modbus TCP(경로 C)** 가 자연스럽다(이더넷 직결, 팔 RTDE 와 독립 채널).
+**A vs B — 배선은 같을 수 있고, 차이는 제어 소유권.** 둘 다 그리퍼를 UR tool I/O 에 물릴 수 있으나:
+- **(A) = PolyScope 방식** — OnRobot URCap 이 그리퍼를 직접 제어, 개폐를 로봇 프로그램 노드로 짬. 명령이 UR
+  컨트롤러 안에서 돌아 **ROS·Isaac·MoveIt 어디에도 안 나옴** → sim/real 파리티·파지 충돌체크 전부 불가. **금지.**
+- **(B) = ROS 방식** — 펜던트엔 **멍청한 시리얼 forwarder URCap**(ToolComm Forwarder)만 깔고, 그리퍼 제어는
+  PC(ros2_control)가 함. tool I/O 는 §2 처럼 **Controlled by = User**. → sim 과 같은 `GripperCommand` 계약.
+- **A 와 B 는 tool 포트 소유권상 배타적** — 하나만 고른다. 우리 목적(sim/real 통합)엔 **A 는 탈락, B 가 정답 축**.
 
-### 신규로 작성할 것 (2F-85 구조 미러링)
-- OnRobot 2FG14 성숙한 1st-party ROS2 드라이버는 없음(커뮤니티는 대부분 ROS1/Compute Box Modbus TCP).
-  → **얇은 `ros2_control` 하드웨어 인터페이스**(또는 action-server 노드)를 신규 작성: Compute Box Modbus TCP
-  레지스터맵(문서화됨)을 read/write 해 위 `GripperCommand` 액션에 연결.
-- 배선은 §2 2F-85 를 미러링: 그리퍼 전용 **`gripper` 네임스페이스 별도 CM**(팔=RTDE 이더넷, 그리퍼=Modbus TCP
+**B vs C — sim 호환 문제가 아니라 "실물 배선/센서" 문제.** (흔한 오해: "B 는 sim 안 됨" ✗)
+- **B·C 는 둘 다 실물 백엔드** — sim 을 켜면 **둘 다 통째로 빠지고 topic_based→Isaac 으로 스왑**된다. 즉
+  **sim 호환성은 B/C 로 안 갈림**(그건 아키텍처가 보장). sim 비호환인 건 오직 **A**.
+- **그리퍼 1개면 (B) 가 배선이 더 간단** — Quick Changer→tool I/O 끝, 별도 박스·전원·이더넷 불필요.
+- **(C) 가 유리해지는 실제 변수 = HEX F/T 센서**: OnRobot 체인에 HEX(F/T)+2FG14 를 물리거나 F/T 데이터(향후
+  삽입 RL)를 쓰려면 Compute Box 가 자연스러운 허브. 순수 개폐만이면 B, F/T 활용까지면 C. **부품/센서 연결
+  방식 확인 후 결정** — SW(레지스터맵·`GripperCommand`)는 B/C 어느 쪽이든 거의 동일하므로 지금 단정 불필요.
+
+### 참고 구현 — tonydle OnRobot 오픈소스 (★ 신규 드라이버의 출발점)
+직접 채택은 불가(RG2/6·아직 GripperCommand 미구현)하지만, **경로 B/C 를 ros2_control 로 온전히 구현한 레퍼런스**라
+우리 신규 드라이버를 "새로 짜기"에서 "이식+레지스터 교체"로 낮춰준다. 셋 다 MIT.
+- **`OnRobot_ROS2_Driver`** (★ 핵심) — **ROS2 `ros2_control` `ActuatorInterface` 플러그인**. `IModbusConnection`
+  뒤로 **TCP(경로 C)/Serial(경로 B) 통일**(Mazurel/Modbus C++ + libnet), `RG` 클래스에 레지스터맵 격리
+  (DEVICE_ID=65, REG_TARGET_WIDTH/FORCE/CONTROL, CMD_GRIP…), 조인트 `finger_width` 1개(state+cmd), 컨트롤러
+  `joint_state_broadcaster`+`JointGroupPositionController`, `use_fake_hardware`→`mock_components`, 생명주기 완비.
+- **`UR_OnRobot_ROS2`** — 위 그리퍼를 UR e-Series 와 결합(팔+그리퍼 네임스페이스/joint_states 병합)한 ROS2 판.
+- **`ur_onrobot`** — 같은 저자 ROS1 판. 경로 B(tool_io)·C(compute_box) 두 bringup 을 실증(UR 세팅: 24V/Even/1M/
+  `/tmp/ttyUR`:54321). 개념 대조용.
+
+**2FG14 포팅 계획**(부품 도착 시 착수):
+1. `OnRobot_ROS2_Driver` 베이스로 **`RG` → `TwoFG14` 클래스**(레지스터맵만 2FG14 로 교체 — ★ 핵심 미지수).
+2. `finger_width` 단일 command + URDF **`<mimic>`** 로 좌/우 → 우리 sim 조인트명과 정합.
+3. `JointGroupPositionController` → **`GripperActionController`(GripperCommand)** 추가(저자 README 도 TODO 로 권장) — 우리 파리티 계약 완성.
+4. `<hardware>` 스왑: sim=topic_based / **real=이 플러그인(2FG14)** / mock=mock_components.
+
+### 구현 — 참고구현 포팅 + 2F-85 배선 미러링
+- 위 "참고 구현"(`OnRobot_ROS2_Driver`)을 2FG14 로 **포팅**: `RG`→`TwoFG14`(레지스터맵 교체), `IModbusConnection`
+  으로 **Modbus(RS-485[B]/TCP[C]) read/write** 해 위 `GripperCommand` 액션에 연결(`GripperActionController` 추가).
+- 배선은 §2 2F-85 를 미러링: 그리퍼 전용 **`gripper` 네임스페이스 별도 CM**(팔=RTDE 이더넷, 그리퍼=Modbus(RS-485/TCP)
   로 채널이 다른 별개 장치), 컨트롤러 yaml 은 **wildcard 노드키**(`/**/controller_manager`), TF subtree 는
   `tool0`(→ EOAT) 밑에 붙음. 조인트 이름은 sim 과 동일(`gripper_2fg14__finger_left_joint`) 유지, 반대쪽은 `<mimic>`.
 - 점검은 하드웨어 없이 `mock_components/GenericSystem` 으로 컨트롤러/액션 경로까지 먼저 검증.
 
 ### 도착 시 확정할 실측/물성 (지금은 rough)
-파지 스트로크·힘·속도 레지스터 스케일, 손가락 개폐 범위(현 sim: `lower 0 ~ upper 0.025`), Compute Box IP/포트,
-Dual Quick Changer 포트 A 전기 커넥터 핀맵. → 오면 §2 형식 런북 + 컨트롤러 yaml 한계값 갱신.
+파지 스트로크·힘·속도 레지스터 스케일, 손가락 개폐 범위(현 sim: `lower 0 ~ upper 0.025`), 접속(B=`/tmp/ttyUR` 시리얼 /
+C=Compute Box IP·포트), Dual Quick Changer 포트 A 전기 커넥터 핀맵. → 오면 §2 형식 런북 + 컨트롤러 yaml 한계값 갱신.

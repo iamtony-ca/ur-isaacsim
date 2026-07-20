@@ -44,7 +44,7 @@ $P isaac/common/eoat/build_eoat_moveit.py $CFG     # mesh 있으면 <mesh> 참�
   - `cad`: `assets/cad/` 안의 소스 USD 파일명
   - `expected_size_mm`(선택): `[x,y,z]` 도면 실측 치수(mm). 있으면 `validate_cad.py --config` 가
     변환된 bbox 와 자동 대조 → 스케일/단위 오류(1000배 등) 경고. 없으면 사람이 눈으로 대조.
-  - `physics.collision`(선택, 부품별): `convex`(기본) | `convexDecomposition` | `mesh`. **단일 knob 이
+  - `physics.collision`(선택, 부품별): `convex`(=`convexHull`, 기본) | `convexDecomposition` | `mesh` | `boundingCube` | `none`. **단일 knob 이
     USD 근사와 export 되는 `_col.obj` 를 함께 결정**(장애물 3레벨과 동형). `convex`=단일 hull(가벼움·오목메움),
     `convexDecomposition`=CoACD 조각(오목추종, `pip install coacd` 필요·없으면 hull 폴백),
     `mesh`=decimate 실메시(정밀·파지/삽입 접촉용). 시각 `<id>.obj` 는 항상 실메시.

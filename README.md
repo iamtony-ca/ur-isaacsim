@@ -81,12 +81,13 @@ ur_bringup/
 ├── srdf/common/          ur16e_2f85.srdf.xacro                    (세트2·3 공유)
 ├── isaac/
 │   ├── common/           ur16e_isaac_ros2.py(--obstacles), moveit_plan_execute_demo.py, build_ur16e_2f85.py, convert_dae_to_usd.py
-│   │                     convert_step_to_usd.py (세트4 STEP→USD), cartesian_demo.py(MoveL), movej_demo.py(MoveJ)
+│   │                     convert_step_to_usd.py (세트4 STEP→USD), check_step_delivery.py, validate_cad.py (세트4 인수점검), cartesian_demo.py(MoveL), movej_demo.py(MoveJ)
 │   │   ├── eoat/         eoat_dualtool.yaml(단일 소스) + eoat_model.py + build_eoat_{usd,urdf,moveit}.py
 │   │   │                 + build_ur16e_dualtool.py + export_eoat_meshes.py(부품 mesh) + normalize_part.py
-│   │   │                 + extract_poses.py + edit_asset.py + play_ground.py  (세트4 파이프라인)
-│   │   └── obstacles/    정적 장애물 파이프라인: obstacles.yaml + prepare_obstacles.py + load_obstacles_moveit.py
-│   │                     + collision_report.py + approach_to_collision.py + README.md  (세트4, sim+real)
+│   │   │                 + extract_poses.py + verify_articulation.py + make_placeholder_step.py + edit_asset.py + play_ground.py  (세트4)
+│   │   ├── obstacles/    정적 장애물 파이프라인: obstacles.yaml + prepare_obstacles.py + load_obstacles_moveit.py
+│   │   │                 + collision_report.py + approach_to_collision.py + README.md  (세트4, sim+real)
+│   │   └── manip/        파지 휠 충돌체크: attach_wheel.py(gripped/detach) + probe_box.py + place_wheel_gui.py  (세트4)
 │   ├── ur16e_2f85/       gripper_demo.py, selfcollision_demo.py
 │   ├── ur16e_2f85_d405/  octomap_demo.py, convert_bracket.py
 │   └── assets/           합성 USD (세트 공유 버킷) + cad/(STEP·부품 USD·normalized/) + obstacles/   (세트4)
@@ -207,7 +208,7 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 | 세트 3 (+D405) | ✅ 카메라·OctoMap·plan+execute | ✅ `realsense2_camera` 노드 로드+카메라 TF | ⏳ D405 USB3 연결 시 (영상 스트림·hand-eye) |
 | **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
 | **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion; plan+execute + A/B 회피 검증(`nvblox_obstacle_demo.py`) | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
-| **세트 4 (dual-tool CAD 파이프라인)** | 🔧 STEP→USD→그래프→{Isaac 물리 아티큘레이션·URDF·SRDF} 자동화 완료, play/충돌검출 검증됨. **부품 상대자세는 rough placeholder** — GUI 튜닝/기구팀 tool0-기준 데이터 대기 | ⏳ 실물 EOAT 연결 시 | ⏳ 하드웨어 미도착 |
+| **세트 4 (dual-tool CAD 파이프라인)** | 🔧 STEP→USD→그래프→{Isaac 물리 아티큘레이션·URDF·SRDF} 자동화 완료, play/충돌검출·**파지 휠 gripped/not-gripped 충돌체크**(`manip/`)·그리퍼 `GripperCommand` 개폐 검증됨. **부품 상대자세는 rough placeholder** — GUI 튜닝/기구팀 tool0-기준 데이터 대기 | 🔧 설계 확정(팔의 `use_sim` 스왑 복제, `GripperCommand`+`<hardware>`만 교체). **참고 구현 확보**(tonydle `OnRobot_ROS2_Driver`, ROS2 ros2_control Modbus TCP/Serial) → 2FG14 레지스터맵 포팅 예정 | ⏳ 실물 EOAT/2FG14 미도착 |
 
 자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피).
 세트4 CAD 파이프라인의 진행/설계는 [`STEP_TO_SIM.md`](STEP_TO_SIM.md) + `isaac/common/eoat/README.md`.
