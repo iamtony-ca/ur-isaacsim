@@ -1,0 +1,26 @@
+# ML environment for the IL/VLA track (training + LeRobot dataset conversion).
+#
+# Installed into a WORKSPACE-LOCAL venv (deps/.venv-ml), never into system python
+# and never into Isaac's python. Removing that directory fully undoes it.
+# See src/setup/setup.sh stage `ml` and src/SETUP.md 2-C.
+#
+# torch is NOT listed here: it must come from the PyTorch CUDA index, because the
+# default PyPI wheel is not guaranteed to carry sm_120 (Blackwell / RTX 50) kernels.
+# setup.sh installs it explicitly:
+#     pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision
+# and then VERIFIES sm_120 is present. Do not "pip install torch" plainly here --
+# a silently-replaced torch is exactly the failure mode HISTORY.md 14 describes for
+# nvblox: the GPU is visible, tensors allocate, and kernels never run.
+
+lerobot[dataset]       # dataset format + ACT. The [dataset] EXTRA is required:
+                       # plain `lerobot` cannot import lerobot.datasets
+                       # ("'datasets' is required but not installed").
+imageio-ffmpeg         # bundles an ffmpeg binary INSIDE the venv, so we do not
+                       # have to apt-install ffmpeg system-wide (isolation).
+                       # NOTE: lerobot also pulls `torchcodec`, whose .so needs the
+                       # system ffmpeg *shared libraries* (not just a binary) and so
+                       # fails to load here. lerobot falls back to pyav automatically
+                       # and everything works -- the warning is benign. Verified by a
+                       # full write+read round trip (HISTORY.md 19). Do not apt-install
+                       # ffmpeg to silence it: that is a system-wide change for a
+                       # cosmetic warning.

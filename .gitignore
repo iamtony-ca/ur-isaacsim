@@ -9,3 +9,13 @@ __pycache__/
 /topic_based_hardware_interfaces/
 /ros2_robotiq_gripper/
 /serial/
+/isaac_ros_nvblox/
+# OMY-L100 teleop leader stack (plan_il_vla.md 3.5). Pinned to SHAs in ur16e.repos.
+/open_manipulator/
+/dynamixel_hardware_interface/
+/robotis_interfaces/
+
+# colcon build logs
+/log/
+/build/
+/install/

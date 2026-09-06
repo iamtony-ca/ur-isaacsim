@@ -42,18 +42,18 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterValue
 
 WORLD_DEPTH = "/cumotion/camera_0/world_depth"   # robot-masked depth -> nvblox
-# Static camera pose in the base frame, computed from xyz=(1.10,0,1.10) looking at
-# (0.30,0,0.15) -- the SAME pose as ur16e_isaac_ros2.py --with-static-cam defaults.
-# (parent base_link -> child static_cam_depth_optical_frame; ROS optical convention)
-SCAM_TF = ["1.10", "0.0", "1.10",
-           "0.66424980", "0.66424980", "-0.24242978", "-0.24242978"]  # x y z qx qy qz qw
+# The static camera pose now lives in launch/common/static_cam_tf.launch.py --
+# ONE definition shared by nvblox and by teleop/IL recording. It must stay in sync
+# with ur16e_isaac_ros2.py --static-cam-xyz/--static-cam-target.
 
 
 def generate_launch_description():
@@ -62,10 +62,23 @@ def generate_launch_description():
     depth_info = LaunchConfiguration("depth_info")
     use_seg = LaunchConfiguration("use_robot_segmenter")
     static_cam_tf = LaunchConfiguration("static_cam_tf")
+    seg_buffer = ParameterValue(LaunchConfiguration("segmenter_buffer"), value_type=float)
 
     ur_share = get_package_share_directory("ur_bringup")
-    nvblox_base = os.path.join(get_package_share_directory("nvblox_examples_bringup"),
-                               "config", "nvblox", "nvblox_base.yaml")
+    # nvblox's stock base config. It ships ONLY inside nvblox_examples_bringup, whose
+    # dependency tree (triton / tensor_rt / visual_slam / detectnet / unet + model
+    # installers) is ~100 extra debs and forces container-wide python3.12 upgrades --
+    # unacceptable on a machine shared with other workspaces. So we vendor the single
+    # yaml under config/ur16e_2f85_d405/vendor/ and use the apt copy only if it happens
+    # to be installed. See that file's header for how to refresh it.
+    nvblox_base = os.path.join(ur_share, "config", "ur16e_2f85_d405", "vendor", "nvblox_base.yaml")
+    try:
+        _apt_base = os.path.join(get_package_share_directory("nvblox_examples_bringup"),
+                                 "config", "nvblox", "nvblox_base.yaml")
+        if os.path.isfile(_apt_base):
+            nvblox_base = _apt_base
+    except Exception:
+        pass
     nvblox_cumotion = os.path.join(ur_share, "config", "ur16e_2f85_d405", "nvblox_cumotion.yaml")
     cumotion_urdf = os.path.join(ur_share, "cumotion", "ur16e_2f85.urdf")
     cumotion_xrdf = os.path.join(ur_share, "cumotion", "ur16e_2f85.xrdf")
@@ -84,7 +97,13 @@ def generate_launch_description():
                     "urdf_path": cumotion_urdf,
                     "xrdf_path": cumotion_xrdf,
                     "robot_base_frame": "base_link",
-                    "additional_buffer_distance": 0.12,
+                    # How far BEYOND the XRDF collision spheres the robot is masked out of
+                    # the depth image. Too small -> the arm's silhouette leaks into the TSDF
+                    # and cuMotion rejects the start pose with "world collision detected";
+                    # too large -> real obstacles close to the arm get masked away too.
+                    # Only read at node init, so change it here / via the launch arg, not
+                    # with `ros2 param set`.
+                    "additional_buffer_distance": seg_buffer,
                     "input_qos": "SYSTEM_DEFAULT",
                     "output_qos": "SYSTEM_DEFAULT",
                     "use_sim_time": use_sim_time,
@@ -117,13 +136,14 @@ def generate_launch_description():
                     ("camera_0/depth/camera_info", depth_info)],
     )
 
-    # base_link -> static_cam_depth_optical_frame (must match the Isaac static cam pose)
-    static_tf = Node(
-        package="tf2_ros", executable="static_transform_publisher", name="static_cam_tf",
+    # base_link -> static camera optical frames. Lives in its own launch so teleop
+    # / IL recording can publish it WITHOUT running nvblox (they need the exterior
+    # camera, not an ESDF mapper). Single source of truth for the pose.
+    static_tf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(ur_share, "launch", "common", "static_cam_tf.launch.py")),
         condition=IfCondition(static_cam_tf),
-        arguments=["--x", SCAM_TF[0], "--y", SCAM_TF[1], "--z", SCAM_TF[2],
-                   "--qx", SCAM_TF[3], "--qy", SCAM_TF[4], "--qz", SCAM_TF[5], "--qw", SCAM_TF[6],
-                   "--frame-id", "base_link", "--child-frame-id", "static_cam_depth_optical_frame"],
+        launch_arguments={"use_sim_time": use_sim_time}.items(),
     )
 
     return LaunchDescription([
@@ -134,6 +154,11 @@ def generate_launch_description():
         DeclareLaunchArgument("use_robot_segmenter", default_value="true",
                               description="Mask the robot out of the depth before nvblox. "
                                           "false = raw depth (debug)."),
+        DeclareLaunchArgument("segmenter_buffer", default_value="0.12",
+                              description="robot_segmenter additional_buffer_distance [m] — how far past the "
+                                          "XRDF spheres the arm is cut out of the depth. Raise it (0.2~0.3) if "
+                                          "cuMotion rejects the start pose with 'world collision detected' "
+                                          "(= arm residue leaked into the TSDF)."),
         DeclareLaunchArgument("static_cam_tf", default_value="true",
                               description="Publish base_link->static_cam_depth_optical_frame TF "
                                           "(set false if your camera TF comes from elsewhere)."),

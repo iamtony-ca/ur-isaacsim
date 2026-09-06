@@ -18,6 +18,20 @@ controller_manager:
     gripper_controller:
       type: position_controllers/GripperActionController
 
+    # STREAMING position controller — for teleop (MoveIt Servo) and, later, for
+    # running a learned policy (IL/VLA or RL) that emits per-step joint targets.
+    #
+    # Why a second arm controller: scaled_joint_trajectory_controller is
+    # TRAJECTORY based (waypoints + timing). Feeding it single-step targets at
+    # 30-100 Hz gives jerky/overshooting motion. See
+    # ur_bringup/docs/plan_il_vla.md 2.3.
+    #
+    # ** Mutually exclusive with scaled_joint_trajectory_controller ** — both
+    # claim the same position command interfaces, so only one may be active.
+    # Spawn this one INACTIVE and switch with isaac/common/switch_control_mode.py.
+    forward_position_controller:
+      type: position_controllers/JointGroupPositionController
+
 scaled_joint_trajectory_controller:
   ros__parameters:
     joints:
@@ -37,6 +51,20 @@ scaled_joint_trajectory_controller:
     # last trajectory point ... is not zero"). Allow it — harmless for OMPL/other
     # planners whose terminal velocity is already zero.
     allow_nonzero_velocity_at_trajectory_end: true
+
+forward_position_controller:
+  ros__parameters:
+    joints:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_joint
+      - wrist_1_joint
+      - wrist_2_joint
+      - wrist_3_joint
+    # Joint ORDER above is the contract for /forward_position_controller/commands
+    # (std_msgs/Float64MultiArray). MoveIt Servo publishes in the move group's
+    # order, which for ur_manipulator (base_link -> tool0) is exactly this.
+    interface_name: position
 
 gripper_controller:
   ros__parameters:

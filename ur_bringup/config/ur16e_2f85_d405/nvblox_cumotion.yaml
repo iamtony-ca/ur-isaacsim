@@ -18,6 +18,19 @@
     # ("Requested ... in base_link frame but nvblox is mapping in world frame").
     # base_link is world-fixed for a static-base arm, so this is fine.
     global_frame: "base_link"
+    # *** What UNOBSERVED voxels report to cuMotion through
+    #     /nvblox_node/get_esdf_and_gradient. ***
+    # nvblox's node default is -1000.0 (= "deep inside an obstacle"). With a single
+    # static camera most of the workspace box is never observed -- and the arm itself
+    # is deliberately masked out of the depth, so the very space the arm occupies is
+    # unobserved -- so cuMotion rejects EVERY start pose with
+    #     Invalid c-space position: world collision detected
+    #     trajopt: INVALID_INITIAL_CSPACE_POSITION
+    # even at home with nothing nearby. Flipping the sign makes unobserved = FREE,
+    # which is the right policy here: obstacles come from what the camera actually
+    # sees, and self-collision/planning-scene checks still apply.
+    # (Read only at node startup -- `ros2 param set` has no effect.)
+    esdf_and_gradients_unobserved_value: 1000.0
     # keep the map tight to the workspace (the eye-in-hand camera sweeps around)
     map_clearing_radius_m: 2.0
     map_clearing_frame_id: "base_link"

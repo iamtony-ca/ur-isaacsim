@@ -1,0 +1,82 @@
+# MoveIt Servo config for UR16e (+ Robotiq 2F-85) — teleoperation.
+#
+# Servo turns EE twist / joint-jog commands into a stream of joint positions, so a
+# gamepad (or keyboard) can drive the arm directly. Output goes to
+# forward_position_controller (JointGroupPositionController), the SAME streaming
+# path a learned policy will later use — see ur_bringup/docs/plan_il_vla.md 2.3.
+#
+# *** Written against the MoveIt Servo schema shipped with Jazzy
+# (moveit_servo 2.12.x, generate_parameter_library). ***
+# Do NOT copy ur_moveit_config/config/ur_servo.yaml over this: that file targets
+# the PRE-rewrite Servo API and its keys (planning_frame, ee_frame,
+# robot_link_command_frame, low_latency_mode, system_latency_compensation,
+# collision_check_type, num_outgoing_halt_msgs_to_publish, low_pass_filter_coeff,
+# use_gazebo) do not exist here and the node will reject them.
+# Authoritative schema: /opt/ros/jazzy/share/moveit_servo/config/servo_parameters.yaml
+
+# NOTE: `--params-file` requires the <node>/ros__parameters structure. The stock
+# moveit_servo example yamls are FLAT because the demos load them through
+# ParameterBuilder instead; passing a flat file to servo_node dies with
+#   'Cannot have a value before ros__parameters'.
+/**:
+  ros__parameters:
+    # generate_parameter_library instance name -> all Servo params live
+    # under the `moveit_servo` namespace. Without it servo_node aborts with
+    #   parameter 'moveit_servo.move_group_name' is not initialized
+    moveit_servo:
+      ## MoveIt properties
+      move_group_name: ur_manipulator   # SRDF group: base_link -> tool0
+
+      ## Incoming commands
+      # "unitless" = [-1:1] joystick-style; scale.* below converts to velocity.
+      # (Switch to "speed_units" if you want to command m/s and rad/s directly.)
+      command_in_type: unitless
+      scale:
+        linear: 0.25       # max linear velocity [m/s] at full stick
+        rotational: 0.8    # max angular velocity [rad/s] at full stick
+        joint: 0.5         # joint-jog scale [rad/s] at full deflection
+      incoming_command_timeout: 0.5   # [s] stop if no new command. Generous for hand-driven teleop.
+
+      # Angular part of the twist is applied about the EE axes (intuitive for teleop:
+      # "roll the tool", not "orbit around the base").
+      apply_twist_commands_about_ee_frame: true
+
+      ## Outgoing commands
+      publish_period: 0.01              # 100 Hz — matches controller_manager update_rate
+      command_out_topic: /forward_position_controller/commands
+      command_out_type: std_msgs/Float64MultiArray
+      publish_joint_positions: true
+      publish_joint_velocities: false   # JointGroupPositionController takes positions only
+      publish_joint_accelerations: false
+
+      ## Smoothing — matters a lot for demo quality (ACT is sensitive to jerky demos)
+      use_smoothing: true
+      smoothing_filter_plugin_name: "online_signal_smoothing::ButterworthFilterPlugin"
+
+      ## Planning scene / collision
+      # Servo keeps its own planning scene monitor. Set is_primary_planning_scene_monitor
+      # to FALSE when move_group is also running (move_group owns the scene then);
+      # the teleop launch overrides this via the `primary_scene_monitor` argument.
+      is_primary_planning_scene_monitor: true
+      monitored_planning_scene_topic: /planning_scene
+      joint_topic: /joint_states
+      check_octomap_collisions: false
+
+      check_collisions: true
+      collision_check_rate: 10.0
+      self_collision_proximity_threshold: 0.01    # start decelerating [m] — covers arm<->2F-85
+      scene_collision_proximity_threshold: 0.02
+
+      ## Singularity handling
+      # UR is 6-DoF with real wrist singularities, and teleop drives straight into them.
+      # These are the Jazzy defaults; raise them if Servo feels "sticky" mid-workspace,
+      # lower them if the wrist still whips near singular poses.
+      lower_singularity_threshold: 17.0
+      hard_stop_singularity_threshold: 30.0
+      leaving_singularity_threshold_multiplier: 2.0
+
+      ## Joint limits
+      # Buffer before the hard joint limits. Larger = safer when moving fast.
+      joint_limit_margins: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+      halt_all_joints_in_joint_mode: true
+      halt_all_joints_in_cartesian_mode: true

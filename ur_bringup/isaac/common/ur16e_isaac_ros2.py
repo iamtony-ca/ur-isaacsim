@@ -51,8 +51,9 @@ parser.add_argument("--camera-parent", default="wrist_3_link",
                     help="articulation link the camera is parented to (moves with the arm)")
 # --- static external depth camera (sim) : overlooks the workspace for nvblox ---
 parser.add_argument("--with-static-cam", action="store_true",
-                    help="add a STATIC depth camera overlooking the workspace (not attached to the arm) "
-                         "and publish depth/camera_info on /static_cam/depth/*. This is the camera nvblox "
+                    help="add a STATIC camera overlooking the workspace (not attached to the arm) and "
+                         "publish RGB + depth + camera_info on /static_cam/{color,depth}/*. "
+                         "RGB is the IL/VLA policy's exterior view; depth is what nvblox "
                          "uses to build the obstacle ESDF for cuMotion; the eye-in-hand D405 is for grasp "
                          "perception. Pose is fixed in the base frame -- keep it in sync with the static TF "
                          "in ur16e_2f85_d405_nvblox.launch.py.")
@@ -72,6 +73,63 @@ parser.add_argument("--obstacle-pose", default="0.5,0.1,0.6",
                     help="obstacle box center in the base frame (m), comma-separated")
 parser.add_argument("--obstacle-size", default="0.12,0.5,0.1",
                     help="obstacle box size x,y,z (m), comma-separated")
+# --- pick&place scene (teleop -> IL demo collection) ---
+# Everything here is OPT-IN so the nvblox / cuMotion demos above keep their scene.
+parser.add_argument("--scene", default="none", choices=["none", "pick_place"],
+                    help="'pick_place' spawns a work surface + a PHYSICS-enabled object + a "
+                         "place-target marker. This is the scene teleop demos are recorded in. "
+                         "Unlike --obstacle (visual only) the object has rigid body + collider "
+                         "+ mass, because the gripper must actually hold it.")
+parser.add_argument("--table", action="store_true",
+                    help="spawn an explicit work surface (FixedCuboid) so the object rests on a "
+                         "known plane regardless of what the background environment provides")
+parser.add_argument("--table-height", default="0.0",
+                    help="top surface height of the work table [m] in the base frame")
+parser.add_argument("--object-pose", default="0.55,0.0,0.03",
+                    help="object spawn position x,y,z (m) in the base frame")
+parser.add_argument("--object-size", default="0.05,0.05,0.05",
+                    help="object size x,y,z (m). 2F-85 stroke is 85 mm, so keep x/y below ~0.07")
+parser.add_argument("--object-mass", default="0.2", help="object mass [kg]")
+parser.add_argument("--object-friction", default="1.2",
+                    help="static=dynamic friction of the object's physics material. Low friction "
+                         "is the usual reason a parallel gripper drops the part.")
+parser.add_argument("--place-pose", default="0.55,0.35,0.0",
+                    help="place target center x,y,z (m); z is overridden to sit on the table")
+parser.add_argument("--place-size", default="0.12", help="place target marker edge [m]")
+parser.add_argument("--randomize-object", action="store_true",
+                    help="on /scene/reset_episode, re-sample the object position and yaw. "
+                         "Demo diversity comes from this — a policy trained on one pose "
+                         "only learns that pose.")
+parser.add_argument("--randomize-radius", default="0.10",
+                    help="+/- range [m] applied to object x and y when randomizing")
+parser.add_argument("--seed", default="0", help="RNG seed for object randomization (reproducibility)")
+# --- D5 fallback: hold the part with a FIXED JOINT instead of contact friction ---
+parser.add_argument("--grasp-attach", action="store_true",
+                    help="When the gripper closes on the object, weld it to the gripper with a USD "
+                         "fixed joint (and release on open) instead of relying on contact physics. "
+                         "This is the to_do.md D5 fallback. The 2F-85 is driven through PhysX mimic "
+                         "joints; under contact load the fingers get forced PAST their limits "
+                         "(finger_joint went to -1.17 rad) and the part is batted away instead of "
+                         "held. Welding makes 'close the gripper -> the part comes along' true, "
+                         "which is all the IL data pipeline needs.\n"
+                         "*** Sim-only mechanism. It is INVISIBLE to a policy: the policy sees "
+                         "images + joint states, which look the same as on the real robot where "
+                         "real friction does the holding. Never put grasp state in the dataset. ***")
+parser.add_argument("--grasp-close", default="0.25",
+                    help="finger_joint [rad] above which the gripper counts as closing (attach arms)")
+parser.add_argument("--grasp-release", default="0.15",
+                    help="finger_joint [rad] below which the part is released")
+parser.add_argument("--grasp-distance", default="0.09",
+                    help="max distance [m] from the finger midpoint to the object centre for attach")
+parser.add_argument("--grasp-link", default="wrist_3_link/gripper/Robotiq_2F_85/base_link",
+                    help="USD prim PATH (relative to --robot-prim) of the link the object is welded "
+                         "to. Must be a PATH, not a name: the USD link names differ from the URDF "
+                         "ones AND the gripper's own base link is literally called 'base_link', "
+                         "colliding with the robot's. Name lookup silently grabs the wrong prim.")
+parser.add_argument("--grasp-tips", default="wrist_3_link/gripper/Robotiq_2F_85/left_inner_finger,"
+                                            "wrist_3_link/gripper/Robotiq_2F_85/right_inner_finger",
+                    help="comma-separated USD prim paths (relative to --robot-prim) of the two "
+                         "finger pads; their midpoint is the grasp centre")
 args, _ = parser.parse_known_args()
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
@@ -380,15 +438,27 @@ if args.with_static_cam:
                     ("RP", "isaacsim.core.nodes.IsaacCreateRenderProduct"),
                     ("Depth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
                     ("DepthInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+                    # RGB is what the IL/VLA policy actually consumes (video.exterior).
+                    # Same render product as depth, so colour and depth are pixel
+                    # aligned by construction here (a real D435/D455 has a small
+                    # colour<->depth baseline; its driver publishes the offset).
+                    ("RGB", "isaacsim.ros2.bridge.ROS2CameraHelper"),
+                    ("ColorInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
                 ],
                 og.Controller.Keys.CONNECT: [
                     ("OnTick.outputs:tick", "RP.inputs:execIn"),
                     ("RP.outputs:execOut", "Depth.inputs:execIn"),
                     ("RP.outputs:execOut", "DepthInfo.inputs:execIn"),
+                    ("RP.outputs:execOut", "RGB.inputs:execIn"),
+                    ("RP.outputs:execOut", "ColorInfo.inputs:execIn"),
                     ("RP.outputs:renderProductPath", "Depth.inputs:renderProductPath"),
                     ("RP.outputs:renderProductPath", "DepthInfo.inputs:renderProductPath"),
+                    ("RP.outputs:renderProductPath", "RGB.inputs:renderProductPath"),
+                    ("RP.outputs:renderProductPath", "ColorInfo.inputs:renderProductPath"),
                     ("Ctx.outputs:context", "Depth.inputs:context"),
                     ("Ctx.outputs:context", "DepthInfo.inputs:context"),
+                    ("Ctx.outputs:context", "RGB.inputs:context"),
+                    ("Ctx.outputs:context", "ColorInfo.inputs:context"),
                 ],
                 og.Controller.Keys.SET_VALUES: [
                     ("RP.inputs:cameraPrim", [usdrt.Sdf.Path(SCAM_PRIM)]),
@@ -399,11 +469,19 @@ if args.with_static_cam:
                     ("Depth.inputs:frameId", "static_cam_depth_optical_frame"),
                     ("DepthInfo.inputs:topicName", "/static_cam/depth/camera_info"),
                     ("DepthInfo.inputs:frameId", "static_cam_depth_optical_frame"),
+                    ("RGB.inputs:type", "rgb"),
+                    ("RGB.inputs:topicName", "/static_cam/color/image_raw"),
+                    ("RGB.inputs:frameId", "static_cam_color_optical_frame"),
+                    ("ColorInfo.inputs:topicName", "/static_cam/color/camera_info"),
+                    ("ColorInfo.inputs:frameId", "static_cam_color_optical_frame"),
                 ],
             },
         )
         print(f"  static cam          : {SCAM_PRIM} @ {list(_p)} -> {list(_tg)} ({SCAM_W}x{SCAM_H})")
-        print("  static cam topics   : /static_cam/depth/image_rect_raw, /static_cam/depth/camera_info")
+        print("  static cam topics   : /static_cam/color/image_raw, /static_cam/color/camera_info,")
+        print("                        /static_cam/depth/image_rect_raw, /static_cam/depth/camera_info")
+        print("  static cam TF       : ros2 launch ur_bringup static_cam_tf.launch.py "
+              "(nvblox launch includes it; run it standalone for teleop/IL recording)")
     except Exception as e:
         carb.log_error(f"Failed to build static camera graph: {e}")
 
@@ -428,6 +506,66 @@ if args.obstacle:
     obs.GetDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(0.85, 0.2, 0.15)]))
     simulation_app.update()
     print(f"  demo obstacle       : {OBS_PRIM} @ {list(_op)} size {list(_osz)}")
+
+# ---- pick&place scene (optional) ------------------------------------------
+# Work surface + a graspable object + a place-target marker. Unlike --obstacle
+# above (visual only, for nvblox), the object here has REAL PHYSICS: rigid body,
+# collider, mass and a friction material, because the 2F-85 has to actually hold
+# it. This is the scene the teleop -> IL demo collection runs in.
+#
+# We use isaacsim.core.api.objects (DynamicCuboid/FixedCuboid/VisualCuboid): one
+# call gives rigid body + collision + mass + visual material, instead of hand
+# applying the USD physics APIs.
+#   NOTE: in Isaac Sim 6.0.1 `isaacsim.core.api` lives under extsDeprecated (it
+#   still works and the rest of this script already depends on it). The successor
+#   is isaacsim.core.experimental.objects -- migrate both together, not piecemeal.
+scene_objects = {}
+if args.scene == "pick_place":
+    from isaacsim.core.api.objects import DynamicCuboid, FixedCuboid, VisualCuboid
+    from isaacsim.core.api.materials import PhysicsMaterial
+
+    _obj_p = np.array([float(v) for v in args.object_pose.split(",")])
+    _obj_s = np.array([float(v) for v in args.object_size.split(",")])
+    _plc_p = np.array([float(v) for v in args.place_pose.split(",")])
+    _tbl_z = float(args.table_height)
+
+    # Work surface. The robot base sits at z=0, so the table top is at z=table_height
+    # (0.0 = the robot stands on the same plane the object rests on).
+    # FixedCuboid = collider, no rigid body -> immovable, objects land on it.
+    if args.table:
+        scene_objects["table"] = FixedCuboid(
+            prim_path="/World/work_table", name="work_table",
+            position=np.array([0.55, 0.0, _tbl_z - 0.01]),
+            scale=np.array([1.0, 1.2, 0.02]),
+            color=np.array([0.35, 0.32, 0.30]),
+        )
+
+    # Friction matters more than anything else for whether the gripper holds.
+    # These are deliberately generous; T2-1 tunes them against a real grasp test.
+    _grip_mat = PhysicsMaterial(
+        prim_path="/World/physics_materials/grasp_material",
+        static_friction=float(args.object_friction),
+        dynamic_friction=float(args.object_friction),
+        restitution=0.0,
+    )
+    scene_objects["object"] = DynamicCuboid(
+        prim_path="/World/pick_object", name="pick_object",
+        position=_obj_p, scale=_obj_s,
+        color=np.array([0.10, 0.45, 0.85]),
+        mass=float(args.object_mass),
+        physics_material=_grip_mat,
+    )
+    # Place target: visual only (no collider) so the arm can put the object down
+    # onto it without fighting a phantom obstacle.
+    scene_objects["place"] = VisualCuboid(
+        prim_path="/World/place_target", name="place_target",
+        position=np.array([_plc_p[0], _plc_p[1], _tbl_z + 0.001]),
+        scale=np.array([float(args.place_size), float(args.place_size), 0.002]),
+        color=np.array([0.15, 0.75, 0.25]),
+    )
+    print(f"  pick object         : /World/pick_object @ {list(_obj_p)} "
+          f"size {list(_obj_s)} mass {args.object_mass}kg mu {args.object_friction}")
+    print(f"  place target        : /World/place_target @ {list(_plc_p[:2])} (visual only)")
 
 # physics must be initialized before the articulation can be driven
 simulation_context.initialize_physics()
@@ -465,11 +603,224 @@ print(f"  publishes states   : /{args.joint_states_topic}")
 print(f"  subscribes commands: /{args.joint_commands_topic}")
 print("  publishes clock    : /clock")
 print("Verify the exact joint names with:  ros2 topic echo /%s --once" % args.joint_states_topic)
-print("=" * 70, flush=True)
 
 # OnPlaybackTick drives the graph every rendered step; just keep stepping.
+# ---- ground-truth object pose + episode reset (pick_place scene only) -------
+# GT pose is published ONLY as supervision/verification for us -- it tells the
+# grasp test whether the object actually came up with the gripper, and lets a
+# demo recorder auto-label episode success. It is NOT a policy input: the IL/VLA
+# policy sees pixels + joint states, exactly the same set in sim and on the real
+# robot (ur_bringup/docs/plan_il_vla.md 2.6). Keep it out of the dataset.
+#
+# The reset service is the sim half of the sim/real-common episode reset
+# contract: the recorder calls the SAME service name on real hardware, where it
+# instead prompts a human to re-place the part.
+if args.scene == "pick_place":
+    try:
+        import rclpy
+        from geometry_msgs.msg import PoseStamped
+        from std_srvs.srv import Trigger
+
+        if not rclpy.ok():
+            rclpy.init(args=[])
+        _node = rclpy.create_node("isaac_scene")
+        _pose_pub = _node.create_publisher(PoseStamped, "/scene/object_pose", 10)
+        _obj = scene_objects["object"]
+        _obj_home = np.array([float(v) for v in args.object_pose.split(",")])
+        _rng = np.random.default_rng(int(args.seed))
+
+        def _reset_episode(request, response):
+            """Re-place the object for a new demo episode."""
+            # Always let go first, else the part would be re-placed while still
+            # welded to the gripper and get dragged around.
+            try:
+                _detach()
+            except NameError:
+                pass
+            p = _obj_home.copy()
+            if args.randomize_object:
+                r = float(args.randomize_radius)
+                p[0] += _rng.uniform(-r, r)
+                p[1] += _rng.uniform(-r, r)
+            yaw = _rng.uniform(-np.pi, np.pi) if args.randomize_object else 0.0
+            quat = np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])  # w,x,y,z
+            _obj.set_world_pose(position=p, orientation=quat)
+            # Kill momentum, else the part keeps the velocity it had when grabbed.
+            try:
+                _obj.set_linear_velocity(np.zeros(3))
+                _obj.set_angular_velocity(np.zeros(3))
+            except Exception:
+                pass
+            response.success = True
+            response.message = f"object at [{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}] yaw {yaw:+.2f}"
+            _node.get_logger().info(f"reset_episode: {response.message}")
+            return response
+
+        # ---- D5 fallback: weld the part to the gripper on close ------------
+        # Reference pattern: isaacsim.robot_setup.assembler.robot_assembler
+        # (_create_fixed_joint + set_opposite_body_transform). We inline the
+        # local-frame maths instead of importing it, because that module is part
+        # of a GUI extension and pulling it into a standalone script drags in the
+        # editor stack.
+        from pxr import Gf, Sdf, UsdGeom, UsdPhysics
+        import omni.usd as _ou
+        from std_msgs.msg import Bool
+
+        _stage = _ou.get_context().get_stage()
+        _JOINT_PATH = "/World/grasp_weld"
+        # `manual` = attached through the service rather than by the gripper closing.
+        # Without this the automatic release (finger_joint below the open threshold)
+        # instantly undoes a service attach, because the fingers are still open.
+        _grasp = {"active": False, "manual": False}
+        _grasp_pub = _node.create_publisher(Bool, "/scene/grasp_active", 10)
+
+        def _prim_at(rel):
+            """Resolve a prim path given relative to the robot prim. PATHS, not names:
+            USD link names differ from URDF ones and 'base_link' exists twice."""
+            path = rel if rel.startswith("/") else f"{ROBOT_PRIM}/{rel.strip()}"
+            pr = _stage.GetPrimAtPath(path)
+            if not (pr and pr.IsValid()):
+                _node.get_logger().error(
+                    f"grasp: prim not found: {path}. Grasp welding will NOT work. "
+                    "List the real names with: UsdPhysics.RigidBodyAPI prims under the robot.")
+                return None
+            return pr
+
+        _grasp_link_prim = _prim_at(args.grasp_link)
+        _tip_prims = [_prim_at(r) for r in args.grasp_tips.split(",")]
+        _obj_prim = _stage.GetPrimAtPath("/World/pick_object")
+
+        def _world_xf(prim):
+            return UsdGeom.XformCache().GetLocalToWorldTransform(prim)
+
+        def _tcp():
+            """Point between the finger pads -- where the part must be to grip it."""
+            tips = [p for p in _tip_prims if p and p.IsValid()]
+            if len(tips) == 2:
+                a = _world_xf(tips[0]).ExtractTranslation()
+                b = _world_xf(tips[1]).ExtractTranslation()
+                return np.array([(a[i] + b[i]) * 0.5 for i in range(3)])
+            if _grasp_link_prim:
+                t = _world_xf(_grasp_link_prim).ExtractTranslation()
+                return np.array([t[0], t[1], t[2]])
+            return None
+
+        def _set_collision(enabled):
+            """Objects welded to the gripper must stop colliding with it, else the
+            fingers keep driving into the part and blow past their joint limits."""
+            if not (_obj_prim and _obj_prim.IsValid()):
+                return
+            api = UsdPhysics.CollisionAPI.Get(_stage, _obj_prim.GetPath())
+            if api:
+                api.GetCollisionEnabledAttr().Set(bool(enabled))
+
+        def _attach():
+            if _grasp["active"] or not (_grasp_link_prim and _obj_prim and _obj_prim.IsValid()):
+                return False
+            j = UsdPhysics.FixedJoint.Define(_stage, _JOINT_PATH)
+            jp = j.GetPrim()
+            jp.GetRelationship("physics:body0").SetTargets([_grasp_link_prim.GetPath()])
+            jp.GetRelationship("physics:body1").SetTargets([_obj_prim.GetPath()])
+            # Preserve the CURRENT relative pose: express the object frame in the
+            # gripper-link frame and put that on body0; body1 keeps identity.
+            rel = _world_xf(_grasp_link_prim).GetInverse() * _world_xf(_obj_prim)
+            t = rel.ExtractTranslation()
+            q = rel.ExtractRotationQuat()
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(*[float(v) for v in t]))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(float(q.GetReal()), *[float(v) for v in q.GetImaginary()]))
+            j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+            j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            _set_collision(False)
+            _grasp["active"] = True
+            _grasp["manual"] = False
+            _node.get_logger().info("grasp: object WELDED to gripper (D5 fallback)")
+            return True
+
+        def _detach():
+            if not _grasp["active"]:
+                return False
+            if _stage.GetPrimAtPath(_JOINT_PATH):
+                _stage.RemovePrim(_JOINT_PATH)
+            _set_collision(True)
+            _grasp["active"] = False
+            _grasp["manual"] = False
+            _node.get_logger().info("grasp: object released")
+            return True
+
+        def _srv_attach(req, res):
+            res.success = _attach()
+            if res.success:
+                # Held until /scene/detach_object; the automatic open-release rule
+                # must not fire on an attach the caller asked for explicitly.
+                _grasp["manual"] = True
+            res.message = "welded (manual hold)" if res.success else "already grasped or prims missing"
+            return res
+
+        def _srv_detach(req, res):
+            res.success = _detach()
+            res.message = "released" if res.success else "nothing grasped"
+            return res
+
+        if args.grasp_attach:
+            _node.create_service(Trigger, "/scene/attach_object", _srv_attach)
+            _node.create_service(Trigger, "/scene/detach_object", _srv_detach)
+
+        _g_close = float(args.grasp_close)
+        _g_open = float(args.grasp_release)
+        _g_dist = float(args.grasp_distance)
+
+        def _grasp_step():
+            """Attach when the gripper closes with the part between the pads.
+
+            Automatic on purpose: during teleop the operator just squeezes the
+            trigger, exactly as on the real robot. Making them call a service
+            would distort demo timing and break sim/real parity.
+            """
+            if not args.grasp_attach:
+                return
+            try:
+                fj = float(_art.get_joint_positions()[_names.index("finger_joint")])
+            except Exception:
+                return
+            if not _grasp["active"] and fj >= _g_close:
+                tcp, opos = _tcp(), _obj.get_world_pose()[0]
+                if tcp is not None and float(np.linalg.norm(np.asarray(opos) - tcp)) <= _g_dist:
+                    _attach()
+            elif _grasp["active"] and not _grasp["manual"] and fj <= _g_open:
+                _detach()
+            _grasp_pub.publish(Bool(data=_grasp["active"]))
+
+        _node.create_service(Trigger, "/scene/reset_episode", _reset_episode)
+        print("  scene services      : /scene/reset_episode" +
+              (", /scene/attach_object, /scene/detach_object" if args.grasp_attach else ""))
+        if args.grasp_attach:
+            print(f"  grasp weld (D5)     : ON  close>={_g_close} open<={_g_open} "
+                  f"dist<={_g_dist}m link={args.grasp_link}")
+        print("  scene topics        : /scene/object_pose (GT, verification only)")
+
+        def _scene_spin():
+            rclpy.spin_once(_node, timeout_sec=0.0)
+            _grasp_step()
+            pos, quat = _obj.get_world_pose()
+            m = PoseStamped()
+            m.header.stamp = _node.get_clock().now().to_msg()
+            m.header.frame_id = "base_link"
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = (float(v) for v in pos)
+            m.pose.orientation.w = float(quat[0]); m.pose.orientation.x = float(quat[1])
+            m.pose.orientation.y = float(quat[2]); m.pose.orientation.z = float(quat[3])
+            _pose_pub.publish(m)
+    except Exception as _e:
+        carb.log_warn(f"scene ROS interface unavailable (continuing): {_e}")
+        _scene_spin = None
+else:
+    _scene_spin = None
+
+print("=" * 70, flush=True)
+
 while simulation_app.is_running():
     simulation_context.step(render=True)
+    if _scene_spin is not None:
+        _scene_spin()
 
 simulation_context.stop()
 simulation_app.close()

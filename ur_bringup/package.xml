@@ -28,6 +28,17 @@
   <!-- planning (shared) -->
   <exec_depend>ur_moveit_config</exec_depend>
 
+  <!-- teleoperation (streaming control) -->
+  <exec_depend>moveit_servo</exec_depend>
+  <exec_depend>position_controllers</exec_depend>
+  <exec_depend>joy</exec_depend>
+
+  <!-- IL demo recording (raw episodes; LeRobot conversion happens in the ML env) -->
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

@@ -8,6 +8,20 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+# ROS nodes we launch with Node(...) rather than `python3 <path>`.
+# (The isaac/ scripts stay data-only: they are run via /isaac-sim/python.sh or
+#  plain python3 with an explicit path, so they do not belong here.)
+install(
+  PROGRAMS
+    scripts/teleop_joy.py
+    scripts/il_recorder.py
+    scripts/raw_to_lerobot.py
+    scripts/omy_to_ur16e.py
+    scripts/virtual_omy_leader.py
+    scripts/omy_leader_calib.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()

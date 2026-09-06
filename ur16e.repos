@@ -16,6 +16,10 @@ repositories:
     # the apt ros-jazzy ros2_control binary. main/1.x use set_state(name,value),
     # which does NOT update exported state interfaces on Jazzy 4.44 -> /joint_states
     # becomes all-NaN and MoveIt/RViz break. See SETUP.md "Known issues".
+    # Verified SHA for tag 0.2.1: 007cff10a97e42dc2a4e953aa26850bf43315c06 (2025-10-02).
+    # Kept as a TAG (not a SHA) because every doc refers to "0.2.1" by name and an
+    # upstream re-tag is essentially unheard of. Verify with:
+    #   git -C src/topic_based_hardware_interfaces rev-parse HEAD
     version: 0.2.1
   # Real Robotiq 2F-85 gripper driver (hardware interface). Not in apt for Jazzy
   # (only robotiq_description/robotiq_controllers are). Build from source.
@@ -26,9 +30,66 @@ repositories:
     # old Humble-era release). Provides robotiq_driver (RobotiqGripperHardwareInterface)
     # + robotiq_controllers (RobotiqActivationController). robotiq_description comes
     # from apt; we use our own robotiq_2f85_macro for the URDF.
-    version: main
+    # PINNED to the SHA that was actually verified here, not to `main`. A branch
+    # name makes `vcs import` non-deterministic: another PC cloning next month gets
+    # different code than the one these docs describe. To move deliberately, bump
+    # the SHA and re-run the fresh-workspace check (HISTORY.md 23).
+    version: 3b6cf8ff9106384e72c23de7d3ba989fb6b41141   # main @ 2026-05-18
   # robotiq_driver depends on this serial library (tylerjw/serial, ros2 branch).
   serial:
     type: git
     url: https://github.com/tylerjw/serial.git
-    version: ros2
+    version: d8d160678aa0b31cdf467c052b954fa287cc6cdf   # ros2 @ 2022-02-13
+  # nvblox, built from SOURCE for this machine's GPU architecture.
+  # The apt ros-jazzy-nvblox-ros binary is compiled for sm_75 (Turing) ONLY and
+  # ships no PTX, so on Ada/Blackwell (RTX 40/50) nvblox_node aborts at startup
+  # with "cudaErrorInvalidDevice: invalid device ordinal". Building nvblox_ros
+  # with -DUSE_NATIVE_CUDA_ARCHITECTURE=1 fixes it. Track the SAME release as the
+  # apt Isaac ROS packages (nvblox_msgs / nvblox_ros_common come from apt).
+  # NOTE: nvblox_core is a git SUBMODULE -- vcs import does not fetch it:
+  #     cd src/isaac_ros_nvblox && git submodule update --init --recursive --depth 1
+  # Only nvblox_ros is built; every other package in the tree carries COLCON_IGNORE.
+  # See SETUP.md 2-B-4.
+  isaac_ros_nvblox:
+    type: git
+    url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git
+    # PINNED: `release-4.6` is a moving branch, and this exact tree is what the
+    # sm_120 source build was verified against. The nvblox_core SUBMODULE commit
+    # (24eee494) is recorded inside this superproject SHA, so pinning here pins
+    # both. Bump only together with a fresh-workspace re-verification.
+    version: dadbe96cc05599e49dc2cd61c8de7e6e4a026f0d   # release-4.6 @ 2026-08-18
+  # ---------------------------------------------------------------------------
+  # OMY-L100 teleop LEADER stack (IL data collection). See plan_il_vla.md 3.5.
+  #
+  # WHY source and not apt: not packaged for Jazzy at all. WHY this stack and not
+  # the ROS-free `lerobot_teleoperator_omy`: the L100 is an ACTIVE leader --
+  # ROBOTIS drives it with gravity_compensation_controller + spring_actuator_controller
+  # at 300 Hz effort. Without that you hold 1.46 kg unassisted for every episode,
+  # and operator fatigue lands directly in the training data. This stack also
+  # publishes /joint_states natively, so il_recorder.py --action-source topic
+  # attaches with ZERO code change (that is what 2.5's device-agnostic design was for).
+  #
+  # Pinned to jazzy-branch SHAs, not `jazzy`, so another PC reproduces this exact
+  # tree. The upstream tags (5.1.1 etc.) are cut off main and are NOT guaranteed to
+  # carry the omy_l100 leader files -- verify before switching to a tag.
+  #
+  # Only 7 packages are built; the other 6 in open_manipulator get COLCON_IGNORE
+  # (gui pulls Qt, moveit_config/collision/playground/teleop are OMY-specific and
+  # irrelevant to UR16e). open_manipulator_bringup IS built despite declaring
+  # gz_ros2_control/ros_gz_*: it is ament_python, so those are exec-only deps that
+  # colcon never resolves -- Gazebo is NOT installed and NOT needed.
+  # Its share dir must exist because omy_l100.urdf.xacro does $(find open_manipulator_bringup).
+  # apt side: only ros-jazzy-dynamixel-sdk + ros-jazzy-dynamixel-interfaces,
+  # verified `0 upgraded, 2 newly installed, 0 to remove`. See SETUP.md 2-D.
+  open_manipulator:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/open_manipulator.git
+    version: 1b741c0839d99a7c53cc6abf7f5a6c3990ecae3a   # jazzy @ 2026-08-05
+  dynamixel_hardware_interface:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/dynamixel_hardware_interface.git
+    version: 3375b3d0c99c5bcdab11b2dc15c89a2923e2bca2   # jazzy @ 2026-03-13
+  robotis_interfaces:
+    type: git
+    url: https://github.com/ROBOTIS-GIT/robotis_interfaces.git
+    version: 9231cb1005dc03c14bdbf42f1f9b7114af7d3cfb   # jazzy @ 2026-04-10

@@ -47,12 +47,17 @@ def generate_launch_description():
     pkg = FindPackageShare("ur_bringup")
 
     use_fake_hardware = LaunchConfiguration("use_fake_hardware")
+    global_joint_states = LaunchConfiguration("global_joint_states")
     mock_sensor_commands = LaunchConfiguration("mock_sensor_commands")
     com_port = LaunchConfiguration("com_port")
     prefix = LaunchConfiguration("prefix")
     launch_rviz = LaunchConfiguration("launch_rviz")
 
     declared_args = [
+        DeclareLaunchArgument(
+            "global_joint_states", default_value="true",
+            description="Publish the gripper joint state into the GLOBAL /joint_states so real "
+                        "matches sim (7 joints on one topic). false = /gripper/joint_states only."),
         DeclareLaunchArgument("use_fake_hardware", default_value="false",
                               description="true = mock_components/GenericSystem (no serial/hardware), "
                                           "to validate the stack with nothing plugged in."),
@@ -94,10 +99,30 @@ def generate_launch_description():
             output="screen",
             parameters=[{"robot_description": robot_description}, controllers_yaml],
         ),
+        # ** sim/real parity for /joint_states **
+        # In sim ONE controller_manager owns arm + finger_joint, so /joint_states
+        # carries all 7 joints. On real the gripper has its own CM in the
+        # `gripper` namespace, so by default it would only publish
+        # /gripper/joint_states and the global /joint_states would be arm-only.
+        # Anything that consumes the WHOLE robot state then stalls on real while
+        # working in sim -- MoveIt Servo sits at "Waiting to receive robot state
+        # update" forever, and an IL recorder would silently lose the gripper.
+        # Publishing into the global topic (multiple publishers on /joint_states
+        # is the standard ROS pattern; robot_state_publisher and MoveIt's
+        # CurrentStateMonitor merge them) makes real look like sim.
+        # Set global_joint_states:=false to keep the old namespaced-only behaviour.
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=["joint_state_broadcaster", "-c", CM,
+                       "--controller-ros-args", "-r joint_states:=/joint_states"],
+            condition=IfCondition(global_joint_states),
+        ),
         Node(
             package="controller_manager",
             executable="spawner",
             arguments=["joint_state_broadcaster", "-c", CM],
+            condition=UnlessCondition(global_joint_states),
         ),
         Node(
             package="controller_manager",

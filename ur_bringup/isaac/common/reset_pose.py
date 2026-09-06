@@ -9,9 +9,23 @@ plan (incl. RViz named states). This script commands the joints back to a valid
 pose regardless, recovering the robot.
 
 Usage (sim or real, after the control stack is up):
-    python3 .../isaac/common/reset_pose.py [home|up|zero]   # default: home
+    python3 .../isaac/common/reset_pose.py [ready|home|up|zero]   # default: home
 
-Named poses match ur_moveit_config's SRDF group_states (home/up).
+Named poses home/up/zero match ur_moveit_config's SRDF group_states; `ready` is
+ours (see below).
+
+*** For TELEOP / policy rollouts use `ready`, not `home`. ***
+home/up/zero all have elbow_joint = 0, i.e. the arm fully extended, which is an
+ELBOW SINGULARITY. MoveIt Servo refuses to move there:
+    [servo] Very close to a singularity, emergency stop     (status code 2)
+so gamepad/keyboard teleop looks "dead" even though everything is wired up.
+`ready` bends the elbow ~90 deg, well clear of the singular set.
+
+NOTE: this talks to scaled_joint_trajectory_controller, so the arm must be in
+TRAJECTORY mode. If you are in streaming/teleop mode, switch first:
+    python3 .../isaac/common/switch_control_mode.py trajectory
+    python3 .../isaac/common/reset_pose.py ready
+    python3 .../isaac/common/switch_control_mode.py streaming
 """
 import sys
 
@@ -25,6 +39,11 @@ from builtin_interfaces.msg import Duration
 ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
        "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
 POSES = {
+    # Teleop/policy start pose: elbow bent ~90 deg, tool pointing down at the
+    # table in front of the base. Away from the elbow singularity (elbow~0) AND
+    # from the wrist singularity (wrist_2 ~ 0). Use this for Servo teleop and as
+    # the per-episode reset pose when recording demos.
+    "ready": [0.0, -1.5707, 1.5707, -1.5707, -1.5707, 0.0],
     "home": [0.0, -1.5707, 0.0, 0.0, 0.0, 0.0],
     "up":   [0.0, -1.5707, 0.0, -1.5707, 0.0, 0.0],
     "zero": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],

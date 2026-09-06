@@ -1,16 +1,19 @@
-# UR16e — ROS 2 Jazzy + Isaac Sim 5.1.0 (sim & real 공용 제어 스택)
+# UR16e — ROS 2 Jazzy + Isaac Sim 6.0.1 (sim & real 공용 제어 스택)
 
 **UR16e 로봇팔을 하나의 ROS 2 (Jazzy) 소프트웨어로 Isaac Sim 시뮬레이션과 실물에서 모두** 구동하는
 워크스페이스. UR 공식 스택(`ur_robot_driver` + `ros2_control` + MoveIt2) 기반이며, 자체 코드는
 `ur_bringup` 한 패키지에 모여 있다.
 
-- 워크스페이스: `/isaac-sim/ur_ws` (colcon), git repo = `src/`
-- 환경: Docker, ROS 2 **Jazzy**, **Isaac Sim 5.1.0**(`/isaac-sim`), GPU
+- 워크스페이스: `/isaac-sim/volume/ur_ws` (colcon), git repo = `src/`
+- 환경: Docker, ROS 2 **Jazzy**, **Isaac Sim 6.0.1**(`/isaac-sim`), GPU
 - 이 문서는 **현재 상태** 기준 정리. 변경 이력·검증 로그·디버깅 교훈은 [`HISTORY.md`](HISTORY.md),
   실물 HW 연결 후 절차는 [`HARDWARE.md`](HARDWARE.md), 재현 매뉴얼은 [`SETUP.md`](SETUP.md),
   개념 Q&A 는 [`qna.md`](qna.md).
-- **계획/설계(구현 전)**: 학습은 [`LEARNING.md`](LEARNING.md)(IL pick&place + RL insertion, Isaac Lab),
-  통합 pick&place 작업레이어는 [`to_do.md`](to_do.md)(foundation-model perception, sim2real 최소화).
+- **계획/설계(구현 전)**:
+  **IL/VLA 정본** = [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md)(LeRobot → ACT → 소형 VLA → GR00T),
+  **작업레이어 정본** = [`to_do.md`](to_do.md)(foundation-model perception + pick&place 상태머신;
+  그 M3 가 IL 데이터 생성 엔진을 겸함),
+  [`LEARNING.md`](LEARNING.md)는 **RL insertion 설계로 보존**(IL 절반은 `plan_il_vla.md` 로 대체됨).
 
 ---
 
@@ -26,7 +29,7 @@
    topic_based 하드웨어          ur_robot_driver (RTDE)
         │ /isaac_joint_states         │
         │ /isaac_joint_commands       │
-   Isaac Sim 5.1.0              실물 UR16e
+   Isaac Sim 6.0.1              실물 UR16e
 ```
 
 `use_sim` 인자 하나로 ros2_control 하드웨어 백엔드만 바뀌고, 그 위(MoveIt·컨트롤러·앱)는 동일하다.
@@ -58,11 +61,12 @@
 ```
 ur_bringup/
 ├── launch/
+│   ├── common/           teleop_servo.launch.py, teleop_dualsense.launch.py       (teleop, 세트2·3)
 │   ├── ur16e/            ur16e.launch.py, ur16e_moveit.launch.py
 │   ├── ur16e_2f85/       ur16e_2f85[_moveit|_real].launch.py, robotiq_2f85_real.launch.py
 │   └── ur16e_2f85_d405/  ur16e_2f85_d405[_moveit|_real].launch.py, d405_real.launch.py
 ├── config/
-│   ├── common/           ur16e_2f85_controllers.yaml              (세트2·3 공유)
+│   ├── common/           ur16e_2f85_controllers.yaml, ur16e_servo.yaml   (세트2·3 공유)
 │   ├── ur16e/            ur16e_controllers.yaml
 │   ├── ur16e_2f85/       robotiq_2f85_real_controllers.yaml
 │   └── ur16e_2f85_d405/  sensors_3d.yaml, d405_real.yaml
@@ -72,8 +76,10 @@ ur_bringup/
 │   ├── ur16e_2f85/       ur16e_2f85_sim.urdf.xacro, robotiq_2f85_real.{urdf,ros2_control}.xacro
 │   └── ur16e_2f85_d405/  ur16e_2f85_d405_sim.urdf.xacro, realsense_d405_macro.xacro, d405_real.urdf.xacro
 ├── srdf/common/          ur16e_2f85.srdf.xacro                    (세트2·3 공유)
+├── scripts/              teleop_joy.py                            (ros2 run 실행파일)
 ├── isaac/
-│   ├── common/           ur16e_isaac_ros2.py, moveit_plan_execute_demo.py, build_ur16e_2f85.py, convert_dae_to_usd.py
+│   ├── common/           ur16e_isaac_ros2.py, moveit_plan_execute_demo.py, build_ur16e_2f85.py, convert_dae_to_usd.py,
+│   │                     switch_control_mode.py, reset_pose.py
 │   ├── ur16e_2f85/       gripper_demo.py, selfcollision_demo.py
 │   ├── ur16e_2f85_d405/  octomap_demo.py, convert_bracket.py
 │   └── assets/           합성 USD (세트 공유 버킷)
@@ -84,14 +90,23 @@ ur_bringup/
 
 ## 4. 설치 & 빌드
 
+> **★ 새 PC 라면 아래를 손으로 하지 말고 두 줄로 끝낼 것** — 순서·핀·GPU 분기·검증까지 전부 들어 있다:
+> ```bash
+> git clone <repo> /isaac-sim/volume/ur_ws/src
+> /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --dry-run   # 계획만 먼저
+> /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh
+> ```
+> 전체 순서와 전제조건은 [`SETUP.md`](SETUP.md) **§0-B**. 아래는 손으로 할 때의 참고다.
+
 ```bash
 # (1) 표준 스택 — apt
 sudo apt update && sudo apt install -y \
     ros-jazzy-ur ros-jazzy-moveit ros-jazzy-ros2-control ros-jazzy-ros2-controllers \
+    ros-jazzy-robotiq-description \          # 세트2/3 필수 — 없으면 URDF 가 생성조차 안 됨
     ros-jazzy-moveit-ros-perception          # 세트3 octomap (depth perception 플러그인)
 
-# (2) 소스 의존성 — vcstool (topic_based[sim 백엔드], robotiq_driver+serial[실물 그리퍼])
-cd /isaac-sim/ur_ws
+# (2) 소스 의존성 — vcstool (topic_based[sim 백엔드], robotiq_driver+serial[실물 그리퍼], nvblox[소스빌드])
+cd /isaac-sim/volume/ur_ws
 vcs import src < src/ur16e.repos
 
 # (3) 빌드
@@ -104,10 +119,15 @@ source install/setup.bash
 # (4) 실물 RealSense D405 (세트3 real) — apt
 sudo apt install -y ros-jazzy-realsense2-camera ros-jazzy-librealsense2 \
     ros-jazzy-diagnostic-updater ros-jazzy-diagnostic-msgs   # diagnostic 은 realsense ABI 정합용
+
+# (5) cuMotion / nvblox (GPU 플래닝·실시간 회피) — SETUP.md §2-B
+#   공유 머신이면 apt 핀을 먼저 넣고, 메타패키지(-examples / isaac-ros-nvblox)는 쓰지 말 것.
+#   RTX 40/50(sm_89/120)이면 nvblox_ros 는 반드시 소스 빌드:
+#     colcon build --packages-select nvblox_ros --cmake-args -DUSE_NATIVE_CUDA_ARCHITECTURE=1
 ```
 
 > 단계별 상세·트러블슈팅은 [`SETUP.md`](SETUP.md).
-> 매 터미널 먼저: `source /opt/ros/jazzy/setup.bash && source /isaac-sim/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0`
+> 매 터미널 먼저: `source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0`
 
 ---
 
@@ -124,7 +144,7 @@ python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py               # 
 
 # ── 세트 2: + 2F-85 그리퍼 ──
 /isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
-    --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
+    --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
 ros2 launch ur_bringup ur16e_2f85.launch.py
 ros2 launch ur_bringup ur16e_2f85_moveit.launch.py
 python3 src/ur_bringup/isaac/ur16e_2f85/gripper_demo.py                        # 그리퍼 open/close
@@ -132,10 +152,50 @@ python3 src/ur_bringup/isaac/ur16e_2f85/selfcollision_demo.py                 # 
 
 # ── 세트 3: + D405 카메라 ──  (--asset-path 는 반드시 절대경로)
 /isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
-    --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd --with-camera
+    --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd --with-camera
 ros2 launch ur_bringup ur16e_2f85_d405.launch.py
 ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py                        # depth→OctoMap (기본 on)
 python3 src/ur_bringup/isaac/ur16e_2f85_d405/octomap_demo.py
+
+# ── 정적(외부) 카메라 TF ── teleop/IL 은 이것만 있으면 됨 (nvblox 불필요)
+ros2 launch ur_bringup static_cam_tf.launch.py use_sim_time:=true
+#   Isaac 은 --with-static-cam 으로 /static_cam/{color,depth}/* 발행 (color = IL 정책 입력)
+
+# ── Teleoperation (MoveIt Servo) ── 세트2/3 제어 위에서. IL 데모 수집의 1단계
+ros2 launch ur_bringup teleop_servo.launch.py use_sim_time:=true     # servo + 스트리밍 컨트롤러(inactive)
+#   ★ 먼저 특이점 아닌 자세로: home/up/zero 는 팔꿈치 특이점이라 Servo 가 거부한다
+python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory
+python3 src/ur_bringup/isaac/common/reset_pose.py ready
+python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
+ros2 launch ur_bringup teleop_dualsense.launch.py                    # 패드 (L1=deadman 유지, L2/R2=그리퍼)
+ros2 run moveit_servo servo_keyboard_input                           # 패드 없으면 키보드로 대체
+python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory  # MoveIt/cuMotion 으로 복귀
+
+# ── OMY-L100 리더 (teleop leader, 중력보상 ros2_control) ── 설치: src/setup/setup.sh leader
+#    ★ 하드웨어 없이도 검증됨. 실물은 port_name:=/dev/ttyUSB0 (U2D2). 상세 SETUP.md 2-D
+ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+    use_mock_hardware:=true use_self_collision_avoidance:=false   # ★ 후자 반드시 false
+ros2 control list_controllers -c /leader/controller_manager       # ★ /leader 네임스페이스 필수
+#   → /leader/joint_states (7관절), /leader/joint_trajectory (300 Hz)
+
+# ── 리더 → UR16e 브리지 (관절 직결, IK 없음 = 특이점 제약 없음) ──
+#    sim 검증됨: 전체 추종오차 0.24° (브리지 매핑 0.02°). Servo 불필요
+ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true
+#    virtual_leader:=true → 하드웨어 없이 /leader/joint_states 합성 (sim 검증용).
+#    실물은 false + 위 omy_l100_leader_ai.launch.py 를 port_name:=/dev/ttyUSB0 로
+python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
+ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
+#   ★ 리더가 로봇 현재자세와 안 맞으면 engage 거부 + 어긋난 관절을 도(deg)로 알려줌.
+#     리더를 손으로 맞춘 뒤 다시 호출할 것 (이 게이트가 팔이 튀는 걸 막는다)
+ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
+#   부호/오프셋/속도상한/clamp 전부 파라미터 — 실물 튜닝 시 코드 수정 불필요
+
+# ── IL 데모 기록 (teleop 위에서) ──
+ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=true \
+    -p out_dir:=<데이터경로> -p task:="put the blue block in the green zone"
+#   패드: Square=start / Triangle=stop+save / Cross=discard  (또는 /il/{start,stop,discard}_episode)
+#   태스크 변경: ros2 param set /il_recorder task "..."   ← 3종 이상 모을 것
+#   ML 환경에서 변환: python3 scripts/raw_to_lerobot.py --raw <데이터경로> --repo-id <user>/<name>
 
 # ── cuMotion (GPU 모션플래닝, MoveIt 플러그인) ── 세트2/3 제어 위에서
 ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py               # move_group + cuMotion(기본 pipeline)
@@ -145,7 +205,7 @@ python3 src/ur_bringup/isaac/common/moveit_plan_execute_demo.py                #
 # ── 실시간 장애물 회피 (cuMotion + nvblox) ── 세트3, "카메라가 본 장애물을 GPU 가 실시간 회피"
 #   정적 카메라(회피용) + eye-in-hand(파지용) 2대 + 데모 박스 장애물
 /isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
-    --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd \
+    --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd \
     --with-camera --with-static-cam --obstacle
 ros2 launch ur_bringup ur16e_2f85_d405.launch.py use_sim:=true                 # 제어
 ros2 launch ur_bringup ur16e_2f85_d405_nvblox.launch.py use_sim_time:=true     # segmenter + nvblox + 정적카메라 TF
@@ -191,9 +251,10 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 | 세트 2 (+2F-85) | ✅ 그리퍼 개폐·자기충돌·plan+execute | ✅ `robotiq_driver` (mock 검증) | ⏳ 그리퍼 연결 시 |
 | 세트 3 (+D405) | ✅ 카메라·OctoMap·plan+execute | ✅ `realsense2_camera` 노드 로드+카메라 TF | ⏳ D405 USB3 연결 시 (영상 스트림·hand-eye) |
 | **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
-| **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion; plan+execute + A/B 회피 검증(`nvblox_obstacle_demo.py`) | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
+| **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion; A/B 회피 검증 `PASS`(`nvblox_obstacle_demo.py`). **`nvblox_ros` 는 GPU arch 맞춰 소스 빌드**(SETUP.md §2-B-4) | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
 
-자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피).
+위 sim 항목은 **Isaac Sim 6.0.1 / RTX 5090 에서 2026-09-06 전수 재검증**됨.
+자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피, §14 Isaac Sim 6.0.1 이식).
 
 ---
 

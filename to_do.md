@@ -3,8 +3,18 @@
 > 빠져 있던 **"작업(task) 레이어"**: perception → 물체 → grasp → pick → place(장애물 회피)를 기존 ROS2 스택
 > (cuMotion + nvblox + 2F-85 + D405)에 얹는다. **목표: sim2real gap 최소화** — 그래서 GT 대신 **실물에서 쓸
 > foundation model 들을 sim 카메라(RGB)에 그대로** 돌린다.
-> 관련: 학습(IL/RL) 설계는 [`LEARNING.md`](LEARNING.md), 제어/실행 현황은 [`README.md`](README.md).
-> (이 scripted pick&place 는 나중에 **IL 시연 자동생성 소스**로도 재사용 가능 — LEARNING.md §5.)
+> 관련: 학습(IL/VLA) 설계는 [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md),
+> 제어/실행 현황은 [`README.md`](README.md).
+> (`LEARNING.md` 는 **RL insertion 설계로 보존** — IL 절반만 `plan_il_vla.md` 로 대체됐다.
+> 그 문서의 `oht_bolting` 참조는 다른 워크스페이스 자산이라 이 ws 범위 밖.)
+
+> **★ 2026-09-06 — 이 문서의 역할이 하나 늘었다.**
+> **M3 pick&place 상태머신이 IL/VLA 의 "데이터 생성 엔진"을 겸한다.** 원래 "나중에 재사용 가능" 정도의
+> 부수 효과였는데, `plan_il_vla.md` §3 개정에서 **Isaac Lab Mimic 을 대체하는 주 경로**로 승격됐다.
+> 이유: Mimic 은 사람 데모 1개에 강체 변환을 걸어 재조합하는데, **UR 은 6-DoF 라 변환된 궤적이
+> 도달 불가·특이점에 걸린다**(Isaac Lab 문서: 어려운 경우 후보 성공률 1% 미만). 반면 이 상태머신은
+> **매 물체 포즈마다 cuMotion 이 IK·충돌을 새로 풀어** 실행 불가능한 궤적이 애초에 생성되지 않는다.
+> → **M3 를 만들 때 "데모를 기록·라벨링할 수 있는 형태"로 설계할 것**(M3 체크리스트 하단 참조).
 
 ---
 
@@ -14,7 +24,8 @@
 depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그러면 갭이 **RGB 도메인 하나**로 좁혀지고
 (domain randomization 으로 대응), 그 아래 모든 추론이 sim에서 미리 측정·튜닝된다.
 
-> **DR 적용 대상 주의**: domain randomization 은 **학습하는 컴포넌트**(IL/RL 정책 — LEARNING.md, 옵션인 SAM3 fine-tune)에만 강건화로 작용한다.
+> **DR 적용 대상 주의**: domain randomization 은 **학습하는 컴포넌트**(IL/VLA 정책 — `ur_bringup/docs/plan_il_vla.md`,
+> RL 정책 — `LEARNING.md`, 옵션인 SAM3 fine-tune)에만 강건화로 작용한다.
 > **zero-shot 인식 3종(FoundationStereo/SAM3/FoundationPose)은 추가 학습 안 함** → DR 로 "강건화"되지 않고, 거대 데이터 **사전학습 강건성**에 의존한다.
 > 이들에 대한 sim 변동(마모·조명 등) 렌더는 **강건화(학습)가 아니라 측정(eval)** — pose/마스크 오차를 재서 마진·폴백 임계값을 정하는 용도(D8b).
 
@@ -89,7 +100,7 @@ depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그�
 | **D2 seg model** | 타깃 마스크 모델 | ✅ **SAM3**(검출+세그 통합). SAM2/Grounding DINO/RT-DETR 드롭. **Meta 원본 직접 래핑**(ultralytics AGPL 회피) |
 | **D3 타깃 지정** | 무엇을 잡을지 | ✅ **SAM3 이미지 exemplar**(잡을 물체 crop 한 장, zero-shot·학습불필요). 텍스트 아님 |
 | **D4 카메라** | 카메라 구성·역할 | ✅ **정적 오버헤드=장애물+coarse / 손목 D405=fine grasp**(§0 표). v1은 정적 1대로 시작 가능 |
-| **D5 파지 유지** | grasp 시 물체 잡기 | ✅ **접촉 물리 시도→안되면 fixed-joint attach**(견고) |
+| **D5 파지 유지** | grasp 시 물체 잡기 | ✅ **fixed-joint attach 확정(2026-09-06 구현·검증)**. 접촉 물리는 실패 — 2F-85 mimic joint 가 접촉하중에서 손가락을 한계 밖(-1.17 rad)으로 밀려 물체를 튕겨냄. `ur16e_isaac_ros2.py --grasp-attach`, 서비스 `/scene/{attach,detach}_object`, 상태 `/scene/grasp_active`. 용접 중 물체 collider off → 관절 붕괴도 함께 해소. 상세 `HISTORY.md` §16 |
 | **D6 추론 rate** | 느린 perception vs 빠른 제어 | ✅ pose 저rate + ESDF 중rate + 제어 고rate **비동기 분리**. SAM3는 저rate(재획득), FoundationPose tracking이 중rate |
 | **D7 컨테이너 토폴로지** | GXF segfault 회피 | ✅ FoundationStereo/SAM3/FoundationPose/nvblox 전부 **별도 컨테이너/프로세스** 분리(필수) |
 | **D8 물체/장면·pose 모드** | 대상물·CAD 유무 | ✅ **기본 = CAD 보유 → FoundationPose model-based**. 장애물=낮고작게(z>0.1), place 고정. 향후 **CAD-free 확장**(model-free/**Any6D**)은 pose 노드 교체로(모듈러 유지) |
@@ -130,6 +141,25 @@ depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그�
 - [ ] cuRobo: 타깃을 known object(pre-grasp 클리어런스) → 파지 시 attach → place 후 detach
 - [ ] **GUI 관찰**: 장애물 피해 pick&place 성공, decay 로 들린 자리 정리
 
+#### M3-B — IL 데이터 엔진화 (`plan_il_vla.md` C′ 단계와 동일 작업)
+
+M3 를 처음부터 이 형태로 만들면 IL 쪽에서 다시 만들 일이 없다. **스키마는 `plan_il_vla.md` §2.6 이 정본.**
+
+- [ ] **물체 포즈 랜덤화 루프** — 매 에피소드 물체(+place 타깃) 위치·자세 재샘플. 샘플링 영역은
+      **특이점(어깨 위·완전 신장·wrist_2≈0)에서 떨어뜨려** 잡을 것 (`plan_il_vla.md` §6.1)
+- [ ] **에피소드 성공/실패 자동 판정** — 물체가 목표 영역 안 & 그리퍼 열림 & 정지.
+      실패는 `plan 실패` / `grasp 실패` / `충돌` 로 **분류 기록**(데이터 품질의 1차 방어선)
+- [ ] **자동 리셋** — `reset_pose.py home` + 물체 재배치. 무인 연속 실행 가능해야 함
+- [ ] **LeRobot 데이터셋 writer** — `video.exterior` / `video.wrist` / `state.single_arm`(6) /
+      `state.gripper`(1) / `action.*` / `task`(자연어).
+      ⚠️ **그리퍼는 `finger_joint` 스칼라 하나만** 기록(URDF↔USD 보조관절 이름·부호가 다름 — 함정)
+- [ ] **시간 동기화 규약 확정** — 기록 rate 를 하나 정하고(예: 30 Hz) 관측·액션을 그 그리드에 리샘플.
+      현재 실측: `/clock` 기반, 카메라 ~80 Hz, controller_manager 100 Hz, physics 60 Hz
+- [ ] **태스크 3종 × 언어 지시문** — 에피소드마다 `task` 필드에 실제 지시문 기록
+      (예: "빨간 블록을 그릇에" / "파란 블록을 그릇에" / "블록을 왼쪽 상자에").
+      단일 태스크만 모으면 VLA 가 **3B 짜리 비싼 ACT** 가 된다 (`plan_il_vla.md` §2.8)
+- [ ] domain randomization 적용 — Isaac Sim 내장 `isaacsim.replicator.*` (Isaac Lab 불필요)
+
 ### M4 — sim2real 하드닝
 - [ ] RGB domain randomization 본격 적용, FoundationStereo depth 정확도/노이즈 sim↔real 분포 맞추기
 - [ ] **CAD↔실물 불일치 특성화**(D8b, eval): sim 에 마모·스크래치·텍스처 perturbation **렌더 → FoundationPose pose 오차 측정**(학습 아님, zero-shot) → grasp 마진·model-free 폴백 임계값 결정. 강건성 레버는 메시 갱신/confidence 게이팅/멀티뷰/마진
@@ -167,7 +197,16 @@ depth/mask/pose 는 **sim·real 동일한 foundation model** 로 만든다. 그�
 ## 5. 다음 액션
 **파이프라인·D1~D7·D9 확정(2026-06-29).** 남은 미정: D8(실물 CAD-free 처리).
 진입점: **M1 = ① SAM3 ROS 래핑(Meta 원본, exemplar 입력) → ② FoundationStereo/FoundationPose 설치·검증 → sim 카메라(RGB)에 붙여 depth/mask/pose 출력 확인.**
-(현재 GUI nvblox 스택은 떠 있음 — M2에서 마스킹 통합 시 재사용.)
+(nvblox 스택은 Isaac Sim 6.0.1 에서 재검증 완료 — `HISTORY.md` §14. M2에서 마스킹 통합 시 재사용.)
+
+**2026-09-06 추가** — IL/VLA 와의 접점:
+- M0 의 **물체·exemplar 선정 시 태스크 3종(언어 지시문)을 함께 정한다** — 나중에 바꾸면 데이터를 다시 모아야 한다.
+- M3 는 **M3-B(데이터 엔진화)까지 포함해 설계**한다. 별도 작업이 아니라 같은 작업이다.
+- 병렬 선행: **손목 카메라 마운트 제작**(`plan_il_vla.md` §2.5 명목 치수) — 실물 데이터의 유일한 블로커.
+
+> **nvblox 환경 함정(2026-09-06 확정)**: 이 머신(RTX 5090 = sm_120)에서 apt `nvblox_node` 는 실행 불가라
+> **소스 빌드본을 쓴다**. 또 `esdf_and_gradients_unobserved_value: 1000.0` 이 없으면 미관측 복셀이
+> 장애물로 취급되어 cuMotion 이 모든 시작자세를 거부한다. 둘 다 `SETUP.md` §2-B / `HISTORY.md` §14 참조.
 
 ---
 

@@ -5,7 +5,7 @@
 
 - 구성/아키텍처: [`README.md`](README.md) · 재현 매뉴얼: [`SETUP.md`](SETUP.md) · 배경/이력: [`HISTORY.md`](HISTORY.md)
 - 매 터미널 먼저:
-  `source /opt/ros/jazzy/setup.bash && source /isaac-sim/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0`
+  `source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0`
 
 ---
 
@@ -139,26 +139,36 @@ NVIDIA Isaac ROS cuMotion 을 MoveIt **planning pipeline** 으로 붙여 GPU 로
 실행은 기존 `scaled_joint_trajectory_controller`(sim/real 공용)로 한다. **sim 에서 plan+execute 검증 완료**
 (오차 0.0003 rad). HW 와 무관한 SW 설정이라 실물 팔에도 그대로 적용된다.
 
-### 설치 (apt) — 전제 레포 3개 + cuMotion 패키지
+### 설치 — **정식 절차는 [`SETUP.md`](SETUP.md) §2-B 로 이동**
+
+레포 추가/핀/설치 목록/nvblox 소스 빌드까지 한 곳에 정리해 두었다. 요점만:
+
 ```bash
-# (a) Isaac ROS 4.x (Jazzy/Noble) 레포
-curl -fsSL https://isaac.download.nvidia.com/isaac-ros/repos.key | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-isaac-ros.gpg
-echo 'deb [signed-by=/usr/share/keyrings/nvidia-isaac-ros.gpg] https://isaac.download.nvidia.com/isaac-ros/release-4 noble main' | sudo tee /etc/apt/sources.list.d/nvidia-isaac-ros.list
-# (b) CUDA 13 레포 (cuda-toolkit-13-0 — isaac_ros_common 하드 의존, 수 GB)
-cd /tmp && wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-# (c) VPI 4 레포 (libnvvpi4 — NVIDIA Jetson OTA x86_64, r38.2 고정)
-curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-jetson.gpg
-echo 'deb [signed-by=/usr/share/keyrings/nvidia-jetson.gpg] https://repo.download.nvidia.com/jetson/x86_64/noble r38.2 main' | sudo tee /etc/apt/sources.list.d/nvidia-vpi.list
-sudo apt update
+# 0) 공유 머신이면 핀부터! NVIDIA 레포는 ROS 패키지를 덮어쓴다(robotiq_description 0.0.1 -> 9.0.1 등)
+sudo tee /etc/apt/preferences.d/99-nvidia-isolate.pref   # Pin-Priority 100, SETUP.md §2-B-1 참고
+# 1) 레포 3개: isaac-ros release-4 / CUDA(ubuntu2404) / VPI4(jetson r38.2)   -> SETUP.md §2-B-1
+# 2) 설치 (메타패키지 금지: -examples, isaac-ros-nvblox 는 넣지 말 것)
 sudo apt install -y ros-jazzy-isaac-ros-cumotion ros-jazzy-isaac-ros-cumotion-moveit \
-                    ros-jazzy-isaac-ros-cumotion-examples ros-jazzy-isaac-ros-cumotion-robot-description
+                    ros-jazzy-isaac-ros-cumotion-robot-description \
+                    ros-jazzy-isaac-ros-cumotion-robot-segmenter \
+                    ros-jazzy-nvblox-ros ros-jazzy-nvblox-msgs ros-jazzy-nvblox-rviz-plugin
+# 3) RTX 40/50 이면 nvblox_ros 를 소스 빌드 (아래 참고)                        -> SETUP.md §2-B-4
 ```
 cuMotion **엔진은 deb 에 번들**(`libcumotion_impl.so`)이라 런타임 추가설치 불필요. CUDA 드라이버(580, CUDA13 호환)는 이미 있음.
+(2026-09 기준 CUDA 툴킷은 13-2, Isaac ROS 패키지는 4.6.0.)
+
+**★ GPU 아키텍처 확인은 필수** — apt `nvblox_node` 는 **sm_75 전용**이라 RTX 5090(sm_120)에서 실행 즉시 죽는다
+(`cudaErrorInvalidDevice: invalid device ordinal`). cuMotion 은 sm_120 포함이라 무관.
+```bash
+nvidia-smi --query-gpu=name,compute_cap --format=csv
+/usr/local/cuda-13.2/bin/cuobjdump --list-elf /opt/ros/jazzy/lib/nvblox_ros/nvblox_node | grep -oE 'sm_[0-9]+' | sort -u
+```
+불일치하면 `isaac_ros_nvblox`(vcs `release-4.6`, 서브모듈 init 필수)를
+`colcon build --packages-select nvblox_ros --cmake-args -DUSE_NATIVE_CUDA_ARCHITECTURE=1` 로 빌드.
 
 ### UR16e 로봇 설정 (XRDF) — 일회성
 cuMotion 은 URDF + XRDF(충돌 sphere) 필요. UR16e 용은 standalone cuMotion 엔진 휠로 sphere 를 생성해
-`ur_bringup/cumotion/ur16e_2f85.{urdf,xrdf}` 로 vendored 되어 있다. 재생성/배경은 [`../ur_bringup/cumotion/README.md`](../ur_bringup/cumotion/README.md).
+`ur_bringup/cumotion/ur16e_2f85.{urdf,xrdf}` 로 vendored 되어 있다. 재생성/배경은 [`ur_bringup/cumotion/README.md`](ur_bringup/cumotion/README.md).
 
 ### 실행
 ```bash
@@ -231,6 +241,105 @@ RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvbl
    `sudo apt install -y ros-jazzy-controller-manager ros-jazzy-controller-interface ros-jazzy-hardware-interface ros-jazzy-controller-manager-msgs ros-jazzy-joint-trajectory-controller ros-jazzy-joint-state-broadcaster ros-jazzy-position-controllers`
 3. **컨트롤러가 cuMotion 궤적 goal 거부**: `Velocity of last trajectory point ... is not zero`. cuMotion 종단 잔여속도(~1e-3) 때문. → JTC 에 `allow_nonzero_velocity_at_trajectory_end: true`(우리 컨트롤러 yaml 에 반영됨).
 
+## 4-B. OMY-L100 teleop 리더 (IL 시연 데이터 수집)
+
+UR16e 를 사람이 직접 끌어 IL 데모를 모으기 위한 **리더 암**. 설계 근거는
+[`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md) §3.5, 설치는
+[`SETUP.md`](SETUP.md) §2-D, 검증 이력은 [`HISTORY.md`](HISTORY.md) §21·§22.
+**sim 에서 전 구간 검증 완료**(추종오차 0.244°) — 실물에서 새로 할 일은 아래 캘리브레이션뿐이다.
+
+### 물리 연결
+| 항목 | 값 |
+|---|---|
+| 리더 | ROBOTIS AI **OMY-L100** (6 DOF + 트리거 = 모터 7개) |
+| 인터페이스 | **U2D2** (USB 2.0) → PC. TTL Multidrop, **4 Mbps** |
+| 전원 | **12 VDC** (팔로워 UR16e/그리퍼와 완전히 독립) |
+| 포트 | `/dev/ttyUSB0` (U2D2 = FTDI) |
+| 모터 | J1–3 `XH540-W150` (ID 1–3) / J4–6 `XC330-T288` (ID 4–6) / J7 `XC330-T181` (ID 7) |
+
+UR16e·2F-85·D405 와 **전기적으로 무관**하다. 리더는 입력장치일 뿐이라 팔로워 배선은 그대로다.
+
+### ① udev 규칙 (1회, sudo)
+```bash
+sudo cp src/open_manipulator/open_manipulator_bringup/open-manipulator-cdc.rules \
+        /etc/udev/rules.d/99-open-manipulator-cdc.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+이 규칙은 두 가지를 한다 — **`MODE=0666`**(sudo 없이 포트 접근) 과
+**★ `latency_timer=1`**. 후자가 핵심이다: FTDI 기본 지연은 16 ms 라 4 Mbps 다이나믹셀
+동기읽기가 사실상 60 Hz 로 떨어진다. 규칙 적용 후 확인:
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # 1 이어야 함
+```
+
+### ② 리더 기동 (팔로워와 무관하게 단독 확인 가능)
+```bash
+ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+    port_name:=/dev/ttyUSB0 use_self_collision_avoidance:=false
+ros2 control list_controllers -c /leader/controller_manager   # ★ /leader 네임스페이스
+ros2 topic echo /leader/joint_states --once
+```
+컨트롤러 4개(`gravity_compensation` / `spring_actuator` / `joint_state_broadcaster` /
+`joint_trajectory_command_broadcaster`)가 전부 `active` 여야 한다. 손으로 팔을 움직이면
+`/leader/joint_states` 가 따라 변해야 한다. **여기까지가 UR16e 없이 되는 범위.**
+
+### ③ UR16e 에 연결
+```bash
+# 팔로워 (§1·§2 대로)
+ros2 launch ur_bringup ur16e_2f85_real.launch.py robot_ip:=<UR16e_IP>
+# 브리지 — 실물이므로 virtual_leader 는 false(기본)
+ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=false max_joint_speed:=0.3
+python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
+ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
+```
+> **첫 연결은 `max_joint_speed:=0.3`(기본 1.0 의 1/3)으로 시작할 것.** 익숙해진 뒤 올린다.
+>
+> `forward_position_controller` 는 **실물에서도 이미 존재한다** — UR 공식
+> `ur_robot_driver/config/ur_controllers.yaml` 이 우리와 **동일한 관절 순서**로 정의해 둔다.
+> 컨트롤러 yaml 을 손댈 필요 없다. (`teleop_servo.launch.py` 주석의 "real 은 직접 추가해야 함"은
+> 과한 경고였다 — 2026-09-06 확인.)
+
+### ④ 실물에서만 해야 하는 캘리브레이션 — **여기가 남은 전부**
+sim 은 URDF 상의 이상적인 리더였다. 실물은 **엔코더 영점이 URDF 영점과 같다는 보장이 없다.**
+
+1. **엔코더 영점 확인** — 리더를 **수직 상방**(URDF 영점 자세)으로 세우고
+   `ros2 topic echo /leader/joint_states --once`. J1~J6 이 **≈0** 이어야 한다.
+   벗어나면 그 값이 그대로 상수 오차이므로 `omy_to_ur16e` 의 `offset` 에 더한다.
+2. **방향 확인** — 각 관절을 조금씩 움직이며 UR 이 **같은 방향**으로 도는지 본다.
+   반대면 해당 `sign` 을 뒤집는다. (J5 는 **이미 −1** 이 기본값이다 — 부호를 또 뒤집지 말 것)
+3. **손목 J4/J6 오프셋** — L100 은 UR16e 의 축소 복제본이 **아니어서**(측면 오프셋
+   UR +290.7 mm vs L100 −46 mm, 부호까지 다름) 이 둘은 *유도되는 정답이 없다*.
+   조작감 기준으로 맞춘다.
+```bash
+ros2 param set /omy_to_ur16e offset "[0.0, -1.5708, 0.0, <J4>, 0.0, <J6>]"
+ros2 param set /omy_to_ur16e sign   "[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]"
+```
+> 확정되면 **`teleop_omy.launch.py` 의 기본값으로 올려 굳힐 것.** 파라미터로만 두면
+> 다음 세션에 사라진다. 값이 바뀌면 `virtual_omy_leader.py` 쪽도 같이 고쳐야
+> sim 회귀 테스트의 engage 게이트가 계속 통과한다.
+
+### ⑤ 데이터 기록
+기록기는 **수정 불필요**(장치무관 설계, `plan_il_vla.md` §2.5):
+```bash
+ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=false \
+    -p out_dir:=<경로> -p task:="..." -p action_source:=topic \
+    -p action_topic:=/leader/joint_states
+```
+
+### 함정
+| 증상 | 원인 / 대처 |
+|---|---|
+| `ros2 control list_controllers` 가 무한 대기 | 리더는 **`/leader` 네임스페이스** → `-c /leader/controller_manager` |
+| 컨트롤러가 안 뜸 | `use_self_collision_avoidance:=false` 누락 (그 노드는 우리가 COLCON_IGNORE 한 `open_manipulator_collision` 에 있음) |
+| 통신은 되는데 주기가 낮음 | `latency_timer` 가 1 이 아님 → ① 재확인 |
+| 포트 권한 거부 | udev 규칙 미적용, 또는 U2D2 를 규칙 적용 전에 꽂음 → 재연결 |
+| 특정 관절만 안 읽힘 | 다이나믹셀 ID 불일치. URDF `gpio dxlN` 의 ID 1–7 과 실제 모터 ID 대조 |
+| 모터는 있는데 제어표 오류 | 펌웨어 버전차 — `dxl_model/` 에 `*_fw52.model` 변종이 따로 있다. 드라이버가 자동 선택하지만 실패하면 펌웨어를 확인할 것 |
+| engage 가 계속 거부됨 | **정상 동작이다.** 리더를 UR 현재 자세에 맞춰 **가만히 잡고** 호출. 거부 메시지가 어긋난 관절을 도(deg)로 알려준다 |
+| 리더가 축 늘어지거나 떨림 | 중력보상 튜닝 — 리더 yaml 의 `kinetic_friction_scalars` / `torque_scaling_factors` |
+
+---
+
 ## 5. 알아두면 좋은 함정 (실물 고유)
 
 | 증상 | 원인 / 대처 |
@@ -243,4 +352,4 @@ RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvbl
 | `No RealSense devices were found!` | 장치 미연결/USB2 포트 → SS(USB3) 포트, 케이블 교체, `rs-enumerate-devices`. |
 | cuMotion 궤적 실행 거부(goal rejected) | 종단 잔여속도 → `allow_nonzero_velocity_at_trajectory_end: true` (§4-③). |
 
-> 더 많은 디버깅 이력/근거: [`HISTORY.md`](HISTORY.md) (특히 §6 함정, §8 그리퍼, §9 카메라).
+> 더 많은 디버깅 이력/근거: [`HISTORY.md`](HISTORY.md) (특히 §6 함정, §8 그리퍼, §9 카메라, §21·§22 OMY 리더).
