@@ -343,6 +343,60 @@ nvidia-smi --query-gpu=compute_cap --format=csv                                 
 LeRobot 은 mp4 인코딩에 ffmpeg 이 필요한데 시스템에 없다. apt 설치는 전역 변경이므로
 **venv 안에 바이너리를 동봉하는 `imageio-ffmpeg`** 를 쓴다(`requirements-ml.txt`).
 
+### ★ extra 는 `[dataset,training]` 둘 다 필요
+둘이 서로 다른 절반을 담당한다:
+- `[dataset]` — `lerobot.datasets` 임포트 자체. 없으면 `raw_to_lerobot.py` 가 안 돈다.
+- `[training]` — `lerobot-train` 실행. 없으면 **즉시** `'accelerate' is required but not installed`.
+
+`[dataset]` 만 있어도 **데이터 변환은 멀쩡히 되기 때문에**, 이 누락은 첫 실제 학습을 돌릴 때까지
+드러나지 않는다(실제로 그랬다 — `HISTORY.md` §24). `check_env.sh` 가 이제 `accelerate` 를 따로 검사한다.
+
+### ★★ `/dev/shm` 이 64 MiB — DataLoader 워커가 간헐적으로 죽는다
+이 컨테이너의 `/dev/shm` 은 Docker 기본값 **64 MiB** 다. PyTorch 기본 공유전략
+(`file_descriptor`)은 DataLoader 워커→학습루프 배치 전달에 `/dev/shm` 을 쓰는데,
+**ACT 배치 하나가 8 × 카메라2 × 3×480×640 float32 ≈ 59 MiB** 라 한 배치도 겨우 들어간다.
+
+```
+RuntimeError: unable to allocate shared memory (shm) for file <...>: Resource temporarily unavailable (11)
+RuntimeError: DataLoader worker (pid ...) exited unexpectedly
+```
+
+**실측: 동일 조건 3회 중 2회 크래시.** 결정적이 아니라 **간헐적**이라 더 나쁘다 —
+스모크 테스트는 통과해 놓고 몇 시간짜리 학습 중간에 죽는다.
+
+`/dev/shm` 을 키우려면 컨테이너를 다시 만들어야 하는데, **이 머신은 다른 프로젝트와 공유**라 불가.
+그래서 공유전략을 `file_system`(temp dir 사용)으로 바꾼다. `setup.sh ml` 이 자동 설치한다.
+
+```bash
+# 학습 실행 시 환경변수 하나만 붙이면 된다
+UR_WS_TORCH_SHM_FIX=1 deps/.venv-ml/bin/lerobot-train ... --num_workers=4
+```
+
+| | data_s | smp/s | 200 스텝 | 3회 중 |
+|---|---|---|---|---|
+| 수정 없음, `num_workers=4` | 0.001 | 161 | 16 s | **2회 크래시** |
+| `num_workers=0` (회피) | 0.13 | 47 | 40 s | 3회 OK |
+| `UR_WS_TORCH_SHM_FIX=1`, `num_workers=4` | 0.001 | 161 | 16 s | **3회 OK** |
+
+loss 는 세 경우 모두 동일(step 200 에서 3.483/3.484) — **속도만 2.5배**, 결과는 안 바뀐다.
+
+**함정 두 개를 지나야 여기 도달한다** (둘 다 조용히 실패한다):
+1. **부모에만 걸면 안 된다.** lerobot 은 `dataloader_multiprocessing_context = "spawn"` 을
+   **명시적으로** 박아 뒀다(`configs/train.py`, 시스템 기본은 `fork`). 부모의
+   `set_sharing_strategy()` 는 spawn 된 워커에 상속되지 않는다.
+2. **venv 의 `sitecustomize.py` 는 안 먹는다.** `/usr/lib/python3.12/sitecustomize.py` 가 이미 있고
+   stdlib 경로가 site-packages 보다 **앞서서**, venv 쪽은 임포트조차 안 된다.
+   → **`.pth` 파일**을 쓴다. `site` 가 모든 인터프리터(=spawn 된 워커 포함)에서 실행하고 이름 충돌도 없다.
+   환경변수로 게이팅해서 평소 venv python 기동 비용은 0.
+
+설치물(둘 다 venv 안, `rm -rf deps/.venv-ml` 로 완전 원복):
+```
+deps/.venv-ml/lib/python3.12/site-packages/ur_ws_shm_fix.pth   ← site 가 실행하는 한 줄
+deps/.venv-ml/lib/python3.12/site-packages/ur_ws_shm_fix.py    ← 실제 전략 설정
+```
+`check_env.sh` 는 **파일 존재가 아니라 실제 전략값**을 확인한다 — 위 함정 2 때문에
+"설치된 것처럼 보이지만 안 도는" 상태가 실제로 있었다.
+
 ### 사용법
 ROS 쉘에 **source 하지 말 것**(ROS 파이썬 환경을 오염시킨다). 인터프리터를 직접 지정한다:
 ```bash

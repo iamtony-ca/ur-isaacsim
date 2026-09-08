@@ -15,7 +15,28 @@ __pycache__/
 /dynamixel_hardware_interface/
 /robotis_interfaces/
 
-# colcon build logs
-/log/
-/build/
-/install/
+# colcon artefacts. NOT anchored with a leading slash: running `colcon build`
+# from inside a package directory (easy to do by accident) creates
+# ur_bringup/build/ and ur_bringup/install/, which the anchored form missed --
+# 70+ generated files were staged before this was noticed.
+log/
+build/
+install/
+
+# Editable installs. `pip install -e src/ur_bringup/lerobot_robot_ur16e_ros`
+# (the LeRobot robot plugin) drops its metadata next to the source.
+*.egg-info/
+*.egg-link
+.eggs/
+
+# Datasets, recordings and checkpoints. These normally live at the WORKSPACE root
+# (outputs/, deps/), which is outside this repo, but a stray copy inside src/
+# would be gigabytes of binary in git before anyone noticed: one 12-episode raw
+# set is 1.3 GB and its converted form 198 MB.
+outputs/
+deps/
+*.mp4
+
+# Python tooling
+.pytest_cache/
+.ruff_cache/

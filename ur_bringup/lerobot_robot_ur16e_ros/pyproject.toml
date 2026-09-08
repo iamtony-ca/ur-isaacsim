@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The NAME is load-bearing: lerobot's register_third_party_plugins() discovers
+# distributions by the `lerobot_robot_` prefix. Renaming this unregisters the robot.
+name = "lerobot_robot_ur16e_ros"
+version = "0.1.0"
+description = "LeRobot robot plugin: UR16e + Robotiq 2F-85 driven through ROS 2"
+requires-python = ">=3.10"
+# No dependencies on purpose. lerobot is already in the venv, and rclpy/cv_bridge
+# come from the sourced ROS overlay rather than from pip -- listing them here would
+# make pip try to fetch packages that do not exist on PyPI.
+dependencies = []
+
+[tool.setuptools]
+packages = ["lerobot_robot_ur16e_ros"]
+package-dir = {"lerobot_robot_ur16e_ros" = "."}

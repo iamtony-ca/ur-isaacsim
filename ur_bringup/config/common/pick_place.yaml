@@ -1,0 +1,48 @@
+# pick_place_demo.py -- TASK parameters. These describe the job, not the backend,
+# and are loaded for BOTH sim and real hardware.
+#
+# Anything that only exists to work around the Isaac gripper asset lives in
+# pick_place_sim.yaml instead. Keep that split: the whole point of this demo is
+# that the same state machine drives Isaac and the real UR16e, so a value that
+# silently differs between them has to be visible as such.
+/**:
+  ros__parameters:
+    group: ur_manipulator
+
+    # cuMotion rejects any target link other than gripper_frame (HISTORY.md 14),
+    # and gripper_frame is the link the URDF puts at the gripper base.
+    ee_link: gripper_frame
+
+    object_topic: /scene/object_pose
+    place_topic: /scene/place_pose
+
+    # Empty = whatever MoveIt's default pipeline is. The cuMotion launch already
+    # makes isaac_ros_cumotion the default, so leave these alone there.
+    pipeline_id: ""
+    planner_id: ""
+
+    approach_height: 0.15      # [m] above the part for PRE_GRASP / TRANSFER
+    lift_height: 0.20          # [m] to raise the part after CLOSE
+    place_clearance: 0.02      # [m] gap above the marker when releasing
+    grasp_z_offset: 0.015      # [m] aim this far above the part centre
+
+    # Gripper, in the URDF / robotiq_driver convention: 0 = open, 0.8 = closed.
+    # tcp_offset < 0 means "measure gripper_frame -> finger tips from TF", which
+    # follows the URDF instead of duplicating it -- correct on real hardware.
+    grip_closed: 0.8
+    grip_open: 0.0
+    grip_preclose: 0.40
+    grip_effort: 60.0
+    tcp_offset: -1.0
+
+    vel_scale: 0.2
+    acc_scale: 0.2
+    plan_time: 5.0
+
+    # Judge. place_tol is deliberately tight: an earlier 0.06 m tolerance passed a
+    # cycle where the part had been DROPPED and landed 57 mm from the marker, so
+    # the run looked better than it was.
+    pos_tol: 0.01
+    ori_tol: 0.05
+    place_tol: 0.035
+    settle_time: 5.0

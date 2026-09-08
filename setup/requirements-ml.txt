@@ -12,9 +12,38 @@
 # a silently-replaced torch is exactly the failure mode HISTORY.md 14 describes for
 # nvblox: the GPU is visible, tensors allocate, and kernels never run.
 
-lerobot[dataset]       # dataset format + ACT. The [dataset] EXTRA is required:
-                       # plain `lerobot` cannot import lerobot.datasets
-                       # ("'datasets' is required but not installed").
+lerobot[dataset,training,async]==0.6.1
+                       # PINNED, and deliberately from PyPI rather than a git clone.
+                       # LeRobot's API moves between releases (LeRobotDataset.create /
+                       # add_frame / save_episode signatures have all changed), and our
+                       # robot adapter in ur_bringup/lerobot_robot_ur16e_ros subclasses
+                       # lerobot.robots.robot.Robot -- an unpinned upgrade on another
+                       # machine would break it silently. A pip install also cannot be
+                       # locally modified, which is what "use the official open source
+                       # as-is" actually means in practice. Clone instead only when
+                       # upstream must be patched, or for NVIDIA's own Isaac-GR00T
+                       # repo if we ever bypass lerobot's `groot` policy.
+                       # THREE extras, each covering a different half of the job:
+                       #   [dataset]  -> lerobot.datasets is importable at all
+                       #                 (plain `lerobot`: "'datasets' is required
+                       #                 but not installed")
+                       #   [training] -> `lerobot-train` runs (it hard-fails on
+                       #                 "'accelerate' is required but not installed").
+                       # [dataset] alone is enough to CONVERT recordings, which is why
+                       # the gap survived until the first real training run (HISTORY.md
+                       # 24). Adding [training] is a pure addition -- 13 packages
+                       # (accelerate, wandb, ...) and torch is NOT touched; verified
+                       # with `pip install --dry-run`.
+                       #   [async]    -> lerobot.async_inference (policy_server +
+                       #                 robot_client) which is how a trained policy
+                       #                 actually drives the arm. Pulls grpcio and
+                       #                 matplotlib; torch/numpy are "already
+                       #                 satisfied", verified with --dry-run.
+                       # Using upstream's server/client instead of writing our own is
+                       # the point: the SAME pair runs act, pi0, pi05, smolvla and
+                       # groot, so moving from ACT to a VLA is a CLI argument rather
+                       # than new code. All that is ours is the robot adapter,
+                       # ur_bringup/lerobot_robot_ur16e_ros (--robot.type=ur16e_ros).
 imageio-ffmpeg         # bundles an ffmpeg binary INSIDE the venv, so we do not
                        # have to apt-install ffmpeg system-wide (isolation).
                        # NOTE: lerobot also pulls `torchcodec`, whose .so needs the
@@ -24,3 +53,13 @@ imageio-ffmpeg         # bundles an ffmpeg binary INSIDE the venv, so we do not
                        # full write+read round trip (HISTORY.md 19). Do not apt-install
                        # ffmpeg to silence it: that is a system-wide change for a
                        # cosmetic warning.
+
+pyserial               # NOT for us -- we own no serial hardware. lerobot's robot
+                       # client imports every robot type to register it, including
+                       # dynamixel ones, and `dynamixel_sdk` is visible here because
+                       # sourcing the ROS overlay (needed for rclpy) also puts
+                       # /opt/ros/jazzy/lib/python3.12/site-packages on the path.
+                       # That copy of dynamixel_sdk imports `serial`, which the venv
+                       # does not have, so `python -m lerobot.async_inference.robot_client`
+                       # dies before it reaches our robot. Pure-python, one package,
+                       # no effect on torch.

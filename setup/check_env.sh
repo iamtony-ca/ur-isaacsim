@@ -131,6 +131,33 @@ except Exception as e:
     ok "ML torch supports sm_$sm"
   fi
   "$mlpy" -c "import lerobot" 2>/dev/null; opt $? "lerobot importable (needed by raw_to_lerobot.py)"
+  # [dataset] alone converts recordings fine but `lerobot-train` dies instantly on
+  # "'accelerate' is required but not installed" -- so the gap hides until the first
+  # real training run (HISTORY.md 24). Check the training half separately.
+  "$mlpy" -c "import accelerate" 2>/dev/null
+  opt $? "accelerate importable (lerobot[training] extra -- needed by lerobot-train)"
+
+  # /dev/shm is 64 MiB in this container and cannot be enlarged on a shared machine.
+  # Without the sitecustomize workaround, any num_workers>0 kills the DataLoader.
+  # Test the real thing rather than the file's presence: the first attempt at this
+  # workaround (a venv sitecustomize.py) LOOKED installed but was shadowed by
+  # /usr/lib/python3.12/sitecustomize.py and never ran (HISTORY.md 24).
+  shm_mb="$(df -m /dev/shm 2>/dev/null | awk 'NR==2{print $2}')"
+  if [ -n "$shm_mb" ] && [ "$shm_mb" -lt 1024 ]; then
+    strat="$(UR_WS_TORCH_SHM_FIX=1 "$mlpy" -c \
+      'import torch.multiprocessing as m; print(m.get_sharing_strategy())' 2>/dev/null)"
+    if [ "$strat" = "file_system" ]; then
+      ok "/dev/shm is only ${shm_mb}M, but UR_WS_TORCH_SHM_FIX=1 gives file_system sharing"
+    else
+      err "/dev/shm is ${shm_mb}M and the file_system workaround is NOT working (got '${strat:-none}')."
+      err "  lerobot-train with num_workers>0 will intermittently die on"
+      err "  'unable to allocate shared memory' (measured: 2 of 3 runs)."
+      err "  fix: setup/setup.sh ml   (or train with --num_workers=0)"
+      FAILED=1
+    fi
+  else
+    ok "/dev/shm is ${shm_mb:-?}M (large enough for default DataLoader sharing)"
+  fi
   # The whole point of the venv: system / Isaac python must stay clean.
   if python3 -c "import torch" 2>/dev/null; then
     err "torch leaked into SYSTEM python (isolation broken)"; FAILED=1

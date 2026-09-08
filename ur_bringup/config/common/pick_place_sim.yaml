@@ -1,0 +1,36 @@
+# pick_place_demo.py -- SIM-ONLY overrides. Loaded on top of pick_place.yaml when
+# use_sim:=true, and NEVER on real hardware.
+#
+# Every value here compensates for a place where NVIDIA's stock Robotiq 2F-85 USD
+# disagrees with the ROS robotiq_description URDF. They are not tuning knobs and
+# they are not improvements: on the real gripper each one is wrong, which is why
+# they are quarantined in this file instead of being baked into the defaults.
+#
+# The real fix is to re-bake the asset so the URDF is authoritative everywhere
+# (build_ur16e_2f85.py). Until that happens this file is the seam.
+#
+# Measured 2026-09-08. Verified end to end at 6/6 cycles, placement error
+# 0.000-0.001 m against a 0.035 m tolerance.
+/**:
+  ros__parameters:
+
+    # Where the pads actually are, along the tool axis from gripper_frame.
+    #   URDF robotiq_85_*_finger_tip_link : 0.0983 m   (correct on real hardware)
+    #   Isaac asset, pad mesh centre      : 0.1294 m   (measured from the USD:
+    #                                       the pad spans 0.1104..0.1484)
+    # Using the URDF number in sim aims the whole grasp 31 mm low, so the fingers
+    # have to pass through the table: the arm jams, shoves the part aside, and the
+    # attach then freezes a 37-39 mm offset that reads downstream as "dropped".
+    tcp_offset: 0.1294
+
+    # Approach / descend / release with the jaws PART way open, not wide.
+    # Measured, descending onto a 50 mm cube: the gripper stops 15.7 mm above it
+    # at 0.00, 11.7 mm at 0.10 and 0.20, and only passes (29.6 mm below the top)
+    # at 0.30. Something on the asset swings outward and downward as the jaws open
+    # wide. The same interference shoved a just-placed part 37 mm sideways on a
+    # full-open release -- which was every place_failed in run #9.
+    #
+    # Isaac's attach thresholds must bracket this value; they default to
+    # --grasp-close 0.35 / --grasp-release 0.32 in ur16e_isaac_ros2.py for exactly
+    # that reason. Change one and you must change the others.
+    grip_approach: 0.30

@@ -20,6 +20,7 @@
 #
 # Make sure ROS_DOMAIN_ID matches the ROS side (default 0) before launching.
 import argparse
+import math
 import sys
 
 import numpy as np
@@ -85,6 +86,18 @@ parser.add_argument("--table", action="store_true",
                          "known plane regardless of what the background environment provides")
 parser.add_argument("--table-height", default="0.0",
                     help="top surface height of the work table [m] in the base frame")
+# Position/size are arguments because RAISING the table makes them load-bearing.
+# At the default height 0.0 the slab sits below the robot and its footprint never
+# matters. Raise it to a realistic working height and a 1.0 x 1.2 m slab centred at
+# x=0.55 intersects the arm at spawn: PhysX resolves the overlap by flinging the
+# arm, wrist_2 wound out to -26 rad, and every plan then died with
+# START_STATE_INVALID ("outside bounds"). Keep the slab clear of the robot's own
+# footprint whenever table_height is non-zero.
+parser.add_argument("--table-pose", default="0.55,0.0",
+                    help="work table centre x,y (m) in the base frame")
+parser.add_argument("--table-size", default="1.0,1.2",
+                    help="work table size x,y (m). Shrink/push it out when raising the table, "
+                         "so it does not overlap the robot")
 parser.add_argument("--object-pose", default="0.55,0.0,0.03",
                     help="object spawn position x,y,z (m) in the base frame")
 parser.add_argument("--object-size", default="0.05,0.05,0.05",
@@ -96,6 +109,21 @@ parser.add_argument("--object-friction", default="1.2",
 parser.add_argument("--place-pose", default="0.55,0.35,0.0",
                     help="place target center x,y,z (m); z is overridden to sit on the table")
 parser.add_argument("--place-size", default="0.12", help="place target marker edge [m]")
+# --- multi-object / multi-destination (language-conditioned tasks) ---
+# A single object and a single destination make the language instruction REDUNDANT:
+# ignoring it still gives the right answer, so a VLA learns to ignore it and you
+# have paid 3B parameters for an ACT (plan_il_vla.md 2.8). Two objects x two
+# destinations means the same observation maps to different actions depending on
+# what was asked -- which is the whole point.
+parser.add_argument("--object-names", default="block",
+                    help="comma-separated object names. Each gets a colour from a fixed "
+                         "palette and a home position spread along y from --object-pose. "
+                         "Poses are published per object on /scene/objects/<name>/pose.")
+parser.add_argument("--place-names", default="target",
+                    help="comma-separated place-target names, spread along y from "
+                         "--place-pose. Published on /scene/places/<name>/pose (latched).")
+parser.add_argument("--object-spacing", default="0.14",
+                    help="y spacing [m] between object homes (and between place targets)")
 parser.add_argument("--randomize-object", action="store_true",
                     help="on /scene/reset_episode, re-sample the object position and yaw. "
                          "Demo diversity comes from this — a policy trained on one pose "
@@ -115,9 +143,18 @@ parser.add_argument("--grasp-attach", action="store_true",
                          "*** Sim-only mechanism. It is INVISIBLE to a policy: the policy sees "
                          "images + joint states, which look the same as on the real robot where "
                          "real friction does the holding. Never put grasp state in the dataset. ***")
-parser.add_argument("--grasp-close", default="0.25",
+# These two must BRACKET the demo's grip_approach (0.30 in sim -- see
+# config/common/pick_place_sim.yaml). The arm approaches and releases at that
+# opening, not at 0, because opening the stock 2F-85 asset all the way fouls both
+# the descent and the release. So:
+#   * grasp-close must be ABOVE it, or the attach is armed the whole way down and
+#     welds whatever drifts within grasp-distance before the arm is in position;
+#   * grasp-release must be just above it too, or opening only as far as 0.30
+#     never crosses the release threshold and the part is carried into the next
+#     cycle still attached.
+parser.add_argument("--grasp-close", default="0.35",
                     help="finger_joint [rad] above which the gripper counts as closing (attach arms)")
-parser.add_argument("--grasp-release", default="0.15",
+parser.add_argument("--grasp-release", default="0.32",
                     help="finger_joint [rad] below which the part is released")
 parser.add_argument("--grasp-distance", default="0.09",
                     help="max distance [m] from the finger midpoint to the object centre for attach")
@@ -130,7 +167,55 @@ parser.add_argument("--grasp-tips", default="wrist_3_link/gripper/Robotiq_2F_85/
                                             "wrist_3_link/gripper/Robotiq_2F_85/right_inner_finger",
                     help="comma-separated USD prim paths (relative to --robot-prim) of the two "
                          "finger pads; their midpoint is the grasp centre")
+parser.add_argument("--gripper-collision", default="convexDecomposition",
+                    choices=["convexDecomposition", "convexHull", "none"],
+                    help="collision approximation for the 2F-85 meshes. The stock asset ships\n                         convexHull, which FILLS the concave inner finger/knuckle and closes the\n                         jaw: measured, the gripper then cannot descend past the top of the part\n                         it is meant to grasp. 'none' leaves the asset alone")
+parser.add_argument("--grasp-tcp-offset", type=float, default=0.1294,
+                    help="[m] from the inner-finger PIVOT midpoint to the finger PADS, along "
+                         "the tool axis. The readable links are the pivots, not the pads; this "
+                         "is the URDF gripper_frame->finger_tip distance, measured from TF")
+parser.add_argument("--gripper-invert", action="store_true", default=True,
+                    help="map finger_joint between the URDF convention (0 = open, used by "
+                         "ros2_control, MoveIt, the IL recordings and the real gripper) and the "
+                         "stock NVIDIA asset's opposite one. On by default; the asset is wrong")
+parser.add_argument("--no-gripper-invert", dest="gripper_invert", action="store_false",
+                    help="talk to the asset raw, for a gripper USD baked in the URDF sense")
+parser.add_argument("--gripper-range", type=float, default=0.8,
+                    help="finger_joint travel [rad] used by the inversion (URDF 0..0.8)")
+parser.add_argument("--grasp-debug", action="store_true",
+                    help="log the finger-pad prim world poses and the resulting TCP every ~2 s. "
+                         "Use this to compare Isaac's grasp TCP against the URDF finger-tip TF "
+                         "at the SAME instant: the two are different links, and any offset "
+                         "between them aims the whole descent wrong (CLAUDE.md pitfall 7)")
 args, _ = parser.parse_known_args()
+
+# ---- gripper joint convention -----------------------------------------------
+# NVIDIA's stock Robotiq_2F_85_edit.usd and the ROS robotiq_description URDF
+# disagree about what finger_joint = 0 MEANS. Measured on this asset, sweeping
+# the joint and reading the finger-pad link poses out of PhysX:
+#
+#     finger_joint    URDF tip separation (TF)    Isaac pad separation
+#         0.00              135.5 mm (open)             0.0 mm (closed)
+#         0.40               95.8 mm                   39.7 mm
+#         0.80               50.7 mm (closed)          84.9 mm (open)
+#
+# Same 84.8 mm of travel, opposite sense: j_isaac == GRIPPER_RANGE - j_urdf.
+# MoveIt, the demo, the IL recordings and the real robotiq_driver all use the
+# URDF convention, so the ASSET is the odd one out. Uncorrected, the arm descends
+# with the fingers SHUT: measured, that knocks the part 146 mm aside, drives
+# finger_joint past its own lower limit, and leaves the weld nothing to grab.
+#
+# Corrected HERE, at the sim boundary, rather than in the USD. Two attempts to
+# retarget the joint frames in USD both failed -- the algebra says transforming
+# localRot0/localRot1 alike only moves the joint's zero, but PhysX put the
+# fingers somewhere else entirely, and a half-corrected gripper is worse than an
+# uncorrected one. This transform is arithmetic on two topics: trivial to verify,
+# and it needs no theory about how PhysX reads joint frames.
+GRIPPER_JOINT = "finger_joint"
+GRAPH_STATES_TOPIC = (args.joint_states_topic + "_isaac_raw"
+                      if args.gripper_invert else args.joint_states_topic)
+GRAPH_COMMANDS_TOPIC = (args.joint_commands_topic + "_isaac_raw"
+                        if args.gripper_invert else args.joint_commands_topic)
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
 simulation_app = SimulationApp(CONFIG)
@@ -189,6 +274,32 @@ prims.create_prim(
 )
 simulation_app.update()
 
+# ---- gripper collision approximation ---------------------------------------
+# The stock Robotiq_2F_85 colliders are all convexHull. The inner finger and the
+# inner knuckle are concave (an L in profile), so their hulls fill the space
+# BETWEEN the jaws. Measured consequence: the gripper stops dead ~150 mm above
+# whatever it is descending onto -- i.e. at the part's top face -- so the pads
+# never get around the part. A 35 mm cube gave zero pad overlap, a 20 mm cube
+# only 7.6 mm, and the "successful" grasps were the proximity weld firing on a
+# part the gripper was merely resting on. Real 2F-85 hardware picks a 50 mm block
+# without trouble; this is an artefact of the approximation, not the mechanism.
+if args.gripper_collision != "none":
+    from pxr import UsdPhysics as _UP
+
+    _st0 = stage.get_current_stage()
+    _n_fixed = 0
+    for _p in _st0.Traverse():
+        if "Robotiq_2F_85" not in str(_p.GetPath()):
+            continue
+        if "PhysicsCollisionAPI" not in _p.GetAppliedSchemas():
+            continue
+        _a = _p.GetAttribute("physics:approximation")
+        if not _a:
+            _a = _UP.MeshCollisionAPI.Apply(_p).CreateApproximationAttr()
+        _a.Set(args.gripper_collision)
+        _n_fixed += 1
+    print(f"  gripper collision   : {args.gripper_collision} on {_n_fixed} meshes")
+
 # ---- ROS2 action graph -----------------------------------------------------
 try:
     og.Controller.edit(
@@ -220,8 +331,8 @@ try:
             ],
             og.Controller.Keys.SET_VALUES: [
                 ("ArticulationController.inputs:robotPath", ARTICULATION_ROOT),
-                ("PublishJointState.inputs:topicName", args.joint_states_topic),
-                ("SubscribeJointState.inputs:topicName", args.joint_commands_topic),
+                ("PublishJointState.inputs:topicName", GRAPH_STATES_TOPIC),
+                ("SubscribeJointState.inputs:topicName", GRAPH_COMMANDS_TOPIC),
                 ("PublishJointState.inputs:targetPrim", [usdrt.Sdf.Path(ARTICULATION_ROOT)]),
             ],
         },
@@ -533,12 +644,15 @@ if args.scene == "pick_place":
     # (0.0 = the robot stands on the same plane the object rests on).
     # FixedCuboid = collider, no rigid body -> immovable, objects land on it.
     if args.table:
+        _tbl_c = [float(v) for v in args.table_pose.split(",")]
+        _tbl_s = [float(v) for v in args.table_size.split(",")]
         scene_objects["table"] = FixedCuboid(
             prim_path="/World/work_table", name="work_table",
-            position=np.array([0.55, 0.0, _tbl_z - 0.01]),
-            scale=np.array([1.0, 1.2, 0.02]),
+            position=np.array([_tbl_c[0], _tbl_c[1], _tbl_z - 0.01]),
+            scale=np.array([_tbl_s[0], _tbl_s[1], 0.02]),
             color=np.array([0.35, 0.32, 0.30]),
         )
+        print(f"  work table          : top z={_tbl_z} centre {_tbl_c} size {_tbl_s}")
 
     # Friction matters more than anything else for whether the gripper holds.
     # These are deliberately generous; T2-1 tunes them against a real grasp test.
@@ -548,24 +662,55 @@ if args.scene == "pick_place":
         dynamic_friction=float(args.object_friction),
         restitution=0.0,
     )
-    scene_objects["object"] = DynamicCuboid(
-        prim_path="/World/pick_object", name="pick_object",
-        position=_obj_p, scale=_obj_s,
-        color=np.array([0.10, 0.45, 0.85]),
-        mass=float(args.object_mass),
-        physics_material=_grip_mat,
-    )
-    # Place target: visual only (no collider) so the arm can put the object down
-    # onto it without fighting a phantom obstacle.
-    scene_objects["place"] = VisualCuboid(
-        prim_path="/World/place_target", name="place_target",
-        position=np.array([_plc_p[0], _plc_p[1], _tbl_z + 0.001]),
-        scale=np.array([float(args.place_size), float(args.place_size), 0.002]),
-        color=np.array([0.15, 0.75, 0.25]),
-    )
-    print(f"  pick object         : /World/pick_object @ {list(_obj_p)} "
-          f"size {list(_obj_s)} mass {args.object_mass}kg mu {args.object_friction}")
-    print(f"  place target        : /World/place_target @ {list(_plc_p[:2])} (visual only)")
+    # Colours are how the language instruction identifies an object, so they must be
+    # far apart in RGB -- a policy that has to tell "red" from "orange" is being asked
+    # a perception question we did not intend to pose.
+    _PALETTE = {
+        "red":    (0.85, 0.12, 0.10),
+        "blue":   (0.10, 0.35, 0.90),
+        "yellow": (0.92, 0.85, 0.10),
+        "green":  (0.15, 0.70, 0.25),
+        "purple": (0.55, 0.15, 0.75),
+    }
+    _obj_names = [n.strip() for n in args.object_names.split(",") if n.strip()]
+    _plc_names = [n.strip() for n in args.place_names.split(",") if n.strip()]
+    _spacing = float(args.object_spacing)
+
+    def _spread(base, i, n):
+        """Lay n items out along y, centred on base."""
+        return base + (i - (n - 1) / 2.0) * _spacing
+
+    scene_objects["objects"] = {}
+    _obj_homes = {}
+    for i, nm in enumerate(_obj_names):
+        home = np.array([_obj_p[0], _spread(_obj_p[1], i, len(_obj_names)), _obj_p[2]])
+        _obj_homes[nm] = home
+        scene_objects["objects"][nm] = DynamicCuboid(
+            prim_path=f"/World/pick_object_{nm}", name=f"pick_object_{nm}",
+            position=home, scale=_obj_s,
+            color=np.array(_PALETTE.get(nm, (0.10, 0.45, 0.85))),
+            mass=float(args.object_mass),
+            physics_material=_grip_mat,
+        )
+        print(f"  object '{nm}'{'':<12.12} : /World/pick_object_{nm} @ {[round(float(v), 3) for v in home]} "
+              f"colour {_PALETTE.get(nm, 'default')}")
+    # Legacy single-object handle: everything written before multi-object support
+    # (and the /scene/object_pose topic) keeps working on the FIRST object.
+    scene_objects["object"] = scene_objects["objects"][_obj_names[0]]
+
+    # Place targets: visual only (no collider) so the arm can put the object down
+    # onto one without fighting a phantom obstacle.
+    scene_objects["places"] = {}
+    for j, nm in enumerate(_plc_names):
+        pos = np.array([_plc_p[0], _spread(_plc_p[1], j, len(_plc_names)), _tbl_z + 0.001])
+        scene_objects["places"][nm] = VisualCuboid(
+            prim_path=f"/World/place_target_{nm}", name=f"place_target_{nm}",
+            position=pos,
+            scale=np.array([float(args.place_size), float(args.place_size), 0.002]),
+            color=np.array([0.15, 0.75, 0.25]),
+        )
+        print(f"  place  '{nm}'{'':<12.12} : /World/place_target_{nm} @ {[round(float(v), 3) for v in pos[:2]]}")
+    scene_objects["place"] = scene_objects["places"][_plc_names[0]]
 
 # physics must be initialized before the articulation can be driven
 simulation_context.initialize_physics()
@@ -606,11 +751,22 @@ print("Verify the exact joint names with:  ros2 topic echo /%s --once" % args.jo
 
 # OnPlaybackTick drives the graph every rendered step; just keep stepping.
 # ---- ground-truth object pose + episode reset (pick_place scene only) -------
-# GT pose is published ONLY as supervision/verification for us -- it tells the
-# grasp test whether the object actually came up with the gripper, and lets a
-# demo recorder auto-label episode success. It is NOT a policy input: the IL/VLA
-# policy sees pixels + joint states, exactly the same set in sim and on the real
-# robot (ur_bringup/docs/plan_il_vla.md 2.6). Keep it out of the dataset.
+# GT pose has two consumers, and the distinction matters:
+#
+#   1. SUPERVISION -- tells the grasp test whether the part actually came up with
+#      the gripper, and lets the demo recorder auto-label episode success.
+#   2. The pick&place STATE MACHINE's target (to_do.md D10, 2026-09-07). The
+#      state machine only produces the trajectories the policy imitates, and the
+#      policy never sees a pose, so using GT here cannot change the dataset --
+#      it only avoids blocking data collection on the perception stack (M1/M2).
+#
+# It is NOT a policy input either way: the IL/VLA policy sees pixels + joint
+# states, exactly the same set in sim and on the real robot
+# (ur_bringup/docs/plan_il_vla.md 2.6). Keep it out of the dataset.
+#
+# Consumers must read the pose from the TOPIC only, never reach into the sim, so
+# that a real perception node publishing the same type can be swapped in with a
+# remap (/scene/object_pose -> /target/pose). That is the whole exit strategy.
 #
 # The reset service is the sim half of the sim/real-common episode reset
 # contract: the recorder calls the SAME service name on real hardware, where it
@@ -624,7 +780,71 @@ if args.scene == "pick_place":
         if not rclpy.ok():
             rclpy.init(args=[])
         _node = rclpy.create_node("isaac_scene")
+
+        # ---- finger_joint convention relays (see GRIPPER_JOINT above) --------
+        # Two small transforms, one per direction, so everything OUTSIDE Isaac --
+        # ros2_control, TF, MoveIt, the IL recordings -- sees the URDF convention
+        # while the asset keeps its own. Only finger_joint is touched; the arm's
+        # values pass through byte-for-byte.
+        if args.gripper_invert:
+            from sensor_msgs.msg import JointState as _JS
+
+            _grip_range = float(args.gripper_range)
+
+            def _flip_in_place(msg):
+                if GRIPPER_JOINT in msg.name and msg.position:
+                    i = msg.name.index(GRIPPER_JOINT)
+                    p = list(msg.position)
+                    p[i] = _grip_range - p[i]
+                    msg.position = p
+                return msg
+
+            _states_pub = _node.create_publisher(_JS, args.joint_states_topic, 10)
+            _node.create_subscription(
+                _JS, GRAPH_STATES_TOPIC,
+                lambda m: _states_pub.publish(_flip_in_place(m)), 10)
+            _cmds_pub = _node.create_publisher(_JS, GRAPH_COMMANDS_TOPIC, 10)
+            _node.create_subscription(
+                _JS, args.joint_commands_topic,
+                lambda m: _cmds_pub.publish(_flip_in_place(m)), 10)
+            _node.get_logger().info(
+                f"gripper convention: {GRIPPER_JOINT} inverted at the sim boundary "
+                f"(URDF 0 = open <-> asset {_grip_range} = open); "
+                f"graph topics {GRAPH_COMMANDS_TOPIC} / {GRAPH_STATES_TOPIC}")
+
         _pose_pub = _node.create_publisher(PoseStamped, "/scene/object_pose", 10)
+        # Where the part is supposed to end up. It is a launch argument, so the
+        # state machine would otherwise have to be told the same numbers twice --
+        # and the two would drift apart the first time someone moves the marker.
+        # Latched (transient-local) because it never changes during a run: a
+        # consumer that starts late still gets it without waiting for a tick.
+        from rclpy.qos import QoSProfile, DurabilityPolicy
+        _place_pub = _node.create_publisher(
+            PoseStamped, "/scene/place_pose",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        _place_size = float(args.place_size)
+        # One topic per named object / destination. The language instruction picks
+        # which pair the state machine is pointed at, so the topics must be
+        # addressable by name -- and each stays a plain PoseStamped, so a real
+        # perception node can still be remapped onto any of them.
+        _obj_pubs = {nm: _node.create_publisher(
+                         PoseStamped, f"/scene/objects/{nm}/pose", 10)
+                     for nm in scene_objects["objects"]}
+        _plc_pubs = {nm: _node.create_publisher(
+                         PoseStamped, f"/scene/places/{nm}/pose",
+                         QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+                     for nm in scene_objects["places"]}
+        # The work surface, so the PLANNER can know about it. Without this the
+        # table exists only in physics: cuMotion plans straight through it and the
+        # arm is stopped by contact instead of routing around. Measured symptom --
+        # a descent reported as "fraction 1.00 / SUCCEEDED" ending 50 mm off in y
+        # with the part untouched, because a link was resting on the table.
+        # Published as [cx, cy, cz, sx, sy, sz] (centre + full size, base frame) so
+        # the geometry has ONE source of truth: the same numbers that spawned it.
+        from std_msgs.msg import Float64MultiArray
+        _table_pub = _node.create_publisher(
+            Float64MultiArray, "/scene/table_box",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         _obj = scene_objects["object"]
         _obj_home = np.array([float(v) for v in args.object_pose.split(",")])
         _rng = np.random.default_rng(int(args.seed))
@@ -637,22 +857,29 @@ if args.scene == "pick_place":
                 _detach()
             except NameError:
                 pass
-            p = _obj_home.copy()
-            if args.randomize_object:
-                r = float(args.randomize_radius)
-                p[0] += _rng.uniform(-r, r)
-                p[1] += _rng.uniform(-r, r)
-            yaw = _rng.uniform(-np.pi, np.pi) if args.randomize_object else 0.0
-            quat = np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])  # w,x,y,z
-            _obj.set_world_pose(position=p, orientation=quat)
-            # Kill momentum, else the part keeps the velocity it had when grabbed.
-            try:
-                _obj.set_linear_velocity(np.zeros(3))
-                _obj.set_angular_velocity(np.zeros(3))
-            except Exception:
-                pass
+            # EVERY object is re-placed, not just the one this episode targets:
+            # a distractor left where the last episode dropped it is a different
+            # scene, and the policy would see the same instruction with an
+            # inconsistent layout.
+            msgs = []
+            for nm, prim in scene_objects["objects"].items():
+                p = _obj_homes[nm].copy()
+                if args.randomize_object:
+                    r = float(args.randomize_radius)
+                    p[0] += _rng.uniform(-r, r)
+                    p[1] += _rng.uniform(-r, r)
+                yaw = _rng.uniform(-np.pi, np.pi) if args.randomize_object else 0.0
+                quat = np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])  # w,x,y,z
+                prim.set_world_pose(position=p, orientation=quat)
+                # Kill momentum, else the part keeps the velocity it had when grabbed.
+                try:
+                    prim.set_linear_velocity(np.zeros(3))
+                    prim.set_angular_velocity(np.zeros(3))
+                except Exception:
+                    pass
+                msgs.append(f"{nm}@[{p[0]:.3f}, {p[1]:.3f}] yaw {yaw:+.2f}")
             response.success = True
-            response.message = f"object at [{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}] yaw {yaw:+.2f}"
+            response.message = "; ".join(msgs)
             _node.get_logger().info(f"reset_episode: {response.message}")
             return response
 
@@ -688,52 +915,310 @@ if args.scene == "pick_place":
 
         _grasp_link_prim = _prim_at(args.grasp_link)
         _tip_prims = [_prim_at(r) for r in args.grasp_tips.split(",")]
-        _obj_prim = _stage.GetPrimAtPath("/World/pick_object")
+
+        # Physics-backed reader for the two pads.
+        #
+        # UsdGeom.XformCache (what _tcp() used to use) reads the USD STAGE, but Isaac
+        # writes simulated link poses to Fabric, not back to USD. The pads' authored
+        # stage transforms are identity, so BOTH pads resolved to their common
+        # ancestor and the "midpoint" collapsed onto the gripper BASE -- 98.3 mm above
+        # the real pads. With grasp_distance 0.09 m that leaves a perfectly grasped
+        # part 0.0983 m from the TCP: the weld could not fire, by 8 mm.
+        #
+        # SingleRigidPrim does NOT fix it either: a PhysX articulation link is not a
+        # standalone rigid body, so its physics view never binds and it falls back to
+        # the same broken USD path (measured: 0.1 mm pad separation). The articulation
+        # view's get_link_transforms() is the API that actually reports link poses.
+        _art_view = getattr(_art, "_articulation_view", None)
+        _tip_link_idx = []
+        try:
+            _body_names = list(_art_view.body_names)
+            for _r in args.grasp_tips.split(","):
+                _tip_link_idx.append(_body_names.index(_r.strip().split("/")[-1]))
+        except Exception as _e:
+            _node.get_logger().error(
+                f"grasp: cannot map the finger pads to articulation links "
+                f"({type(_e).__name__}: {_e}). links={getattr(_art_view, 'body_names', None)}")
+            _tip_link_idx = []
+        # The articulation's own DOF names, which are NOT necessarily the ros2_control
+        # ones -- the weld check indexes this list, so a mismatch disables grasping.
+        print(f"  articulation DOFs   : {_names}")
+
+        # Which object is welded is decided AT GRASP TIME by whichever one is
+        # actually between the pads -- the gripper cannot know what the instruction
+        # asked for, and welding the wrong one would silently fake a success.
+        _obj_prims = {nm: _stage.GetPrimAtPath(f"/World/pick_object_{nm}")
+                      for nm in scene_objects["objects"]}
+        _held = {"name": None}
+
+        def _obj_prim_now():
+            nm = _held["name"]
+            return _obj_prims.get(nm) if nm else None
 
         def _world_xf(prim):
             return UsdGeom.XformCache().GetLocalToWorldTransform(prim)
 
+        def _pad_positions():
+            """World positions of the two finger pads, straight from PhysX."""
+            if len(_tip_link_idx) != 2:
+                return None
+            try:
+                pv = _art_view._physics_view
+                xf = pv.get_link_transforms()
+                # The backend may be warp / torch / numpy depending on how the
+                # simulation view was created, so normalise before indexing.
+                if hasattr(xf, "numpy"):
+                    xf = xf.numpy()
+                xf = np.asarray(xf).reshape(pv.count, pv.max_links, 7)
+                return [np.asarray(xf[0, i, 0:3], dtype=float) for i in _tip_link_idx]
+            except Exception as e:
+                if not _grasp.get("pad_read_warned"):
+                    _grasp["pad_read_warned"] = True
+                    _node.get_logger().error(f"grasp: cannot read pad poses ({type(e).__name__}: {e})")
+                return None
+
+        def _resolve_link(path, near=None):
+            """Articulation link index for a USD prim path.
+
+            Matching on the last path component ALONE is a trap here: the USD has
+            two prims called base_link (the robot's and the gripper's), Isaac
+            renames the second to base_link_0, and body_names.index("base_link")
+            silently returns the ROBOT base a metre away. That made the tool axis
+            point from the wrist to the robot base and the grasp attach use the
+            wrong body. When several links match, pick the one physically nearest
+            `near` -- the candidates are a metre apart, so this cannot be ambiguous.
+            """
+            last = path.strip().split("/")[-1]
+            bn = list(_art_view.body_names)
+            cands = [i for i, n in enumerate(bn)
+                     if n == last or (n.startswith(last + "_") and n[len(last) + 1:].isdigit())]
+            if not cands:
+                raise KeyError(f"no articulation link matches {last!r}; links={bn}")
+            if len(cands) > 1 and near is not None:
+                xf = _link_xf_all()
+                cands.sort(key=lambda i: float(np.linalg.norm(
+                    np.asarray(xf[0, i, 0:3], dtype=float) - np.asarray(near, dtype=float))))
+            return cands[0]
+
+        def _link_xf_all():
+            pv = _art_view._physics_view
+            xf = pv.get_link_transforms()
+            if hasattr(xf, "numpy"):
+                xf = xf.numpy()
+            return np.asarray(xf).reshape(pv.count, pv.max_links, 7)
+
+        def _link_pose(idx):
+            """(position, quaternion xyzw) of an articulation link, from PhysX."""
+            xf = _link_xf_all()
+            return (np.asarray(xf[0, idx, 0:3], dtype=float),
+                    np.asarray(xf[0, idx, 3:7], dtype=float))
+
+        def _quat_mat(q):
+            """Rotation matrix from a quaternion given as (x, y, z, w)."""
+            x, y, z, w = [float(v) for v in q]
+            return np.array([
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+        def _mat_quat(R):
+            """(w, x, y, z) from a rotation matrix, via the numerically safe branch."""
+            tr = float(R[0, 0] + R[1, 1] + R[2, 2])
+            if tr > 0.0:
+                s = math.sqrt(tr + 1.0) * 2.0
+                return ((0.25 * s), (R[2, 1] - R[1, 2]) / s,
+                        (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s)
+            i = int(np.argmax([R[0, 0], R[1, 1], R[2, 2]]))
+            j_, k = (i + 1) % 3, (i + 2) % 3
+            s = math.sqrt(max(1e-12, 1.0 + R[i, i] - R[j_, j_] - R[k, k])) * 2.0
+            q = [0.0, 0.0, 0.0]
+            q[i], q[j_], q[k] = 0.25 * s, (R[j_, i] + R[i, j_]) / s, (R[k, i] + R[i, k]) / s
+            return ((R[k, j_] - R[j_, k]) / s, q[0], q[1], q[2])
+
+        def _tool_axis():
+            """Unit vector along the tool axis, pointing AWAY from the wrist.
+
+            Measured as wrist -> finger-pivot midpoint. Both come straight from the
+            physics view, so this needs no assumption about which local axis of
+            which link is "the tool axis" -- an assumption that was wrong twice
+            (the gripper base's local +z is not the tool axis, and the link-name
+            lookup grabbed the robot base).
+            """
+            try:
+                pads = _pad_positions()
+                if pads is None:
+                    return None
+                if _wrist_idx is None:
+                    return None
+                mid = (pads[0] + pads[1]) * 0.5
+                wrist, _ = _link_pose(_wrist_idx)
+                d = mid - wrist
+                n = float(np.linalg.norm(d))
+                return None if n < 5e-3 else d / n
+            except Exception as e:
+                if not _grasp.get("axis_warned"):
+                    _grasp["axis_warned"] = True
+                    _node.get_logger().error(f"grasp: cannot derive the tool axis "
+                                             f"({type(e).__name__}: {e})")
+                return None
+
         def _tcp():
-            """Point between the finger pads -- where the part must be to grip it."""
-            tips = [p for p in _tip_prims if p and p.IsValid()]
-            if len(tips) == 2:
-                a = _world_xf(tips[0]).ExtractTranslation()
-                b = _world_xf(tips[1]).ExtractTranslation()
-                return np.array([(a[i] + b[i]) * 0.5 for i in range(3)])
+            """Point between the finger PADS -- where the part must be to grip it.
+
+            The two prims we can read are the inner-finger links, and a link's
+            origin is its PIVOT, not its pad: measured, the pivots swing apart
+            exactly like the fingers (0 -> 84.8 mm, matching the URDF) but their
+            midpoint stays at pivot height, which is the gripper base. That put the
+            TCP 98.3 mm above the part -- past the 0.09 m weld radius, so a
+            correctly executed grasp still logged "nearest object beyond 0.09 m".
+            grasp_tcp_offset walks that midpoint down the tool axis to the pads.
+            """
+            pads = _pad_positions()
+            if pads is not None:
+                mid = (pads[0] + pads[1]) * 0.5
+                off = float(args.grasp_tcp_offset)
+                if off:
+                    axis = _tool_axis()
+                    if axis is not None:
+                        return mid + axis * off
+                return mid
             if _grasp_link_prim:
                 t = _world_xf(_grasp_link_prim).ExtractTranslation()
                 return np.array([t[0], t[1], t[2]])
             return None
 
+        # PROVE the TCP is at the pads, do not just assert it. The old check tested
+        # prim.IsValid() only: both prims were valid, so it printed "finger pads"
+        # while actually reporting the gripper base for both, and that lie is what
+        # kept the real bug invisible. Two distinct pads must be physically APART --
+        # ~135 mm with the gripper open. If they read as one point, the pose source
+        # is broken and no weld can ever land, so say so at start-up.
+        if args.grasp_debug:
+            # Dump every articulation link with its physics-view pose. Guessing which
+            # API is "the right one" has now failed twice; this shows what the links
+            # actually are, in what order, and where they really sit.
+            try:
+                _pv = _art_view._physics_view
+                _x = _pv.get_link_transforms()
+                if hasattr(_x, "numpy"):
+                    _x = _x.numpy()
+                _x = np.asarray(_x)
+                print(f"  link transforms     : raw shape {_x.shape}, "
+                      f"count={_pv.count} max_links={_pv.max_links}")
+                _x = _x.reshape(_pv.count, _pv.max_links, 7)
+                print(f"  articulation links  : {len(_art_view.body_names)}")
+                for _i, _bn in enumerate(_art_view.body_names):
+                    print(f"      [{_i:2d}] {_bn:<34} {[round(float(v), 4) for v in _x[0, _i, 0:3]]}")
+                print(f"  pad link indices    : {_tip_link_idx}")
+            except Exception as _e:
+                print(f"  link transform dump failed: {type(_e).__name__}: {_e}")
+
+        # Resolve the two links the grasp needs, and SAY which ones were picked.
+        # The gripper base is disambiguated from the robot base by proximity to the
+        # finger pivots; if that ever picks wrong, this line shows it immediately
+        # instead of the failure surfacing as an unexplained missed grasp.
+        _grasp_idx = _wrist_idx = None
+        try:
+            _p0 = _pad_positions()
+            _near = None if _p0 is None else (_p0[0] + _p0[1]) * 0.5
+            _grasp_idx = _resolve_link(args.grasp_link, near=_near)
+            _wrist_idx = _resolve_link(args.grasp_link.strip().split("/")[0], near=_near)
+            _bn = list(_art_view.body_names)
+            print(f"  grasp links         : gripper base [{_grasp_idx}] {_bn[_grasp_idx]}, "
+                  f"wrist [{_wrist_idx}] {_bn[_wrist_idx]}")
+        except Exception as _e:
+            _node.get_logger().error(
+                f"grasp: cannot resolve the grasp links ({type(_e).__name__}: {_e}); "
+                "the TCP offset and the attach transform will both be wrong")
+
+        _pads0 = _pad_positions()
+        if _pads0 is None:
+            print(f"  grasp TCP source    : *** FALLBACK to {args.grasp_link} *** "
+                  "-- pad poses unreadable, welds will never fire")
+        else:
+            _sep = float(np.linalg.norm(_pads0[0] - _pads0[1]))
+            # Coincident pads only prove the TCP is broken when the gripper is
+            # OPEN. At boot the articulation sits at its raw zero, which under the
+            # inversion is CLOSED -- pads legitimately touch. Checking blind here
+            # printed "*** BROKEN ***" on a healthy gripper, which is exactly the
+            # kind of lying diagnostic this check was added to replace.
+            try:
+                _fj0 = float(_art.get_joint_positions()[_names.index(GRIPPER_JOINT)])
+                if args.gripper_invert:
+                    _fj0 = float(args.gripper_range) - _fj0
+            except Exception:
+                _fj0 = None
+            _shut = _fj0 is not None and _fj0 > 0.5 * float(args.gripper_range)
+            if _sep < 0.02 and not _shut:
+                print("  grasp TCP source    : *** BROKEN *** both pads report the same point "
+                      f"(separation {_sep * 1000:.1f} mm) with the gripper open; TCP collapsed "
+                      "onto their common ancestor, welds cannot fire")
+                _node.get_logger().error(
+                    f"grasp TCP is not at the finger pads: separation {_sep * 1000:.1f} mm at "
+                    f"finger_joint={_fj0}. pads={[list(np.round(p, 4)) for p in _pads0]}")
+            else:
+                print(f"  grasp TCP source    : finger pads, separation {_sep * 1000:.1f} mm "
+                      f"at finger_joint={'?' if _fj0 is None else round(_fj0, 3)} "
+                      f"({'closed' if _shut else 'open'}) ({args.grasp_tips})")
+
         def _set_collision(enabled):
             """Objects welded to the gripper must stop colliding with it, else the
             fingers keep driving into the part and blow past their joint limits."""
-            if not (_obj_prim and _obj_prim.IsValid()):
+            op = _obj_prim_now()
+            if not (op and op.IsValid()):
                 return
-            api = UsdPhysics.CollisionAPI.Get(_stage, _obj_prim.GetPath())
+            api = UsdPhysics.CollisionAPI.Get(_stage, op.GetPath())
             if api:
                 api.GetCollisionEnabledAttr().Set(bool(enabled))
 
-        def _attach():
-            if _grasp["active"] or not (_grasp_link_prim and _obj_prim and _obj_prim.IsValid()):
+        def _attach(name=None):
+            if name is not None:
+                _held["name"] = name
+            op = _obj_prim_now()
+            if (_grasp["active"] or _grasp_idx is None
+                    or not (_grasp_link_prim and op and op.IsValid())):
+                if not _grasp.get("attach_warned"):
+                    _grasp["attach_warned"] = True
+                    _node.get_logger().error(
+                        f"attach refused: name={_held['name']} active={_grasp['active']} "
+                        f"grasp_link={'ok' if _grasp_link_prim else 'MISSING'} "
+                        f"grasp_link_idx={_grasp_idx} "
+                        f"obj_prim={'ok' if (op and op.IsValid()) else 'MISSING'} "
+                        f"known={list(_obj_prims)}")
                 return False
             j = UsdPhysics.FixedJoint.Define(_stage, _JOINT_PATH)
             jp = j.GetPrim()
             jp.GetRelationship("physics:body0").SetTargets([_grasp_link_prim.GetPath()])
-            jp.GetRelationship("physics:body1").SetTargets([_obj_prim.GetPath()])
+            jp.GetRelationship("physics:body1").SetTargets([op.GetPath()])
             # Preserve the CURRENT relative pose: express the object frame in the
             # gripper-link frame and put that on body0; body1 keeps identity.
-            rel = _world_xf(_grasp_link_prim).GetInverse() * _world_xf(_obj_prim)
-            t = rel.ExtractTranslation()
-            q = rel.ExtractRotationQuat()
-            j.CreateLocalPos0Attr().Set(Gf.Vec3f(*[float(v) for v in t]))
-            j.CreateLocalRot0Attr().Set(Gf.Quatf(float(q.GetReal()), *[float(v) for v in q.GetImaginary()]))
+            #
+            # Both poses come from PHYSICS. This used to read _world_xf() (the USD
+            # stage), which for a simulated link returns its authored pose, not
+            # where it actually is -- so the joint was authored with a nonsense
+            # relative transform and PhysX snapped the part somewhere else the
+            # instant it welded (measured: the part jumped 0.6 m mid-lift and the
+            # cycle then failed as "grasp_failed").
+            gp, gq = _link_pose(_grasp_idx)
+            # scene_objects holds the DynamicCuboid WRAPPERS (physics-backed
+            # get_world_pose); _obj_prims holds the raw USD Prims, which are what
+            # the joint needs for its body target. Mixing them up crashed the whole
+            # sim mid-grasp and left the demo waiting on a gripper action forever.
+            opos, oq = scene_objects["objects"][_held["name"]].get_world_pose()
+            Rg = _quat_mat(gq)
+            Ro = _quat_mat(np.asarray([oq[1], oq[2], oq[3], oq[0]], dtype=float))
+            rel_R = Rg.T @ Ro
+            rel_t = Rg.T @ (np.asarray(opos, dtype=float) - gp)
+            rw, rx, ry, rz = _mat_quat(rel_R)
+            j.CreateLocalPos0Attr().Set(Gf.Vec3f(*[float(v) for v in rel_t]))
+            j.CreateLocalRot0Attr().Set(Gf.Quatf(float(rw), float(rx), float(ry), float(rz)))
             j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
             _set_collision(False)
             _grasp["active"] = True
             _grasp["manual"] = False
-            _node.get_logger().info("grasp: object WELDED to gripper (D5 fallback)")
+            _node.get_logger().info(
+                f"grasp: '{_held['name']}' WELDED to gripper (D5 fallback)")
             return True
 
         def _detach():
@@ -744,7 +1229,8 @@ if args.scene == "pick_place":
             _set_collision(True)
             _grasp["active"] = False
             _grasp["manual"] = False
-            _node.get_logger().info("grasp: object released")
+            _node.get_logger().info(f"grasp: '{_held['name']}' released")
+            _held["name"] = None
             return True
 
         def _srv_attach(req, res):
@@ -769,6 +1255,24 @@ if args.scene == "pick_place":
         _g_open = float(args.grasp_release)
         _g_dist = float(args.grasp_distance)
 
+        def _rate(key, period=120):
+            """True at most once per `period` physics steps (~2 s at 60 Hz).
+
+            The weld diagnostics used to be once-per-run flags. That is useless
+            here: any probe that squeezes the gripper before the real grasp burns
+            the single allowed line, and the actual failure then logs nothing.
+            """
+            n = _grasp.get("step", 0)
+            if n - _grasp.get(f"_t_{key}", -10 ** 9) < period:
+                return False
+            _grasp[f"_t_{key}"] = n
+            return True
+
+        def _dists(tcp):
+            return {nm: round(float(np.linalg.norm(
+                        np.asarray(pr.get_world_pose()[0]) - tcp)), 4)
+                    for nm, pr in scene_objects["objects"].items()}
+
         def _grasp_step():
             """Attach when the gripper closes with the part between the pads.
 
@@ -778,37 +1282,185 @@ if args.scene == "pick_place":
             """
             if not args.grasp_attach:
                 return
+            _grasp["step"] = _grasp.get("step", 0) + 1
+            try:
+                _grasp_step_inner()
+            except Exception:
+                # This runs inside the physics callback: an exception here takes
+                # Isaac down, and the demo then blocks forever on a gripper action
+                # that will never complete (observed: a 17-minute silent hang).
+                # Report it in full, once, and keep the sim alive.
+                if not _grasp.get("step_warned"):
+                    _grasp["step_warned"] = True
+                    import traceback as _tb
+                    _node.get_logger().error(
+                        "grasp step raised; grasping is now unreliable:\n" + _tb.format_exc())
+
+        def _grasp_step_inner():
             try:
                 fj = float(_art.get_joint_positions()[_names.index("finger_joint")])
-            except Exception:
+                # The articulation speaks the ASSET's convention; grasp_close /
+                # grasp_release are URDF numbers (0 = open), like every other
+                # gripper value in this workspace. Convert here so the thresholds,
+                # the logs and the CLI all mean one thing.
+                if args.gripper_invert:
+                    fj = float(args.gripper_range) - fj
+            except Exception as e:
+                # This except used to `return` silently, and it HID the cause of
+                # every weld failure: if the articulation has no DOF called
+                # finger_joint, this function bails on every physics step, the weld
+                # never fires, and all you see downstream is "grasp_failed".
+                # Say it once, loudly, with the names that DO exist.
+                if not _grasp.get("dof_warned"):
+                    _grasp["dof_warned"] = True
+                    _node.get_logger().error(
+                        f"grasp DISABLED: cannot read finger_joint ({type(e).__name__}: {e}). "
+                        f"articulation DOFs = {_names}")
                 return
+            if args.grasp_debug and _rate("dbg"):
+                # Report the SAME source the weld uses. This used to print _world_xf()
+                # (the broken USD path) next to a _tcp() computed another way, which
+                # made the two look inconsistent for reasons that had nothing to do
+                # with the bug.
+                pads = _pad_positions()
+                ws = None if pads is None else [[round(float(v), 4) for v in p] for p in pads]
+                sep = None if pads is None else round(float(np.linalg.norm(pads[0] - pads[1])), 4)
+                tcp = _tcp()
+                _node.get_logger().info(
+                    f"grasp debug: fj={fj:+.4f} pads={ws} sep={sep} tcp="
+                    f"{None if tcp is None else [round(float(v), 4) for v in tcp]}")
+            if fj < -0.02 and _rate("neg"):
+                # finger_joint driven BELOW its own lower limit (0.0) while being
+                # commanded shut: the pads are being forced open by contact. This
+                # is the signature of the grasp failing mechanically rather than
+                # the weld logic refusing, and nothing else in the log shows it.
+                tcp = _tcp()
+                _node.get_logger().error(
+                    f"finger forced open: fj={fj:.3f} (limit 0.0), tcp="
+                    f"{None if tcp is None else [round(float(v), 3) for v in tcp]}"
+                    f"{'' if tcp is None else f' distances={_dists(tcp)}'}")
             if not _grasp["active"] and fj >= _g_close:
-                tcp, opos = _tcp(), _obj.get_world_pose()[0]
-                if tcp is not None and float(np.linalg.norm(np.asarray(opos) - tcp)) <= _g_dist:
-                    _attach()
+                tcp = _tcp()
+                if _rate("check"):
+                    # Shows every input the weld decision uses. Rate-limited, not
+                    # once-per-run, so the line that lands during the real grasp
+                    # survives whatever squeezed the gripper earlier.
+                    _node.get_logger().info(
+                        f"weld check: fj={fj:.3f} >= {_g_close}, tcp="
+                        f"{None if tcp is None else [round(float(v), 3) for v in tcp]}")
+                if tcp is not None:
+                    # Nearest object within reach wins. Picking the nearest rather
+                    # than a fixed one is what makes "grasp whatever is actually in
+                    # the gripper" true when several objects are on the table.
+                    best, best_d = None, None
+                    for nm, prim in scene_objects["objects"].items():
+                        d = float(np.linalg.norm(
+                            np.asarray(prim.get_world_pose()[0]) - tcp))
+                        if d <= _g_dist and (best_d is None or d < best_d):
+                            best, best_d = nm, d
+                    if best is not None:
+                        _attach(best)
+                    elif _rate("skip"):
+                        # The gripper closed far enough to weld but nothing was
+                        # close enough to the TCP. Almost always means the TCP is
+                        # wrong (see the FALLBACK note above), not that the aim was.
+                        _node.get_logger().warn(
+                            f"weld skipped: fj={fj:.3f} >= {_g_close} but nearest object "
+                            f"is beyond {_g_dist} m. TCP={[round(float(v), 3) for v in tcp]} "
+                            f"distances={_dists(tcp)}")
             elif _grasp["active"] and not _grasp["manual"] and fj <= _g_open:
                 _detach()
             _grasp_pub.publish(Bool(data=_grasp["active"]))
 
+        def _reset_gripper(request, response):
+            """Force the gripper linkage back inside its limits.
+
+            *** Nothing on the ROS side can do this. ***
+            When the fingers close on a part that is wedged or off-centre, the
+            reaction load drives the 2F-85 mimic linkage OUTSIDE its joint limits
+            (measured finger_joint = -0.558 and -0.974 against a range of [0, 0.8];
+            the same blow-out HISTORY.md 16 records). From there the joint is in an
+            invalid physics state: commanding the gripper open does nothing, and
+            detach + reset_episode does not help either -- both were tried and both
+            failed. Unattended collection then dies on its first bad grasp.
+
+            Teleporting the joints sidesteps physics entirely, which is the only
+            thing that works. Zero the velocities too, or the linkage springs
+            straight back out.
+            """
+            try:
+                _detach()
+            except NameError:
+                pass
+            try:
+                pos = np.array(_art.get_joint_positions(), dtype=float)
+                vel = np.array(_art.get_joint_velocities(), dtype=float)
+                # ALL gripper joints to the asset's authored zero. That pose is the
+                # one configuration the linkage is guaranteed to be self-consistent
+                # in. Teleporting only the driven joint to "open" and the passive
+                # ones to zero produced a physically impossible linkage (measured:
+                # finger_joint 0.539 with the pads 91 mm apart, when 0.539 should
+                # mean a 28 mm gap). In the asset's convention zero is CLOSED; the
+                # caller opens the gripper afterwards with a normal command, which
+                # the drive then tracks from a valid state.
+                fixed = []
+                for i, nm in enumerate(_names):
+                    if "finger" in nm or "knuckle" in nm:
+                        if abs(pos[i]) > 1e-4 or abs(vel[i]) > 1e-4:
+                            fixed.append(f"{nm}={pos[i]:+.3f}")
+                        pos[i] = 0.0
+                        vel[i] = 0.0
+                _art.set_joint_positions(pos)
+                _art.set_joint_velocities(vel)
+                response.success = True
+                response.message = ("gripper joints zeroed: " + ", ".join(fixed)) if fixed \
+                    else "gripper already inside limits"
+            except Exception as e:
+                response.success = False
+                response.message = f"reset_gripper failed: {e}"
+            _node.get_logger().info(f"reset_gripper: {response.message}")
+            return response
+
+        _node.create_service(Trigger, "/scene/reset_gripper", _reset_gripper)
         _node.create_service(Trigger, "/scene/reset_episode", _reset_episode)
-        print("  scene services      : /scene/reset_episode" +
+        print("  scene services      : /scene/reset_episode, /scene/reset_gripper" +
               (", /scene/attach_object, /scene/detach_object" if args.grasp_attach else ""))
         if args.grasp_attach:
             print(f"  grasp weld (D5)     : ON  close>={_g_close} open<={_g_open} "
                   f"dist<={_g_dist}m link={args.grasp_link}")
-        print("  scene topics        : /scene/object_pose (GT, verification only)")
+        print("  scene topics        : /scene/object_pose (GT target, plan_il_vla.md 3.2),")
+        print(f"                        /scene/place_pose (latched, marker edge {_place_size} m)")
 
-        def _scene_spin():
-            rclpy.spin_once(_node, timeout_sec=0.0)
-            _grasp_step()
-            pos, quat = _obj.get_world_pose()
+        def _stamped(pos, quat=(1.0, 0.0, 0.0, 0.0)):
             m = PoseStamped()
             m.header.stamp = _node.get_clock().now().to_msg()
             m.header.frame_id = "base_link"
             m.pose.position.x, m.pose.position.y, m.pose.position.z = (float(v) for v in pos)
             m.pose.orientation.w = float(quat[0]); m.pose.orientation.x = float(quat[1])
             m.pose.orientation.y = float(quat[2]); m.pose.orientation.z = float(quat[3])
-            _pose_pub.publish(m)
+            return m
+
+        # Publish the place target once; TRANSIENT_LOCAL replays it to late joiners.
+        _place_pub.publish(_stamped(scene_objects["place"].get_world_pose()[0]))
+        for nm, prim in scene_objects["places"].items():
+            _plc_pubs[nm].publish(_stamped(prim.get_world_pose()[0]))
+        if "table" in scene_objects:
+            _tp = scene_objects["table"].get_world_pose()[0]
+            _table_pub.publish(Float64MultiArray(
+                data=[float(_tp[0]), float(_tp[1]), float(_tp[2]),
+                      float(_tbl_s[0]), float(_tbl_s[1]), 0.02]))
+            print(f"                        /scene/table_box (latched) "
+                  f"centre {[round(float(v), 3) for v in _tp]} size {_tbl_s + [0.02]}")
+
+        def _scene_spin():
+            rclpy.spin_once(_node, timeout_sec=0.0)
+            _grasp_step()
+            for nm, prim in scene_objects["objects"].items():
+                pos, quat = prim.get_world_pose()
+                m = _stamped(pos, quat)
+                _obj_pubs[nm].publish(m)
+                if prim is _obj:                    # legacy single-object topic
+                    _pose_pub.publish(m)
     except Exception as _e:
         carb.log_warn(f"scene ROS interface unavailable (continuing): {_e}")
         _scene_spin = None

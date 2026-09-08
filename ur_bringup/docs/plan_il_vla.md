@@ -89,7 +89,22 @@ pi0와 GR00T가 **동일한 구조**를 쓴다는 점이 설계의 출발점.
 [Layer 1] 하드웨어 (sim 또는 실물 UR16e)
 ```
 
-**Layer 2/3를 소켓으로 끊는 것이 핵심.** ROS 2 Jazzy는 Python 3.12, openpi 계열은 다른 환경을 전제하므로 같은 venv에 넣으려는 시도는 거의 실패한다. (Seeed의 Jetson 배포 가이드도 Python 3.12에서 LeRobot ACT 추론 API 호출을 권장하지 않는다고 명시.)
+**Layer 2/3를 소켓으로 끊는 것이 핵심.** ROS 2 Jazzy는 Python 3.12, openpi 계열은 다른 환경을 전제하므로 같은 venv에 넣으려는 시도는 거의 실패한다.
+
+> **2026-09-08 실측 정정.** 이 서술은 **lerobot 계열(ACT/pi0/pi05/smolvla/groot)에는 해당하지 않는다.**
+> `deps/.venv-ml` 에서 ROS 오버레이를 source 하면 `rclpy` 와 `torch(cu128, sm_120)` 가 **함께 임포트된다**.
+> 따라서 lerobot 정책은 소켓 경계 없이 상류 `async_inference`(policy_server + robot_client)를 그대로 쓰고,
+> 우리 것은 로봇 플러그인 `lerobot_robot_ur16e_ros`(`--robot.type=ur16e_ros`) 하나뿐이다.
+> 정책 교체는 `--policy_type` 인자 변경이다.
+>
+> 단, 경계가 사라진 것은 아니다. **정확한 한계는 "순수 파이썬 ROS API 는 되고, numpy 에 링크된 ROS C 확장은
+> 안 된다"** 이다. ROS Jazzy 는 numpy 1.26.4 로 빌드됐고 venv 는 lerobot 이 요구하는 numpy 2.2.6 이라,
+> `cv_bridge` 를 임포트하면 프로세스가 코어 덤프한다
+> (`A module that was compiled using NumPy 1.x cannot be run in NumPy 2.2.6`).
+> 어댑터가 `sensor_msgs/Image` 를 numpy 로 직접 디코딩하는 이유가 이것이다.
+>
+> 소켓 경계가 **여전히 필요한 경우**: openpi 자체 서버, NVIDIA `Isaac-GR00T` 저장소를 lerobot 의 `groot`
+> 정책 대신 직접 쓰는 경우 등 lerobot 밖의 정책 스택. (Seeed의 Jetson 배포 가이드도 Python 3.12에서 LeRobot ACT 추론 API 호출을 권장하지 않는다고 명시.)
 
 ### 2.3 ROS 2: "나중에"가 아니라 **경계를 긋는다** (2026-09-06 개정)
 
@@ -237,8 +252,29 @@ LoRA 레퍼런스(48GB) 아래"라고 판정했는데, 그 도박의 결과를 E
 
 §2.8 이 설계한 **ACT vs VLA 동일조건 비교**가 2단계에서 이미 가능해진다 — 실험을 앞당기고 비용을 줄인다.
 
-> **버전명 확인 필요**: 이 문서 본문은 "GR00T N1.7"이라 쓰는데 §7 참고 링크는 **N1.5** 블로그다.
-> 착수 시점의 실제 최신 릴리스명으로 통일할 것. 소형 VLA 후보도 현재 LeRobot 릴리스 기준으로 재확인.
+#### ★ 실측 해소 (2026-09-07) — "버전명 확인 필요" 항목
+
+설치된 **lerobot 0.6.1 안에 GR00T N1.7 이 정책으로 들어 있다**(`lerobot/policies/groot/groot_n1_7.py`,
+`lerobot-train --policy.type=groot`). 즉 **ACT → 소형 VLA → GR00T 가 프레임워크·데이터 스키마·학습
+명령까지 전부 동일**하다. 별도 Isaac-GR00T 레포/변환 파이프라인이 필요 없다.
+
+| 항목 | 값 (`policies/groot/configuration_groot.py` 실측) |
+|---|---|
+| 베이스 모델 | `nvidia/GR00T-N1.7-3B` |
+| 백본 | `nvidia/Cosmos-Reason2-2B` (N1.7 은 Cosmos/Qwen3-VL. Eagle VLM 은 **N1.7 이전** 전용) |
+| **N1.5** | **지원 제거됨** — 쓰려면 `lerobot==0.5.1` 로 고정해야 한다. 본문 표기 "N1.7" 이 맞고 §7 의 N1.5 링크가 낡았다 |
+| 새 로봇 | `embodiment_tag = "new_embodiment"` ← UR16e 가 여기 해당 |
+| 액션 | `chunk_size = 40`, `n_action_steps = 40` |
+| **기본 튜닝 범위** | `tune_llm=False`, `tune_visual=False`, **`tune_projector=True`, `tune_diffusion_model=True`, `tune_vlln=True`** |
+
+**§6.2 의 "3B 도박" 판정이 완화된다.** 기본값이 이미 **LLM·비전 백본을 얼려 두고 projector +
+diffusion head 만 학습**하는 부분 파인튜닝이다. §6.2 가 걱정한 건 *전체* 파인튜닝(H100/L40 권장,
+LoRA 레퍼런스 48GB)이었는데, 기본 경로는 그보다 훨씬 가볍다. → **32 GB 단일 5090 에서 가능성이
+꽤 높다. 다만 아직 실측 전이므로 "가능"이라고 단정하지 말 것** — E단계 진입 시 제일 먼저 잴 것.
+
+이 때문에 **2단계(소형 VLA)의 성격도 바뀐다**: "3B 를 감당할 수 있나"를 미리 보는 보험의 가치는 줄고,
+"내 데이터로 언어 조건이 먹히나"를 싸게 확인하는 가치만 남는다. 데이터가 좋으면 **2단계를 건너뛰고
+바로 GR00T 로 가는 것도 합리적**이다 — D단계 결과를 보고 정한다.
 
 ### 2.8 첫날부터 지킬 것: 언어 조건
 
@@ -274,9 +310,23 @@ Mimic 은 사람 데모를 subtask 로 쪼갠 뒤 **각 구간에 강체 변환�
 | Isaac Lab `ArticulationCfg` = **세 번째 로봇 정의** | URDF·USD 이미 2개. 동기화 함정(`CLAUDE.md` 함정 7)이 하나 더 늘어남 |
 | HDF5 → LeRobot 변환 스크립트 | 미작성 (§6.5 가 "예상보다 시간 먹는 지점"으로 지목) |
 
-### 3.2 sim 데이터: `to_do.md` M3 상태머신이 **곧 데모 생성기**
+### 3.2 sim 데이터: pick&place 상태머신이 **곧 데모 생성기**
 
-`to_do.md` 는 이미 GT-free pick&place 상태머신을 M3 로 계획해 두었다:
+> **★ 2026-09-07 재정렬.** 이 문서가 **이 프로젝트의 정본**이다. `to_do.md` 는 **다른 프로젝트**의
+> 문서이므로 그 마일스톤(M0~M5)·결정(D1~D9)에 우리 일정을 묶지 않는다. 아래 내용은
+> 그 아이디어를 **이 저장소 안으로 옮겨 온 것**이며, 구현체는 `ur_bringup/scripts/pick_place_demo.py` 다.
+>
+> **두 가지가 바뀌었다**:
+> 1. **pose 소스 = Isaac GT** (`/scene/object_pose`). foundation perception(FoundationStereo/SAM3/
+>    FoundationPose)은 **쓰지 않는다** — §7-B 가 이미 못박았듯 정책 입력은 RGB + 관절뿐이고,
+>    상태머신은 *정책이 흉내낼 궤적을 만들 뿐*이라 GT 로 조준하든 추정 pose 로 조준하든
+>    **데이터셋 내용이 달라지지 않는다.** perception 을 먼저 세우는 건 데이터 수집 일정만 미룬다.
+>    나중에 필요하면 `-r /scene/object_pose:=/target/pose` **remap 한 줄**로 교체된다.
+> 2. **이건 트렁크가 아니라 보조 경로다.** 이 프로젝트의 목표는 *실물 OMY-L100 teleop* → ACT → GR00T
+>    이고, 상태머신은 ⓐ **사람 없이 파이프라인 전체를 검증**하는 구동기, ⓑ sim 대량 데이터 생성기다.
+>    실물엔 GT 가 없으므로 이 스크립트는 **sim 전용 도구**다(실물 데모는 §3.3/§3.5 경로).
+
+원래 아이디어는 GT-free pick&place 상태머신이었다:
 
 ```
 HOME → DETECT → PRE_GRASP → REFINE → GRASP → CLOSE → LIFT → TRANSFER(회피) → PLACE → OPEN → 복귀
@@ -519,8 +569,8 @@ F3M 링크 질량(g): 2064.88 / 3679.54 / 2386.59 / 1400.23 / 1400.23 / 400.15.
 | 단계 | 내용 | 기간 | 산출물 |
 |---|---|---|---|
 | **−1** | ✅ **ML 환경 구축 완료**(torch 2.11+cu128 sm_120 + lerobot 0.6.1) / ⬜ **손목 마운트 제작(병렬, 미착수)** | — | `setup/setup.sh ml` 로 재현. 마운트는 F′ 선행조건이라 **지금 시작해야 함** |
-| **0** | 공개 LeRobot 데이터셋으로 **ACT 관통** | 2~3일 | 환경 검증, `torch.cuda.get_arch_list()` sm_120 확인, VRAM 한계 확인 |
-| **B′** | ~~Isaac Lab 포팅~~ → **`to_do.md` M0~M3 완주** | to_do.md 일정 | perception + pick&place 상태머신. **IL 데이터 엔진 겸함** |
+| **0** | ✅ **완료(2026-09-07)** — 공개 LeRobot 데이터셋으로 **ACT 관통** | 실제 반나절 | `lerobot/svla_so101_pickplace` 500스텝, loss 13.5→2.54. sm_120 실동작·피크 VRAM 6.4 GB 확인. 재현 버그 2개 발견·수정 (`HISTORY.md` §24) |
+| **B′** | ~~Isaac Lab 포팅~~ → **`to_do.md` M3 상태머신** (M1/M2 perception 은 **뺌** — `to_do.md` D10) | 단축됨 | pick&place 상태머신. **IL 데이터 엔진 겸함**. pose 는 Isaac GT `/scene/object_pose` |
 | **C′** | 상태머신 + **물체 포즈 랜덤화 → LeRobot 데이터셋 자동 생성** | 1~2주 | 자체 sim 데이터셋. 태스크 **3종 × 언어 지시문**(§2.8) |
 | **D** | 같은 데이터로 ACT 학습 + closed-loop 롤아웃 | 1주 | **데이터 품질 판정** |
 | **E** | **소형 VLA → GR00T LoRA**, ACT와 동일조건 비교 | 2~3주 | 언어 일반화 검증 (§2.7) |
@@ -607,7 +657,9 @@ F3M 링크 질량(g): 2064.88 / 3679.54 / 2386.59 / 1400.23 / 1400.23 / 400.15.
 
 ### 6.2 RTX 5090 (32GB) VRAM 한계
 
-- **ACT** (~80M): 여유 충분
+- **ACT** (~80M): 여유 충분 — **실측(2026-09-07, §24)**: 피크 **6,441 MiB / 32,607 MiB**
+  (batch 8, 카메라 2대, 480×640). Isaac 이나 perception 과 동시 구동할 여지가 충분하다.
+  단 아래 "동시에 돌리지 말 것"은 VRAM 보다 **처리량** 이유로 여전히 유효.
 - **소형 VLA** (~0.5B): 여유 있음 → **§2.7 이 이 단계를 넣은 이유가 여기다.** 3B 도박 전에
   언어 조건 검증을 끝낸다
 - **GR00T (3B) 전체 파인튜닝**: 어려움. NVIDIA 문서가 최적 성능 기준 H100/L40 노드를 권장, LoRA는 A6000 2장 또는 RTX 4090 2장(=48GB)을 사용했다고 명시. 32GB 단일 카드는 그 아래
@@ -718,8 +770,12 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 | ├ **`omy_to_ur16e` 브리지** — J5 반전 + J2 −90° + UR 한계 ±95% clamp + slew + **engage 게이트** + watchdog. 합성 입력 **7/7 검증** | ✅ **완료** (`scripts/omy_to_ur16e.py`) |
 | ├ **Isaac sim 실기동 검증** — `virtual_omy_leader.py` + `teleop_omy.launch.py` 로 전 구간. **전체 추종오차 0.244°**(브리지 매핑 0.021°), 그리퍼 연동, disable 즉시정지, trajectory 복귀 | ✅ **완료** (`HISTORY.md` §22) |
 | └ 실물 L100 연결 후 손목 J4/J6 오프셋·엔코더 영점 튜닝 | ⬜ *(U2D2 연결 필요 — 파라미터만 조정, 코드 수정 불필요)* |
-| T4. 데모 수집 → ACT 학습 → open/closed-loop 롤아웃 | ⬜ *(환경은 준비됨 — `deps/.venv-ml`)* |
-| T5. 소형 VLA → GR00T LoRA 비교 | ⬜ |
+| **T3-C. 0단계 — 공개 데이터셋 ACT 관통** — `svla_so101_pickplace` 500스텝(loss 13.5→2.54), sm_120 실동작, 피크 VRAM 6.4 GB. `lerobot[training]` 누락 + `/dev/shm` 64 MiB 함정 발견·수정 | ✅ **완료** (2026-09-07, `HISTORY.md` §24) |
+| **T3-D. pick&place 상태머신** `scripts/pick_place_demo.py` — GT pose(`/scene/object_pose`) → cuMotion + **직선 접근/후퇴**(`compute_cartesian_path`) → 2F-85. TCP 는 TF 로 실측. **사람 없이 파이프라인을 끝까지 돌리는 구동기** | ✅ **sim 검증 완료** (2026-09-07, 1/1 SUCCESS, 마커에서 14 mm — `HISTORY.md` §25) |
+| └ ⚠️ **런치는 반드시 `ur_only:=false`** — 기본 `true` 면 move_group 이 그리퍼 없는 모델을 써서 **모든 Cartesian goal 이 SUCCESS 를 반환하며 무동작**한다 | — |
+| **T4-A. 파이프라인 관통** — 상태머신 → `il_recorder` → `raw_to_lerobot` → LeRobot v3.0 → ACT 학습. 4 에피소드/7,136프레임, 재판독 시 §2.6 스키마 그대로, ACT loss 15.3→3.1 | ✅ **완료** (2026-09-08, `HISTORY.md` §25) |
+| T4-B. 대량 수집 + closed-loop 롤아웃 | ⬜ *선행: **태스크 3종 × 언어 지시문**(§2.8 — 지금은 1종이라 VLA 가 언어를 무시한다), 에피소드의 정지 프레임 정리(현재 1,686프레임≈56초 중 상당수가 대기)* |
+| T5. (선택) 소형 VLA → **GR00T N1.7** | ⬜ *lerobot 0.6.1 내장 확인(§2.7) — 별도 레포 불필요* |
 
 > ### ★ IL/VLA 스택에 **필요 없는 것** (2026-09-06 확정)
 > 정책 입력은 **RGB + 관절뿐**이다. 따라서 teleop→IL→VLA 경로는 아래를 **쓰지 않는다**:
@@ -753,8 +809,8 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
    **§2.5 의 명목 치수 `xyz=(0,-0.067,0.01847)`, pitch 8° 로 제작**하거나, 다르면 URDF·Isaac 스크립트를
    함께 갱신하고 USD 재베이크.
 2. **ML 환경 구축** — torch(sm_120 포함 휠) 설치. `SETUP.md` §2-B-1 핀 정책 준수(공유 컨테이너).
-3. **0단계 착수** — 공개 LeRobot 데이터셋으로 ACT 학습 + open-loop 평가.
-   동시에 `torch.cuda.get_arch_list()` 로 sm_120 확인(§6.3).
+3. ~~**0단계 착수**~~ → **완료(2026-09-07, `HISTORY.md` §24).** sm_120 실동작 확인, 피크 VRAM 6.4 GB.
+   학습 실행 시 **`UR_WS_TORCH_SHM_FIX=1`** 를 붙일 것(`/dev/shm` 64 MiB 함정 — `SETUP.md` §2-C).
 4. **LeRobot 데이터셋 writer + 시간 동기화 규약 확정** (§6.5) — 데이터를 모으기 전에 만든다.
 5. **태스크 3종 정의** — 언어 지시문 포함, §2.8 참조. `to_do.md` M0 의 물체/exemplar 선정과 함께 정한다.
 6. **`to_do.md` M0~M3 진행** — 완료 시점이 곧 C′ 의 데이터 엔진 완성 시점.

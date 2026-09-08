@@ -213,6 +213,23 @@ ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
     use_sim_time:=true read_esdf_world:=true ur_only:=true                     # cuMotion 이 nvblox ESDF 읽음 + RViz 복셀
 python3 src/ur_bringup/isaac/ur16e_2f85_d405/nvblox_obstacle_demo.py           # 회피 A/B 검증(FREE 성공·OBST 실패=PASS)
 #   RViz: goal 마커를 장애물 너머로 → Plan → cuMotion 이 우회 → Execute. 원리·함정은 HARDWARE.md §4.
+
+# ── pick & place (T3-D) ── 세트3 제어 + MoveIt 위에서. 검증: 6/6, 배치 오차 0.000~0.001 m
+/isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
+    --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_2f85_d405.usd \
+    --scene pick_place --table --table-height 0.20 --table-pose 0.72,0.0 --table-size 0.70,0.90 \
+    --object-pose 0.60,0.0,0.225 --object-size 0.035,0.035,0.035 \
+    --place-pose 0.60,0.315,0.0 --object-names red,blue --place-names left,right \
+    --object-spacing 0.20 --randomize-object --randomize-radius 0.025 \
+    --grasp-attach --with-camera --with-static-cam
+ros2 launch ur_bringup ur16e_2f85_d405.launch.py use_sim:=true                 # 제어
+ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py use_sim:=true ur_only:=false
+ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=true cycles:=6       # 상태머신
+#   ur_only:=false 필수 — true 면 move_group 이 팔만 아는 모델을 써서 gripper_frame 을 모르고,
+#   MoveIt 은 모르는 링크 제약을 "이미 만족"으로 처리해 매번 SUCCESS 를 반환하며 팔이 안 움직인다.
+#   그리퍼 관련 값은 스크립트/런치 기본값에 들어 있어 명령줄에 쓸 필요가 없다.
+#   sim 전용 보정(tcp_offset·grip_approach)은 config/common/pick_place_sim.yaml 에 격리되어
+#   use_sim:=true 일 때만 로드된다. 왜 필요한지는 HISTORY.md §26.
 ```
 
 ---
@@ -239,6 +256,15 @@ ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py use_sim:=false
 # 하드웨어 없이 경로 점검 (mock)
 ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
     use_mock_hardware:=true use_fake_hardware:=true use_tool_communication:=false enable_camera:=false
+
+# pick & place — sim 과 같은 상태머신, 백엔드만 다르다
+ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
+#   use_sim:=false 는 config/common/pick_place_sim.yaml 을 로드하지 않는다. 그 파일의 값
+#   (tcp_offset 0.1294, grip_approach 0.30)은 Isaac 2F-85 에셋의 결함을 덮는 sim 전용
+#   보정이고 실물에서는 전부 틀리다 — grip_approach 0.30 은 50 mm 물체보다 좁고,
+#   tcp_offset 0.1294 는 실물 팔을 31 mm 낮게 조준시켜 테이블에 부딪친다. HISTORY.md §26.
+#   실물에서는 코드 기본값(URDF/TF 기준)이 맞는 값이다.
+#   ⚠ 첫 실행은 반드시 cycles:=1 로, 속도를 낮춰(vel_scale/acc_scale) 사람이 지켜보며.
 ```
 
 ---

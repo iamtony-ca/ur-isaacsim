@@ -1554,3 +1554,617 @@ WS=$TESTWS $TESTWS/src/setup/bootstrap.sh
 기본 브랜치가 아닌 곳의 SHA(`jazzy`, `ros2`, `release-4.6`)도 정상 체크아웃된다.
 
 > SHA 를 올릴 때는 **반드시 빈 워크스페이스 재검증과 함께** 할 것(위 절차).
+
+---
+
+## 24. 0단계 — 공개 LeRobot 데이터셋으로 ACT 학습 관통 — 2026-09-07
+
+`plan_il_vla.md` §4 의 **0단계**("공개 데이터셋으로 ACT 관통. 건너뛰지 말 것").
+목적은 모델 성능이 아니라 **D단계에서 학습이 실패했을 때 "데이터 문제"와 "환경 문제"를 분리**할
+근거를 미리 만들어 두는 것. 결과: **관통 성공**, 그리고 그 과정에서 재현 버그 2개가 드러났다.
+
+### 데이터셋 선택 — `lerobot/svla_so101_pickplace`
+
+lerobot 0.6.1 은 데이터셋 **v3.0** 포맷을 요구한다(`CODEBASE_VERSION = v3.0`). 후보를 HF API 로
+`meta/info.json` 직접 조회해 확인했다:
+
+| repo | ver | ep | frames | fps | cams |
+|---|---|---|---|---|---|
+| **`lerobot/svla_so101_pickplace`** | v3.0 | 50 | 11,939 | **30** | up, side |
+| `lerobot/aloha_sim_transfer_cube_human` | v3.0 | 50 | 20,000 | 50 | top |
+| `lerobot/aloha_sim_insertion_human` | v3.0 | 50 | 25,000 | 50 | top |
+| `lerobot/pusht` | v3.0 | 206 | 25,650 | 10 | (없음) |
+
+`svla_so101_pickplace` 를 골랐다 — **우리 목표 구성과 구조가 가장 가깝다**:
+단일팔 + 그리퍼, 카메라 2대, **30 fps(= 우리 기록 규약, §18)**, 그리고 절대 관절위치 액션.
+
+```
+action            float32 [6]  shoulder_pan/lift, elbow_flex, wrist_flex/roll, gripper (.pos)
+observation.state float32 [6]  (동일)
+observation.images.{up,side}  video [480,640,3]
+task = "pink lego brick into the transparent box"
+```
+
+우리 §2.6 스키마(`state.single_arm`(6) + `state.gripper`(1), 카메라 2대, 30 Hz, 절대 관절위치)와
+**같은 모양**이다. 차이는 팔 관절이 5개(SO-101)냐 6개(UR16e)냐뿐.
+
+### 결과 — 관통 성공
+
+500 스텝(batch 8, 4 workers, RTX 5090):
+
+| step | loss | l1_loss | kld |
+|---|---|---|---|
+| 50 | 13.544 | 0.834 | 1.271 |
+| 200 | 3.484 | 0.670 | 0.281 |
+| 500 | **2.540** | **0.513** | 0.203 |
+
+- **sm_120 실동작 확인**(§6.3 검증 항목): torch 2.11.0+cu128, `get_arch_list()` 에 `sm_120` 포함, RTX 5090 에서 실제 학습.
+- **피크 VRAM 6,441 MiB / 32,607 MiB**(§6.2 VRAM 한계 항목). ACT + 카메라 2대 + batch 8 기준.
+  Isaac(+perception)과 동시 구동 여지가 충분하다.
+- 처리량 **161 smp/s**, 500 스텝 32초.
+
+### ★ 함정 1 — `lerobot[dataset]` 만으로는 학습이 안 된다
+
+`lerobot-train` 이 첫 줄에서 죽는다:
+```
+ImportError: 'accelerate' is required but not installed. Install it with: pip install 'lerobot[training]'
+```
+`requirements-ml.txt` 에 `lerobot[dataset]` 만 있었다. **`[dataset]` 만으로도 데이터 변환
+(`raw_to_lerobot.py`)은 멀쩡히 되기 때문에 §19 에서 이 누락을 못 잡았다** — 첫 실제 학습에서야 드러났다.
+
+→ `lerobot[dataset,training]` 으로 수정. `pip install --dry-run` 으로 **순수 추가 13개
+(accelerate, wandb 등)이고 torch 는 안 건드림**을 먼저 확인한 뒤 설치(격리 원칙).
+설치 후 `get_arch_list()` 재확인 — sm_120 유지.
+→ `check_env.sh` 에 **`accelerate` 임포트 검사 별도 추가**(lerobot 임포트만으론 못 잡으므로).
+
+부수: `[training]` 설치 후 hub push 검증이 켜져 `--policy.push_to_hub=false` 가 필요해진다.
+
+### ★★ 함정 2 — `/dev/shm` 64 MiB → DataLoader 워커가 **간헐적으로** 죽는다
+
+```
+RuntimeError: unable to allocate shared memory (shm) for file <...>: Resource temporarily unavailable (11)
+RuntimeError: DataLoader worker (pid ...) exited unexpectedly
+```
+
+이 컨테이너의 `/dev/shm` 은 Docker 기본값 **64 MiB**. PyTorch 기본 공유전략(`file_descriptor`)은
+워커→학습루프 배치 전달에 `/dev/shm` 을 쓰는데, **ACT 배치 하나가
+8 × 카메라2 × 3×480×640 float32 ≈ 59 MiB** 라 한 배치도 겨우 들어간다.
+
+**실측(동일 조건 3회 반복)**:
+
+| | 결과 | 피크 shm |
+|---|---|---|
+| 수정 없음 | **SHM_CRASH / SHM_CRASH / OK** | 43 / 43 / 29 MiB |
+| `UR_WS_TORCH_SHM_FIX=1` | **OK / OK / OK** | 29 / 36 / 15 MiB |
+
+> **★ 이게 간헐적이라는 게 핵심이다.** 처음 500 스텝 런이 수정 없이 통과해서 한 번
+> "해결됐다"고 잘못 판단했다. 결정적 실패보다 나쁘다 — 스모크는 통과하고 긴 학습 중간에 죽는다.
+> 반드시 **반복 실행으로** 확인할 것.
+
+`/dev/shm` 을 키우려면 컨테이너 재생성이 필요한데 **다른 프로젝트와 공유하는 머신**이라 불가.
+→ 공유전략을 `file_system`(temp dir 사용, 2.2 TB 여유)으로 바꾼다.
+
+**여기 도달하기 전에 조용히 실패한 시도 2개** (둘 다 "고친 것처럼 보였다"):
+
+1. **부모 프로세스에만 `set_sharing_strategy("file_system")`** → 워커가 그대로 죽음.
+   원인: lerobot 이 `dataloader_multiprocessing_context = "spawn"` 을 **명시적으로 박아 뒀다**
+   (`configs/train.py:110`; 시스템 기본 start method 는 `fork`). spawn 된 워커는 부모 상태를
+   상속하지 않는다 — lerobot 이 의도한 동작이다.
+2. **venv site-packages 에 `sitecustomize.py`** → `get_sharing_strategy()` 가 여전히
+   `file_descriptor`. 원인: **`/usr/lib/python3.12/sitecustomize.py` 가 이미 있고
+   stdlib 경로가 site-packages 보다 앞서서** 우리 것이 임포트조차 안 된다.
+   `import sitecustomize; sitecustomize.__file__` 로 확인.
+
+**확정안 = `.pth` 파일.** `site` 가 **모든** 인터프리터(spawn 된 워커 포함)에서 `import` 로 시작하는
+줄을 실행하고, 이름 충돌도 없다. 환경변수로 게이팅해 평소 venv python 기동 비용은 0:
+
+```
+deps/.venv-ml/lib/python3.12/site-packages/ur_ws_shm_fix.pth   # site 가 실행하는 한 줄
+deps/.venv-ml/lib/python3.12/site-packages/ur_ws_shm_fix.py    # 실제 set_sharing_strategy
+```
+`setup.sh ml` 이 자동 설치하고 **설치 직후 실제 전략값으로 자체 검증**한다.
+사용: `UR_WS_TORCH_SHM_FIX=1 ... lerobot-train ... --num_workers=4`.
+
+**워커 도달 증명**(파일 존재가 아니라 실동작으로): spawn 된 DataLoader 워커 안에서
+`get_sharing_strategy()` 를 읽어 반환시키고, `PYTHONHASHSEED=0` 으로 고정해
+`hash("file_system")` 와 대조 → 일치.
+
+**속도**(부수 효과지만 큼):
+
+| | data_s | smp/s | 200 스텝 |
+|---|---|---|---|
+| `num_workers=0` (회피책) | 0.13 | 47 | 40 s |
+| `UR_WS_TORCH_SHM_FIX=1` + 4 workers | **0.001** | **161** | **16 s** |
+
+loss 는 동일(step 200 에서 3.483 vs 3.484) — **속도만 2.5배**.
+`num_workers=0` 도 유효한 폴백이지만 D단계 장기학습엔 부담.
+
+→ `check_env.sh` 는 **파일 존재가 아니라 실제 전략값**을 검사한다(함정 2 때문에
+"설치된 것처럼 보이지만 안 도는" 상태가 실재했으므로).
+
+### 변경 파일
+`setup/requirements-ml.txt`(extra 수정) · `setup/setup.sh`(`_install_shm_workaround`) ·
+`setup/check_env.sh`(accelerate + shm 실동작 검사) · `SETUP.md` §2-C · `plan_il_vla.md` §4/§6.2/§7-B.
+
+### 남은 것
+0단계는 **관통 확인**이 목적이라 여기서 끝. 정책 품질 평가는 자체 데이터가 생기는 **D단계**의 몫이다.
+
+---
+
+## 25. pick&place 상태머신 (T3-D) — sim 검증 완료 — 2026-09-07
+
+`plan_il_vla.md` §3.2 의 sim 데모 생성기. **사람 없이 파이프라인 전체를 끝까지 돌리는 구동기**이자
+sim 대량 데이터 생성기. 실물엔 GT 가 없으므로 **sim 전용 도구**이고, 실물 데모는 §3.3/§3.5 경로다.
+
+```
+/scene/object_pose (GT) ─▶ pick_place_demo.py ─▶ MoveGroup/cuMotion ─▶ JTC ─▶ Isaac
+                                └─▶ /gripper_controller/gripper_cmd ─▶ 2F-85
+READY → DETECT → PRE_GRASP → GRASP → CLOSE → LIFT → TRANSFER → PLACE → OPEN → RETRACT
+```
+
+**결과: 1/1 → 재실행 3/3 사이클 SUCCESS** (마커 오차 14 / 9 / 18 / 7 mm). 단계별 물체 좌표로 검증:
+
+| 단계 | 물체 위치 |
+|---|---|
+| DETECT | (0.600, 0.000, 0.225) |
+| LIFT | (0.608, 0.007, **0.369**) ← 실제로 들림 |
+| TRANSFER | (0.608, **0.258**, 0.288) |
+| PLACE | (0.606, 0.258, **0.225**) ← 테이블에 안착 |
+
+**pose 는 토픽으로만 받는다** — 나중에 FoundationPose 가 `/target/pose` 를 내면
+`-r /scene/object_pose:=/target/pose` **remap 한 줄**로 교체된다. 시뮬레이터를 직접 들여다보지 않는다.
+
+### ★★ 함정 1 — MoveIt 은 "모르는 링크의 제약"을 "이미 충족된 제약"으로 취급한다
+
+가장 위험한 종류의 실패다. **액션이 `error_code=1`(SUCCESS)을 돌려주는데 팔이 전혀 안 움직인다.**
+로그엔 `PRE_GRASP: ok / GRASP: ok / LIFT: ok` 가 찍히고, 유일한 증상은 "물체가 안 집힌다"뿐이다.
+
+```
+[ERROR] Link 'gripper_frame' not found in model 'ur16e'
+[WARN]  Position constraint link model gripper_frame not found in kinematic model. Constraint invalid.
+[INFO]  Goal constraints are already satisfied. No need to plan or execute any motions
+```
+
+원인이 **두 겹**이었고 둘 다 조용하다:
+
+1. **cuMotion 은 `tool0` 을 거부한다** — XRDF 가 `tool_frames: [gripper_frame]` 이라
+   `Target link 'tool0' does not match end effector 'gripper_frame'`. 그런데 `gripper_frame` 은
+   `cumotion/ur16e_2f85.urdf` 에만 있고 **런타임 URDF 엔 없었다** → 두 모델이 어긋나 있었다.
+   → `urdf/common/robotiq_2f85_macro.xacro` 에 **identity 오프셋 별칭**으로 추가(기하 변화 0, USD 재베이크 불필요).
+2. **`ur16e_2f85_d405_cumotion_moveit.launch.py` 의 `ur_only` 기본값이 `true`** —
+   move_group 이 **그리퍼 없는 UR 팔 단독 모델**(`urdf/ur16e/ur16e_sim.urdf.xacro`)을 로드한다.
+   런치 도움말 그대로 `false` 가 **"programmatic cuMotion"** 용이다. → **`ur_only:=false` 필수.**
+
+> **검사 방법이 중요하다.** 아래 둘은 **작동하지 않는다**:
+> - 로그에서 `"gripper_frame not found"` grep — 그 에러는 **제약이 평가될 때만** 찍히므로 기동 직후엔 항상 없다.
+>   (이걸로 만든 가드가 통과하는 동안 모든 goal 이 무동작이었다.)
+> - `robot_description` **파라미터** 조회 — `ur_only:=false` 면 모델이 **토픽**으로 오고 파라미터엔
+>   팔 단독 기본값이 남아 있어 **거짓 실패**를 보고한다.
+>
+> **`/compute_fk` 로 물어야 한다** — move_group 자신의 기구학 모델이 답한다.
+> `pick_place_demo.py` 의 `check_ee_link_known()` 이 시작 시 이걸 하고, 실패하면 거부한다.
+
+### ★ 함정 2 — 낡은 `robot_state_publisher` 잔존 → move_group 이 구 URDF 를 latch
+
+URDF 를 고치고 제어 스택을 재시작했는데도 안 먹었다. `ros2 topic info /robot_description` →
+**Publisher count: 2**. 런치 부모를 죽여도 **자식 노드는 살아남는다**(§22 의 중복 노드 함정과 동일).
+`/robot_description` 은 TRANSIENT_LOCAL 이라 늦게 뜬 move_group 이 **낡은 쪽을 latch** 했다.
+→ 재시작 후 **RSP 가 정확히 1개인지 확인**할 것.
+
+### ★ 함정 3 — `use_sim_time` + `/clock` 도착 전 마감시각 계산
+
+`use_sim_time` 이면 첫 `/clock` 이 올 때까지 `now()` 가 0 이다. 그때 만든 마감시각은 `0 + timeout`
+이라, 실제 sim 시각(수천 초)이 들어오는 **순간 모든 대기가 동시에 만료**된다.
+증상은 "토픽이 죽은 것처럼 보이는 즉시 타임아웃" — 실제로 그렇게 오진했다.
+→ `wait_for_clock()` 으로 **먼저 `/clock` 을 기다린 뒤** ROS 시간 마감시각을 만든다.
+그 대기 자체는 **monotonic 시계**로 제한한다(기다리는 대상으로 그 대상을 잴 수 없다).
+
+### ★ 함정 4 — TCP 를 그리퍼 닫힌 채로 재면 13.5 mm 틀린다
+
+TCP = **패드 중점**인데 패드는 닫히면서 안쪽으로 접힌다. 고정 sleep 후 측정하니
+같은 코드가 한 번은 `0.0983 m`, 다음엔 `0.0452 m` 를 냈다 — 그리퍼 타이밍에만 의존.
+→ ① `finger_joint` 가 열림값에 도달할 때까지 대기 ② TF 값이 **연속 3회 0.5 mm 이내로 안정될 때까지**
+샘플링. 안정 안 되면 추측하지 말고 실패.
+(TCP 는 **TF 에서 실측**한다 — standoff 가 세트별로 다르고(세트2 +11 mm, 세트3 +18 mm)
+하드코딩하면 `CLAUDE.md` 함정 7 을 밟는다. 실측 확인: `tool0 → gripper_frame` = **0.018 m** = 세트3 standoff.)
+
+### ★★ 함정 5 — cuMotion 은 **관절공간** 경로다. 접근/후퇴를 planned move 로 하면 물체를 친다
+
+cuMotion 은 minimum-jerk **관절공간** 궤적을 낸다 → 두 pose 사이가 **Cartesian 직선이 아니다.**
+그 상태로 물체 위에서 하강하니 손가락이 물체를 쓸고 지나갔다. 단계별 물체 좌표로 특정:
+
+| | 물체 위치 | 밀림 |
+|---|---|---|
+| PRE_GRASP 후 | (0.600, 0.000, 0.225) | — |
+| GRASP 후 (planned) | (0.621, −0.010, 0.233) | **21 mm** |
+| GRASP 후 (**linear**) | (0.609, −0.003, 0.229) | 9 mm |
+
+→ **접근·후퇴(GRASP/LIFT/PLACE/RETRACT)는 `/compute_cartesian_path` + `/execute_trajectory`**
+직선 이동으로. `fraction < 0.95` 면 **부분 실행하지 말고 실패 처리**(중간에 멈추면 물체에 못 닿는다).
+PRE_GRASP·TRANSFER 같은 자유 이동만 cuMotion planned move 로 남긴다.
+
+> **교훈: 단계마다 물체 좌표를 찍어라.** 안 찍었으면 이 전부가 뭉뚱그려 "grasp 실패"로만 보였다.
+
+### ★ 함정 6 — 작업면 높이: 낮으면 안 닿고, 높으면 로봇을 친다
+
+원래 장면은 **테이블 상면 z=0**(teleop 데모용, §16/§18). teleop 은 Servo 라 충돌검사가 없어 됐지만
+**cuMotion 은 거부한다.** plan-only 로 실측한 임계값:
+
+| gripper_frame z | 0.34 | 0.29 | 0.25 | 0.22 | 0.20 | 0.18 | 0.16 | 0.14 | 0.12 |
+|---|---|---|---|---|---|---|---|---|---|
+| 결과 | ok | ok | ok | ok | ok | **ok** | 실패 | 실패 | 실패 |
+
+즉 패드가 닿을 수 있는 최저 높이는 `0.18 − 0.0983 = 0.082 m` 인데 물체 중심은 0.040 —
+**애초에 닿을 수 없는 장면**이었다.
+
+테이블을 0.20 으로 올리자 이번엔 **`wrist_2_joint` 가 −26.3 rad**(±6.28 밖) 로 튀어
+모든 plan 이 `START_STATE_INVALID`. 1.0×1.2 m 슬래브가 x=0.55 중심이라 **스폰 시 팔과 겹쳤고**
+PhysX 가 겹침을 풀면서 팔을 날려버린 것.
+→ `--table-pose` / `--table-size` 를 **인자로 추가**. 검증된 조합:
+
+```
+--table-height 0.20 --table-pose 0.72,0.0 --table-size 0.70,0.90
+--object-pose 0.60,0.0,0.235 --place-pose 0.60,0.25,0.0
+```
+
+### 변경 파일
+`ur_bringup/scripts/pick_place_demo.py`(신규) · `urdf/common/robotiq_2f85_macro.xacro`(gripper_frame) ·
+`isaac/common/ur16e_isaac_ros2.py`(`/scene/place_pose` latched 발행, `--table-pose`/`--table-size`) ·
+`CMakeLists.txt` · `package.xml`(moveit_msgs/shape_msgs/control_msgs/geometry_msgs/tf2_ros).
+
+### ★★★ 함정 7 (진짜 원인) — **컨트롤러가 팔이 도착하기 전에 SUCCEEDED 를 보고한다**
+
+랜덤화를 켜자 파지가 계속 실패했다. 단계별 물체 좌표가 "하강 중 11 mm 밀림"까지는 보여줬지만
+**왜** 밀리는지는 추측만 가능했다. 그래서 **명령 자세 vs 실제 도달 자세**를 찍게 했더니 즉시 나왔다:
+
+```
+GRASP: gripper_frame actual (0.6179, -0.0042, 0.3431)
+       commanded             (0.600,   0.000,   0.323)
+       err (+17.9, -4.2, +19.8) mm
+```
+
+MoveIt 이 `SUCCEEDED` 를 보고한 시점에 팔은 목표에서 **18 mm 앞, 20 mm 위**에 있었다.
+sim 하드웨어(topic_based → Isaac articulation drive)가 위치 명령을 **뒤따라가는 중**이기 때문.
+밀림 방향(+x)과 오차 방향(+x)이 정확히 일치한다.
+
+**전체 인과사슬이 여기서 시작한다**:
+> 정착 안 기다림 → 그리퍼가 18 mm 어긋난 채 하강 → 물체를 밀침 → 모서리로 물림 →
+> 손가락이 용접 임계값(`grasp_close` 0.25)에 못 미친 채 정지 → **용접 안 됨** →
+> 쥐어짜다 물체가 튕겨나감 → `grasp_failed`
+
+→ **`wait_settled()`**: 매 이동 후 TF 로 실제 자세가 목표 3 mm 안에 들어올 때까지 대기(타임아웃 5 s).
+"궤적 완료"가 아니라 **"실제 도착"** 을 기다린다.
+
+> **틀린 가설 하나 기록**: 처음엔 접근 자세 공차(`ori_tol` 0.05 rad ≈ 3°)가 원인이라 보고
+> 0.005/0.01 로 조였다. **밀림은 그대로 11 mm 였고**(가설 반증) 오히려 PRE_GRASP/LIFT 계획 실패까지
+> 생겨 10 사이클 중 5연속 실패했다. 공차는 원복. **측정 없이 조인 것이 실수였다.**
+
+### 참고 — 접근 공차 자체는 원인이 아니었다
+
+고정 위치에선 4/4 성공이라 안 보였는데, `--randomize-object` 를 켜자 바로 실패했다.
+단계별 물체 좌표가 원인을 그대로 보여줬다:
+
+| 단계 | 물체 위치 |
+|---|---|
+| PRE_GRASP 후 | (0.672, −0.030, 0.225) 그대로 |
+| GRASP 후 | (0.683, −0.034, 0.231) — **11 mm 밀림** |
+| LIFT 후 | (0.194, 0.150, 0.040) — **튕겨나감** |
+
+**연쇄**: `ori_tol`=0.05 rad(≈3°) → 0.15 m 하강 동안 측면 오차 ≈8 mm → 물체가 밀림 →
+모서리로 물림 → 손가락이 **용접 임계값 `grasp_close`=0.25 에 못 미친 채 정지** → 용접 안 됨 →
+쥐어짜다 튕겨나감. 즉 "파지 실패"의 뿌리는 **접근 자세 공차**였다.
+
+→ **하강 직전 물체를 다시 읽고**, 2 mm 넘게 밀렸으면 **같은 높이에서 수평 보정(RECENTRE) 후
+수직 하강**. 대각선으로 내려가면 그게 다시 물체를 친다. 50 mm 넘게 밀렸으면 yaw 도 못 믿으므로
+`part_disturbed` 로 **버린다**(밀린 물체를 쫓아가는 데모는 흉내낼 가치가 없다).
+공차 조이기는 **효과 없었다**(위 참조) — 남겨둔 건 RECENTRE 쪽이다.
+
+### ★ 함정 8 — 파지 도중에 상태머신을 죽이면 **Isaac 재시작 말고는 복구가 없다**
+
+중간에 `kill` 하면 물체를 문 채로 멈춰서 **`finger_joint` 가 한계 밖으로 밀려난다**(실측 −0.324,
+한계 0~0.8). §16 이 기록한 그 현상이다. 이 상태에선 TCP 측정이 성립하지 않는다
+(새 가드가 "추측하지 말고 실패"로 정확히 거부했다). 복구:
+
+```
+ros2 service call /scene/detach_object std_srvs/srv/Trigger
+ros2 service call /scene/reset_episode std_srvs/srv/Trigger
+# 그리퍼를 0.0 으로 한 번 명령
+```
+**이 복구는 물체가 손가락 사이에서 빠져나갔을 때만 통한다.** 물체가 끼어 있으면 안 된다 —
+실측: −0.974 와 −0.341 두 번 모두 실패, `-0.324` 한 번만 성공. `recover_gripper()` 를
+`pick_place_demo.py` 에 넣어 자동 시도하되, **실패하면 추측하지 않고 "restart Isaac" 으로 중단**한다.
+무인 실행에서는 **애초에 사이클 도중에 죽이지 말 것.**
+
+### il_recorder 연동
+
+`pick_place_demo.py --ros-args -p record:=true` 로 매 사이클이 한 에피소드가 된다.
+**성공만 저장하고 실패는 `discard`** 한다 — 물체를 쓰러뜨린 데모는 없는 것보다 나쁘다(§6.5).
+기록 시작은 리셋이 안정된 **뒤**(DETECT 직후)라, 에피소드가 물체 순간이동으로 시작하지 않는다.
+⚠️ 기록기는 **`auto_reset:=false`** 로 띄울 것 — 안 그러면 상태머신과 둘 다
+`/scene/reset_episode` 를 불러 한 사이클에 두 번 리셋된다. 에피소드 수명주기는 상태머신이 소유한다.
+
+### ★★ 함정 9 — 큐브 **중심**을 겨냥하면 손끝이 테이블에 닿는다
+
+랜덤화 성공률이 1/5 로 주저앉았다. GRASP 도달 오차가 **z +21.5 mm, 즉 명령보다 높은 곳**에서
+멈춘 게 단서였다 — 위치제어가 못 미친 게 아니라 **아래에서 물리적으로 막힌** 것.
+
+그리퍼 기하를 실측해 배제부터 했다(열림/닫힘 각각 TF 로):
+
+| 상태 | tip **링크** 간격 | 실제 패드 간격 |
+|---|---|---|
+| OPEN (`finger_joint`=0) | 135.5 mm | **84.8 mm** ← 실물 2F-85 의 85 mm 와 일치 |
+| CLOSED (0.8) | 50.7 mm | 0 mm |
+
+즉 tip 링크 원점은 패드 접촉면보다 각각 **25.35 mm 바깥**에 있을 뿐, 개폐 폭은 정상이고
+50 mm 큐브는 한쪽당 17.4 mm 여유로 들어간다 → **옆면 충돌이 아니다.**
+남는 건 아래, 즉 **테이블**이다. 큐브 중심(z=0.225)을 TCP 로 겨냥하면 손끝이 상면(0.20)에 닿는다.
+
+→ **`grasp_z_offset` (기본 +15 mm)**: 큐브 **상부**를 잡는다. 패드는 닫히면 간격 0 이라 유지력은
+같고, 실물 2F-85 로 바닥에 놓인 부품을 집을 때 하는 방식이기도 하다. PLACE 해제 높이도 같이 보정.
+**결과: 1/5 → 4/5**, 마커 오차도 14 mm → **3~6 mm**.
+
+### ★★ 함정 10 — `jump_threshold = 0.0` 은 "제한 없음"이 아니라 **검사 끄기**다
+
+`grasp_z_offset` 적용 후에도 1건이 남았고, 성격이 달랐다: **물체는 7 mm 만 움직였는데
+팔이 y 로 50 mm 엉뚱한 곳에 도착**했다. 막힌 게 아니라 **딴 데로 간 것**이고,
+`compute_cartesian_path` 는 그 경로를 `fraction 1.00` 으로 보고했다.
+
+원인은 요청의 `jump_threshold = 0.0`. 이 값은 **관절공간 점프 필터를 비활성화**한다
+(메시지 주석: "If jump_threshold is set > 0, it acts as a scaling factor ... the returned path
+is truncated before the step"). 그래서 하강 도중 **IK 분기가 뒤집히는** 불연속 경로가
+"100% 해결"로 통과했고, 컨트롤러는 그걸 추종하지 못했다.
+
+→ **`jump_threshold = 5.0`**. 점프가 있으면 경로가 **잘려서** `fraction` 이 떨어지고,
+우리 `min_fraction`(0.95) 검사가 **깨끗하게 실패 처리**한다 — 팔이 날뛰는 대신.
+
+### 참고 — 남아 있는 계통 오차
+
+`PRE_GRASP` 는 매번 **z −7.2~−7.3 mm** 로 정착한다(x,y 는 ±0.1 mm). 위치 드라이브의
+중력 처짐으로 보이며 재현성이 높다. 파지에는 `grasp_z_offset` 이 흡수하므로 현재는 문제 없지만,
+**정밀도가 필요해지면 여기부터 볼 것.**
+
+### ★ 함정 11 — 테이블을 플래닝 씬에 넣는 건 생각보다 까다롭다
+
+플래너가 작업면을 모르면 **경로를 관통시키고 물리가 막는다**(위 함정 7 의 50 mm 오차가 그것).
+실물에선 그게 곧 충돌이므로 테이블은 반드시 씬에 있어야 한다. 그런데 그냥 넣으면 안 된다:
+
+| 시도 | 결과 |
+|---|---|
+| 테이블 없음 | 6/8 — 실패가 **물리적 충돌**로 발생 |
+| 실제 높이로 등록 | **0/3, 전부 `plan_failed_grasp`** — 표면 위 부품을 집으려면 그리퍼가 표면에 근접해야 하는데 그게 전부 충돌 판정 |
+| 20 mm 침하 (등록을 맨 앞에) | **`START_STATE_IN_COLLISION(-10)`** — Isaac 은 팔을 **수평으로 뻗은** 자세로 시작하고 그 높이가 대략 작업면 높이라, "로봇이 방금 알려준 상자 안에 이미 있는" 상태 |
+| 20 mm 침하 + **READY 도달 후** 등록 | **5/8**, 마커 오차 **2~5 mm**(테이블 없을 때 3~8 mm), 실패는 **계획 단계에서 안전하게 거절** |
+
+→ 채택: `table_sink`(기본 0.02) + **등록 시점을 READY 이후로**. 기하는 Isaac 이
+`/scene/table_box` 로 발행하고 상태머신이 CollisionObject 로 등록 — **단일 출처**라 어긋날 수 없다.
+성공률은 6/8 → 5/8 로 n=8 수준 노이즈지만 **정확도가 오르고 실패가 안전해진다.**
+사이클 시간은 2~3배(정착 대기 + 충돌검사).
+
+> **정석은 침하가 아니라 ACM.** `work_table` ↔ **그리퍼 링크만** 충돌 허용하면 팔은 완전히 막고
+> 손가락만 통과시킬 수 있다. cuMotion 플러그인이 AllowedCollisionMatrix 를 존중하는지 **미확인**이라
+> 미뤘다. 정밀도나 안전 마진이 필요해지면 여기부터.
+
+### ✅ 파이프라인 관통 — 상태머신 → 기록 → LeRobot → ACT (2026-09-08)
+
+`plan_il_vla.md` §7-B 가 "실제 LeRobot 변환은 ML 환경 생긴 뒤 검증"이라고 미뤄둔 **마지막 미검증 고리**를 닫았다.
+
+```
+pick_place_demo(record:=true) ─▶ il_recorder(auto_reset:=false) ─▶ raw(JPEG+JSON)
+   ─▶ raw_to_lerobot.py (ML venv) ─▶ LeRobot v3.0 ─▶ lerobot-train --policy.type=act
+```
+
+| 단계 | 결과 |
+|---|---|
+| 기록 | 5 사이클 중 **4 성공 저장 / 1 실패 discard** — 실패 데모는 저장하지 않는다(§6.5) |
+| raw | 4 에피소드 / **7,136 프레임** / 30 Hz, `meta.json` 이 태스크·관절·그리퍼 규약·스키마 출처까지 자기서술 |
+| 변환 | **성공** (`done -> local/ur16e_pickplace`) |
+| 재판독 | `observation.images.{exterior,wrist}` (3,480,640) / `observation.state`(**7**) / `action`(7) / `task` — **§2.6 스키마 그대로** |
+| ACT 학습 | **동작** — loss 15.34 → 3.13, l1 0.588 → 0.275 (300 스텝) |
+
+**변환기는 손댈 필요가 없었다** — 이미 lerobot 0.6.x API(`create`/`add_frame`/`save_episode`,
+task 를 frame dict 안에)를 대상으로 작성돼 있었다. 0단계(§24)에서 학습 툴체인을 먼저 검증해 둔 덕에
+"데이터 문제 vs 환경 문제"를 구분할 필요조차 없었다.
+
+**★ 다음에 손볼 데이터 품질 이슈**: 에피소드가 **1,686 프레임(≈56초)** 로 길다. `wait_settled` 대기와
+계획 시간이 전부 **정지 프레임**으로 들어간다. 정책이 "가만히 있기"를 배우므로 잘라내거나
+기록을 이동 구간에만 켜는 편이 낫다. 지금은 파이프라인 검증이 목적이라 그대로 뒀다.
+
+**★ 태스크는 아직 1종**이다. 변환기가 스스로 경고한다 —
+"Fewer than 2 distinct task strings. A VLA trained on this will ignore language"(§2.8).
+C′ 단계에서 **태스크 3종 × 언어 지시문**으로 모을 것.
+
+### 언어 조건 태스크 3종 — 장면을 물체 2 × 목적지 2 로 확장 (2026-09-08)
+
+**물체 1개 + 목적지 1개로는 지시문이 잉여다.** 무시해도 정답이므로 VLA 가 언어를 안 읽고,
+3B 를 써서 ACT 를 얻는다(§2.8). 같은 관측에서 **지시문에 따라 다른 행동**이 나와야 한다.
+
+| # | 지시문 | object_topic | place_topic |
+|---|---|---|---|
+| 1 | put the **red** block on the **left** marker | `/scene/objects/red/pose` | `/scene/places/left/pose` |
+| 2 | put the **blue** block on the **left** marker | `/scene/objects/blue/pose` | `/scene/places/left/pose` |
+| 3 | put the **red** block on the **right** marker | `/scene/objects/red/pose` | `/scene/places/right/pose` |
+
+1↔2 는 **어떤 물체를**, 1↔3 은 **어디로** 가 다르다. 네 요소(블록 2, 마커 2)가 **항상 동시에** 장면에 있다.
+
+**상태머신은 코드 변경 0** — `object_topic`/`place_topic` 파라미터가 이미 있었다.
+pose 를 토픽으로만 받게 설계(§D10 exit strategy)한 것이 그대로 값을 했다.
+
+Isaac 쪽 변경(`--object-names` / `--place-names` / `--object-spacing`):
+- 이름별 스폰 + **개별 토픽** `/scene/objects/<n>/pose`, `/scene/places/<n>/pose`(latched).
+  기존 `/scene/object_pose`·`place_pose` 는 **첫 번째 것의 별칭**으로 유지(이미 검증된 경로를 안 깬다).
+- **리셋이 모든 물체를 재배치.** 방해물이 지난 에피소드 자리에 남으면 같은 지시문에 장면이 달라진다.
+- **파지 시 TCP 에 가장 가까운 물체를 용접.** 그리퍼는 지시문을 모르므로 고정 물체를 물면
+  엉뚱한 걸 잡고도 성공으로 위장할 수 있다.
+- 색은 RGB 상 멀리 떨어뜨린다 — "red vs orange" 구분은 우리가 낼 의도가 없던 인식 문제다.
+
+### ★★ 함정 12 — 실패한 사이클은 **그 자리에서** 그리퍼를 풀어야 한다
+
+CLOSE 이후에 실패하면 손가락이 물체에 물린 채 남고, 2F-85 mimic 링키지가 한계 밖으로 밀린다
+(실측 −0.558, −0.974 / 범위 [0, 0.8]). **이 상태는 Isaac 재시작 외에 복구가 없다**(§함정 8).
+무인 수집에서는 **사이클 하나가 전체 수집을 끝장낸다.**
+
+→ `run_cycle` 이 실패 시 **같은 프로세스 안에서** detach + reset + 그리퍼 open 을 즉시 수행
+(`_release_after_failure`). 검증: 사이클 2 실패 직후 `cleanup ok (finger_joint 0.000)` 로 복구되어
+수집이 계속됐다. 다음 프로세스가 시작할 때 고치려 해서는 **늦다** — 그때는 이미 못 푼다.
+
+### ★★★ 미해결 — 2×2 장면에서 성공률 0. **용접(D5)이 거의 안 걸린다** (2026-09-08 시점)
+
+물체 2 × 목적지 2 로 확장한 뒤 성공률이 **0/15** 로 무너졌다. 아래는 **측정으로 확정된 것과
+아직 모르는 것**을 구분해 적는다. 내일 여기서 이어갈 것.
+
+#### 확정된 사실
+
+| 측정 | 결과 |
+|---|---|
+| 그리퍼 명령 추종 | 명령 0.28 → 실제 **0.2801** (용접 임계값 0.25 초과) — 그리퍼는 정상 |
+| 도달성 (plan-only 스윕, x=0.60) | y **−0.30 ~ +0.40** 전 구간, 파지·접근 높이 **모두 ok** — 도달성은 원인이 아님 |
+| Isaac TCP 소스 | **손가락 패드 프림 정상 해석** (base_link 폴백 아님) |
+| 파지 순간 물체 추적 | GRASP 후 (0.597,−0.096,0.225) 정상 → CLOSE(0.80) → LIFT 후 **(1.258,−0.186,0.036)** = 발사됨 |
+| 용접 발생 빈도 | **15 사이클 중 2회** |
+| 2단계 닫기 적용 후 | **6/6 `weld_failed`** — 용접이 0.28 에서 안 걸림 |
+| `weld skipped` 진단 로그 | **한 번도 안 찍힘** ← 가장 중요한 단서 |
+
+#### 가장 유력한 다음 수순
+
+`weld skipped` 경고는 `fj >= _g_close` 가 참일 때 찍히도록 넣었는데 **한 번도 안 나왔다.**
+그런데 `finger_joint` 은 0.2801 로 임계값을 넘는다. 즉 `_grasp_step()` 이 그 분기에 **도달조차
+못 하고 있다**는 뜻이고, 그 함수는 맨 앞에서 이렇게 조용히 빠져나간다:
+
+```python
+try:
+    fj = float(_art.get_joint_positions()[_names.index("finger_joint")])
+except Exception:
+    return          # <-- 예외를 삼킨다
+```
+
+`_names`(= `_art.dof_names`)에 `finger_joint` 이 없으면 `ValueError` 로 **매번 조용히 return** 한다.
+→ **먼저 `_art.dof_names` 를 찍어서 실제 DOF 이름을 확인할 것.** 이 except 가 원인을 가리고 있었다.
+(2/15 만 걸렸던 것도 이 가설과 모순되지 않는지 함께 볼 것.)
+
+#### 이번 라운드에서 넣은 것 (유지)
+
+- **2단계 닫기** `grip_preclose`(0.28): 패드 간격 `84.8·(1−j/0.8)` mm 이므로 0.25→58.3, **0.33→50(접촉)**.
+  0.80 을 한 번에 명령하면 몇 물리 스텝 만에 닫혀 용접이 끼어들 틈 없이 물체가 발사된다.
+  0.28 에서 멈춰 용접을 건 뒤 마저 닫는다. 용접 실패 시 **더 닫지 않고 `weld_failed`** 로 중단.
+- **`dropped_in_transfer` 검사**: 운반 중 놓친 걸 잡는다. 없을 때 **가짜 성공**이 있었다 —
+  떨어뜨린 물체가 마커 57 mm 지점에 떨어져 60 mm 임계값을 통과했다. `place_tol` 0.06→**0.035**.
+- **실패 후 READY 복귀**: 실패 경로가 팔을 아무 데나 두면 다음 사이클이 그 자세에서 계획을 시작해
+  `plan_failed_pre_grasp` 로 연쇄 붕괴한다.
+- **`/scene/reset_gripper`**(Isaac): 한계 밖으로 나간 링키지를 텔레포트로 되돌린다. **순서가 중요** —
+  detach → reset_episode → **열림 명령** → 텔레포트 ×수회. 텔레포트를 먼저 하면 컨트롤러가
+  닫힘 목표를 잡고 있어 즉시 되돌아간다(실측 −0.558 → 그대로 → 열림 후 −0.197 → 반복 후 0.000).
+- **TCP 소스 배너 + `weld skipped` 진단**: 폴백 여부와 실제 거리를 기동/실패 시점에 드러낸다.
+- 테이블 충돌 상자 **기본 OFF**(`table_sink: -1.0`). 측정상 성공률을 못 올리면서 계획 실패를 늘렸다.
+  **실물에서는 반드시 켤 것**(+ ACM).
+
+#### ★ 진행 방식에 대한 반성 (되풀이하지 말 것)
+
+단일 물체에서 6/8 이 나온 뒤 **한 번에 여러 개를 바꿨다** — 물체 2개화, 좌표 3회 변경, 테이블 충돌,
+`grasp_z_offset`, RECENTRE, `wait_settled`, `jump_threshold`, 판정 강화. 실패 원인 후보가 늘 여러 개라
+하나씩 짚는 데 시간을 다 썼고, 고칠 때마다 새 문제를 만들었다(간격을 벌리려다 물체를 테이블 밖으로).
+
+또한 **보고했던 6/8·4/5 는 느슨한 판정**(마커 60 mm, 낙하 검사 없음)으로 잰 값이라 부풀려져 있었다.
+가짜 성공이 몇 개 섞였는지 알 수 없다. → **한 번에 하나만 바꾸고 매번 같은 판정으로 6 사이클 측정.**
+
+### 남은 것
+위 용접 원인 규명이 최우선. 이어서 정지 프레임 정리(에피소드 ≈56초 중 상당수가 대기),
+(선택) ACM 로 테이블 충돌 정밀화.
+
+## 26. pick&place 복구 — Isaac 2F-85 에셋과 URDF 의 3중 불일치 — 2026-09-08
+
+§25 에서 물체 2개 × 목적지 2개로 확장한 뒤 성공률이 **0/15** 로 무너졌다. 원인은 확장 자체가
+아니라, 그 전부터 있었으나 단일 물체 조건에서 **가려져 있던** NVIDIA 스톡 Robotiq 2F-85
+에셋과 ROS `robotiq_description` URDF 의 불일치 세 가지였다. 최종 **6/6, 배치 오차 0.000~0.001 m**
+(허용 0.035). 재현 검증은 저장소 산출물만으로 수행(명령줄 오버라이드 없음).
+
+### 26.1 `finger_joint` 규약이 반대
+
+같은 관절값에서 두 모델의 개도가 정반대다(실측):
+
+| `finger_joint` | URDF 팁 간격(TF) | Isaac 패드 간격(PhysX) |
+|---|---|---|
+| 0.0 | 135.5 mm (열림) | 0.0 mm (닫힘) |
+| 0.4 | 95.8 mm | 39.7 mm |
+| 0.8 | 50.7 mm (닫힘) | 84.9 mm (열림) |
+
+행정 거리는 84.8 vs 84.9 mm 로 같고 방향만 반대 — `j_isaac = 0.8 − j_urdf`. 실물
+`robotiq_driver` 규약이 `0=열림` 이므로 **에셋이 틀렸다.**
+
+증상: 데모가 `OPEN` 을 보내면 Isaac 그리퍼가 **닫힌다.** 닫힌 채로 하강해 부품을 146 mm
+밀어내고, `finger_joint` 이 자기 하한 밖(−0.754)으로 강제로 벌어지고, 팔이 55 mm 못 미친 채
+막힌다. 그 상태에서 `reset_gripper` 로 관절을 강제 복구해도 다음 사이클에 반복된다.
+
+수정: **sim 경계에서 토픽 값만 반전**(`--gripper-invert`, 기본 ON). 그래프는
+`*_isaac_raw` 토픽과 대화하고, 우리 노드가 `finger_joint` 만 `0.8 − j` 로 바꿔 중계한다.
+팔 관절 값은 그대로 통과하므로 ros2_control·TF·MoveIt·**IL 기록**이 전부 URDF 규약을 본다.
+
+> **USD 관절 프레임을 직접 고치려는 시도는 2회 모두 실패했다.** 두 `localRot` 에 같은 회전을
+> 곱해 축을 뒤집고 `localRot1` 에만 범위만큼 곱해 영점을 옮기는 계산은 대수적으로 맞고
+> `Gf` 합성 순서도 실험으로 확인했으나, PhysX 가 만든 자세는 매번 달랐다. `finger_joint` 만
+> 고치면 오른쪽 손가락이 각도 커플링을 통해 따라오다 깨져 비대칭이 된다(간격 50→112 mm).
+> 에셋 수술은 §26.4 로 남긴다.
+
+### 26.2 파지점 오프셋 31 mm 차이
+
+데모는 URDF `robotiq_85_*_finger_tip_link` 기준 **98.3 mm** 를 파지점으로 쓴다. Isaac 패드
+메시(`fingertipsstep`)의 실제 범위는 공구축 **110.4~148.4 mm**, 중심 **129.4 mm**.
+
+31 mm 낮게 조준하니 손끝이 테이블 아래로 들어가야 하고, 불가능하니 팔이 걸려 멈춘다.
+그 어긋난 자세에서 부착이 걸리면 부품이 TCP 보다 37~39 mm 아래 매달려 `dropped_in_transfer`
+로 오판된다. 수정: sim 에서만 `tcp_offset: 0.1294`.
+
+### 26.3 완전 개방 시 간섭 — 하강·해제 둘 다 망가뜨린다
+
+같은 큐브에 개도만 바꿔 하강시킨 실측(손끝 vs 큐브 윗면):
+
+| 개도 | 결과 |
+|---|---|
+| 0.00 | +15.7 mm 에서 막힘 |
+| 0.10 / 0.20 | +11.7 mm 에서 막힘 |
+| **0.30** | **−29.6 mm 통과** |
+
+활짝 열수록 막힌다 — 폭이 아니라 **자세** 문제다(완전 개방 시 바깥·아래로 스윙하는 부품).
+같은 간섭이 해제에도 작용해, 1.2 mm 오차로 정확히 놓은 부품을 **37 mm 쳐냈다**(허용 35 mm를
+겨우 넘겨 `place_failed`). 수정: sim 에서만 `grip_approach: 0.30`, 접근·하강·해제에 사용.
+`--grasp-close 0.35` / `--grasp-release 0.32` 가 이 값을 **위아래로 감싸야** 한다 — 낮으면
+하강 내내 부착이 무장되고, 높으면 0.30 까지만 열어서는 부착이 안 풀려 부품을 든 채
+다음 사이클로 넘어간다.
+
+### 26.4 아직 남은 것 / 함정
+
+- **에셋 정합이 근본 해법**(`build_ur16e_2f85.py` 재베이크). 위 셋은 전부 sim 전용 보정이다.
+- **`convexHull` 가설은 기각.** 그리퍼 콜라이더가 전부 `convexHull` 이라 오목한 손가락이
+  메워진다고 보고 `convexDecomposition` 으로 바꿨으나 **효과 없었다**(미달 23.2→37.9 mm).
+  플래그(`--gripper-collision`)는 남겨두되, 효과가 확인된 수정이 아니다.
+- **정적 USD 형상 추론이 물리와 3회 어긋났다**(관절 프레임 2회, 콜리전 근사 1회). 형상 값으로
+  계산한 패드 간격 87 mm 는 실측 통과 폭과 끝내 맞지 않았다. **시뮬레이터에 직접 물어보는
+  방식만 답을 줬다.**
+- **`reset_gripper` 는 모든 그리퍼 관절을 에셋의 authored 영점(전부 0)으로** 보내야 한다.
+  구동 관절만 "열림"으로, 나머지를 0 으로 보내면 물리적으로 불가능한 링키지가 된다
+  (`finger_joint` 0.539 인데 패드 간격 91 mm).
+- **`_attach` 의 상대자세는 반드시 물리 기반**으로 계산할 것. `UsdGeom.XformCache` 는 USD
+  스테이지(정적 authored 자세)를 읽으므로, 시뮬레이션 링크 포즈가 아니다. 이걸로 고정관절을
+  만들면 부착 순간 부품이 0.6 m 순간이동한다. 같은 이유로 `_tcp()` 도 두 패드에 **동일 좌표**를
+  돌려주고 있었다(TCP 가 그리퍼 밑동으로 붕괴 → 부착이 8 mm 차이로 영구 불가).
+- **링크 이름으로 조회 금지.** `body_names` 에 `base_link`(로봇)와 `base_link_0`(그리퍼)가
+  둘 다 있어 `index("base_link")` 가 **로봇 베이스**를 준다. 위치로 판별할 것.
+
+### 26.5 어제 수집한 IL 데이터는 폐기 대상
+
+`outputs/lerobot_ds`(4 에피소드) 는 §26.1 보정 이전에 수집됐다. 기록된 `finger_joint` 은
+0→0.8145 이지만 그 값은 Isaac 원값이므로 **의미가 반대**다. 손목 카메라 프레임을 열어보면
+데모가 "닫힘"이라 기록한 순간 손가락이 활짝 벌어져 있고, 부품은 D5 부착으로만 따라간다.
+**이 데이터로 학습한 정책은 실물에서 집어야 할 때 손을 벌린다.** ACT 손실이 잘 떨어진 것은
+데이터 내부적으로 일관됐기 때문이며, 그 일관성이 현실과 반대였을 뿐이다. 재수집 필요.
+
+### 26.6 재현 방법
+
+`config/common/pick_place.yaml`(공통) + `config/common/pick_place_sim.yaml`(sim 전용) +
+`launch/common/pick_place_demo.launch.py`. **코드 기본값은 실물 기준**이고 sim 보정만 덮는다 —
+방향이 중요하다. sim 파일을 빠뜨리면 sim 이 요란하게 실패하지만, 반대로 두면 실물 팔이
+31 mm 낮게 조준해 테이블을 들이받는다. 확인:
+
+```
+use_sim:=true    tcp_offset pinned by parameter: 0.1294 m
+use_sim:=false   measured tcp_offset ... = 0.0983 m
+```

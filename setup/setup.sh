@@ -366,8 +366,87 @@ stage_ml() {
   _verify_torch_arch "$py" || {
     err "torch was replaced by something without sm_120 -- reinstall it from $torch_index"; return 1; }
 
+  _install_shm_workaround "$venv" || return 1
+
   ok "ML venv ready: $py"
   echo "  use it with:  $py -m ...   (never 'source' it into a ROS shell)"
+}
+
+# The Isaac Sim container ships /dev/shm at Docker's 64 MiB default. PyTorch's
+# default 'file_descriptor' sharing strategy hands batches between DataLoader
+# workers through /dev/shm, so ANY num_workers>0 dies partway into training:
+#     RuntimeError: unable to allocate shared memory (shm) for file <...> (11)
+#     RuntimeError: DataLoader worker (pid ...) exited unexpectedly
+# Raising /dev/shm needs the container recreated, which we cannot do -- this
+# container is shared with other projects (HISTORY.md 24).
+#
+# One ACT batch (8 x 2 cameras x 3x480x640 float32) is ~59 MiB, so /dev/shm holds
+# barely one in-flight batch. Measured: 1 of 3 identical unfixed runs died, peak
+# shm 43 MiB -- i.e. the failure is REAL but intermittent, which is worse than
+# deterministic (a run can survive smoke-testing and then die hours into training).
+#
+# 'file_system' passes the same tensors as regular files in the temp dir instead.
+# It must take effect in the WORKERS, not just the parent. Two traps:
+#   - lerobot pins `dataloader_multiprocessing_context = "spawn"` (configs/train.py),
+#     deliberately NOT inheriting parent state -- so a parent-side
+#     set_sharing_strategy() never reaches the workers (measured: they still died).
+#   - a sitecustomize.py in the venv is USELESS here: /usr/lib/python3.12/
+#     sitecustomize.py already exists and the stdlib dir precedes site-packages on
+#     sys.path, so ours is shadowed and silently never imported (measured).
+# A .pth file has neither problem: `site` executes its `import` line in every
+# interpreter that uses this venv, spawned workers included, and .pth files do not
+# collide by name. It is gated on an env var so ordinary venv python start-up does
+# not pay for importing torch; env vars propagate to spawned children for free.
+#
+# Measured on this box, ACT / batch 8 / 2 cameras / 200 steps:
+#     num_workers=0            data_s 0.13   47 smp/s   40 s
+#     file_system + 4 workers  data_s 0.001 161 smp/s   16 s   (identical loss)
+_install_shm_workaround() {
+  local venv="$1" sp
+  sp="$("$venv/bin/python" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null)" \
+    || { err "could not locate site-packages in $venv"; return 1; }
+
+  # Remove the earlier, broken attempt if a previous setup run left one behind.
+  [ -f "$sp/sitecustomize.py" ] && grep -q "ur_ws setup" "$sp/sitecustomize.py" 2>/dev/null \
+    && rm -f "$sp/sitecustomize.py"
+
+  cat > "$sp/ur_ws_shm_fix.py" <<'EOF'
+"""Installed by ur_ws setup/setup.sh (stage `ml`) -- see SETUP.md 2-C.
+
+/dev/shm is 64 MiB in this container (Docker default) and cannot be enlarged --
+that needs the container recreated, and this one is shared with other projects.
+PyTorch's default 'file_descriptor' sharing strategy moves DataLoader batches
+through /dev/shm; one ACT batch is ~59 MiB, so workers intermittently die with
+"unable to allocate shared memory". 'file_system' uses the temp dir instead.
+
+Loaded via ur_ws_shm_fix.pth when UR_WS_TORCH_SHM_FIX=1, so it reaches spawned
+DataLoader workers too. Unset the variable for stock behaviour.
+"""
+import torch.multiprocessing as _mp
+
+_mp.set_sharing_strategy("file_system")
+EOF
+
+  # site executes any .pth line beginning with "import". Keep it on ONE line --
+  # that is a hard requirement of the .pth format. Failures must stay silent:
+  # a raising .pth breaks every interpreter in the venv.
+  cat > "$sp/ur_ws_shm_fix.pth" <<'EOF'
+import os; os.environ.get("UR_WS_TORCH_SHM_FIX") == "1" and __import__("importlib").import_module("ur_ws_shm_fix")
+EOF
+
+  if "$venv/bin/python" -c 'import sys' 2>&1 | grep -q .; then
+    err "the .pth broke interpreter start-up -- removing it"
+    rm -f "$sp/ur_ws_shm_fix.pth" "$sp/ur_ws_shm_fix.py"; return 1
+  fi
+  local got
+  got="$(UR_WS_TORCH_SHM_FIX=1 "$venv/bin/python" -c \
+        'import torch.multiprocessing as m; print(m.get_sharing_strategy())' 2>/dev/null)"
+  if [ "$got" != "file_system" ]; then
+    err "shm workaround did not take effect (strategy=$got) -- train with --num_workers=0"
+    return 1
+  fi
+  ok "shm workaround active (/dev/shm is only $(df -h /dev/shm 2>/dev/null | awk 'NR==2{print $2}'):"
+  echo "       run training with  UR_WS_TORCH_SHM_FIX=1  (see SETUP.md 2-C)"
 }
 
 _verify_torch_arch() {

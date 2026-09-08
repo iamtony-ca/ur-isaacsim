@@ -67,6 +67,27 @@
       <xacro:insert_block name="origin"/>
     </joint>
 
+    <!-- cuMotion tool frame. Pure alias: identity offset from the gripper base,
+         so it adds no geometry and needs no USD re-bake.
+
+         It exists because cuMotion's XRDF declares `tool_frames: [gripper_frame]`
+         and its MoveGroup plugin REJECTS any task-space goal whose target link is
+         not that exact name:
+             Target link 'tool0' does not match end effector 'gripper_frame'
+         cumotion/ur16e_2f85.urdf already had this frame appended, but the runtime
+         URDF did not, so MoveIt's model and cuMotion's model disagreed and every
+         Cartesian goal failed with PLANNING_FAILED. Declaring it here makes the two
+         models agree instead of maintaining the divergence.
+
+         Joint-space goals were unaffected, which is why this stayed hidden until
+         the first pose goal (plan_il_vla.md 3.2 state machine). -->
+    <link name="${prefix}gripper_frame"/>
+    <joint name="${prefix}gripper_frame_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="${prefix}robotiq_85_base_link"/>
+      <child link="${prefix}gripper_frame"/>
+    </joint>
+
     <!-- MASTER actuated joint (== ros2_control / Isaac finger_joint) -->
     <joint name="${prefix}finger_joint" type="revolute">
       <parent link="${prefix}robotiq_85_base_link"/>
