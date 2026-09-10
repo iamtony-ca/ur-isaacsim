@@ -68,6 +68,30 @@ def summarise(eps):
     return total
 
 
+def _thin_idle(frames, max_run, eps):
+    """Per-frame keep mask that caps runs of near-stationary frames.
+
+    Idle is measured from the recorded pair itself: action[t] = state[t+1] by the
+    recording convention, so |action - state| IS the motion that frame commands.
+    No differencing across frames, so a dropped neighbour cannot change the label
+    of the frames around it.
+    """
+    if not max_run:
+        return [True] * len(frames)
+    keep, run = [], 0
+    for fr in frames:
+        st = fr["state.single_arm"]
+        ac = fr["action.single_arm"]
+        moving = max(abs(a - b) for a, b in zip(ac, st)) > eps
+        # The gripper is the point of several pauses (it opens while the arm holds
+        # still), so a frame where only the gripper moves is NOT idle.
+        if not moving:
+            moving = abs(fr["action.gripper"][0] - fr["state.gripper"][0]) > eps
+        run = 0 if moving else run + 1
+        keep.append(moving or run <= max_run)
+    return keep
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -77,6 +101,22 @@ def main():
     ap.add_argument("--fps", type=int, default=None, help="override fps (default: from meta)")
     ap.add_argument("--robot-type", default="ur16e_2f85")
     ap.add_argument("--dry-run", action="store_true", help="inspect the raw set and exit")
+    # Idle-frame thinning. The state machine stops between phases (planning,
+    # gripper open/close, settling) and those stops are recorded at full rate:
+    # measured 65.8% of frames with per-step motion < 1e-4 rad, median motion
+    # 0.00000 rad. ACT regresses L1 on that, so "do not move" becomes the majority
+    # correct answer -- a policy trained on it drove to PRE_GRASP and froze there
+    # for 180 s while the training loss looked excellent (HISTORY.md 31).
+    #
+    # CAP rather than DELETE: dropping every idle frame would leave irregular gaps
+    # in a stream ACT reads as fixed-rate chunks. Keeping the first N frames of
+    # each idle run preserves "the arm pauses here" as a short event instead of a
+    # long plateau, and leaves moving segments untouched.
+    ap.add_argument("--max-idle-run", type=int, default=0,
+                    help="[frames] cap on consecutive near-stationary frames "
+                         "(0 = keep everything, as before)")
+    ap.add_argument("--idle-eps", type=float, default=1e-4,
+                    help="[rad] per-step joint motion at or below this counts as idle")
     args = ap.parse_args()
 
     if not os.path.isdir(args.raw):
@@ -133,8 +173,13 @@ def main():
                                robot_type=args.robot_type, features=features,
                                use_videos=True)
 
+    kept_tot = seen_tot = 0
     for d, meta, frames in eps:
+        keep = _thin_idle(frames, args.max_idle_run, args.idle_eps)
+        seen_tot += len(frames); kept_tot += sum(keep)
         for i, fr in enumerate(frames):
+            if not keep[i]:
+                continue
             frame = {
                 "observation.state": np.asarray(
                     fr["state.single_arm"] + fr["state.gripper"], dtype=np.float32),
@@ -150,8 +195,12 @@ def main():
             frame["task"] = meta["task"]
             ds.add_frame(frame)
         ds.save_episode()
-        print(f"  converted {os.path.basename(d)} ({len(frames)} frames)")
+        print(f"  converted {os.path.basename(d)} ({sum(keep)}/{len(frames)} frames)")
 
+    if args.max_idle_run:
+        print(f"\nidle thinning: kept {kept_tot}/{seen_tot} frames "
+              f"({100.0 * kept_tot / seen_tot:.1f}%), max_idle_run={args.max_idle_run}, "
+              f"idle_eps={args.idle_eps}")
     print(f"\ndone -> {args.repo_id}")
     return 0
 

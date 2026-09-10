@@ -97,6 +97,22 @@ def generate_launch_description():
                 executable="spawner",
                 arguments=["scaled_joint_trajectory_controller", "-c", "/controller_manager"],
             ),
+            # Streaming controller for teleop (OMY leader / MoveIt Servo) and for
+            # running a learned policy. Spawned INACTIVE: it shares the position
+            # command interfaces with scaled_joint_trajectory_controller, and
+            # controller_manager refuses to activate both. Switch with
+            # isaac/common/switch_control_mode.py {trajectory|streaming}.
+            #
+            # Sets 2/3 have had this since teleop; set 1 did not, so driving the
+            # BARE ARM from the OMY leader published into a topic no controller
+            # served -- omy_to_ur16e.py ran, logged nothing wrong, and the arm
+            # never moved.
+            Node(
+                package="controller_manager",
+                executable="spawner",
+                arguments=["forward_position_controller", "-c", "/controller_manager",
+                           "--inactive"],
+            ),
             Node(
                 package="rviz2",
                 executable="rviz2",

@@ -86,12 +86,22 @@ class UR16eROSConfig(RobotConfig):
     gripper_effort: float = 60.0
     gripper_deadband: float = 0.05
     # name -> image topic. The keys become observation.images.<key>, so they must
-    # match what the policy was trained with.
+    # match what the policy was trained with -- ONE ENTRY PER CAMERA THE POLICY
+    # SAW, no more and no less. Override for a wrist-only policy with:
+    #   --robot.cameras_ros='{"wrist": "/camera/color/image_raw"}'
+    # A key the policy does not know is ignored; a key it expects and does not get
+    # raises in prepare_raw_observation. Both are configuration, not code.
     cameras_ros: dict[str, str] = field(default_factory=lambda: {
         "exterior": "/static_cam/color/image_raw",
         "wrist": "/camera/color/image_raw",
     })
-    image_shape: tuple[int, int, int] = (480, 640, 3)
+    # Declared resolution of the incoming ROS images. This is metadata only: the
+    # upstream client resizes each image to the POLICY's feature shape
+    # (helpers.resize_robot_observation_image reads policy_image_features, not
+    # this), so a mismatch does not corrupt the input -- the 320x240 runs worked
+    # while this still said 480x640. Kept honest anyway, since a wrong number here
+    # is exactly the kind of thing that gets trusted later.
+    image_shape: tuple[int, int, int] = (240, 320, 3)
     obs_timeout: float = 2.0
     # Clamp per-command joint motion. There is no planner between a policy and
     # the hardware here, so a bad prediction is a fast move unless it is slewed.

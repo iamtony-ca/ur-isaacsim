@@ -148,38 +148,48 @@ class PickPlace(Node):
         p("approach_height", 0.15)       # [m] above the part for PRE_GRASP / TRANSFER
         p("lift_height", 0.20)           # [m] to raise the part after CLOSE
         p("place_clearance", 0.02)       # [m] gap above the marker when releasing
-        p("grip_closed", 0.8)            # GripperCommand convention (plan_il_vla 7-B)
-        # Close in TWO stages. Commanding grip_closed directly slams the fingers
-        # shut in a few physics steps and the part is EJECTED before Isaac's weld
-        # (D5) can fire -- measured: part at (0.597, -0.096, 0.225) after GRASP,
-        # then (1.258, -0.186, 0.036) after LIFT, i.e. flung across the table, and
-        # the weld fired in only 2 of 15 cycles.
-        # Pad gap is 84.8 * (1 - j/0.8) mm, so:
-        #     j=0.25 -> 58.3 mm   (Isaac's weld threshold, --grasp-close)
-        #     j=0.28 -> 55.7 mm   (this stop: still clear of a 50 mm cube)
-        #     j=0.33 -> 50.0 mm   (first contact with the cube)
-        # Stopping at 0.28 crosses the weld threshold while the pads are still not
-        # touching, so the part is welded and its collider disabled BEFORE any
-        # contact load exists. Closing the rest of the way is then harmless.
-        # Must sit ABOVE grip_approach (the jaws are already at 0.30 on the way
-        # down) and BELOW the opening where the pads start pressing the part:
-        # separation is 84.9*(1 - j/0.8) mm, so a 35 mm part is first touched at
-        # j = 0.47. 0.40 is inside that window, which is what lets the attach fire
-        # before the pads can squeeze the part out.
-        p("grip_preclose", 0.40)
-        p("grip_open", 0.0)
-        # Jaw opening used for the approach, the descent and the release (NOT the
-        # final close, and not the recovery open).
+        # Where the jaws STALL on a 35 mm part -- MEASURED, not derived.
         #
-        # Fully open is correct on real hardware, so that is the default. It is
-        # WRONG in Isaac: measured on the stock 2F-85 asset, descending onto a
-        # 50 mm cube, the gripper jams 15.7 mm ABOVE the cube at 0.00, 11.7 mm at
-        # 0.10/0.20, and only clears (29.6 mm below the top) at 0.30 -- something
-        # swings out and down as the jaws open wide. The same interference shoves
-        # a just-placed part 37 mm sideways on release. config/common/
-        # pick_place_sim.yaml overrides this to 0.30 for sim only; do not push
-        # that value onto real hardware, where 0.30 is barely wider than a 50 mm
-        # part.
+        # This used to be 0.8 (fully shut). With --grasp-attach that value is
+        # reachable, because the attach disables the part's collider at 0.25 and
+        # the fingers then close straight through it. The recorded gripper channel
+        # therefore sat at 1.0 while "holding", which a real 2F-85 can never
+        # report: it stalls on the part. The dataset had 40% of frames at 1.0 and
+        # only 1.8% anywhere near the real stall, so a policy trained on it would
+        # meet an unseen observation the first time it grips real hardware.
+        #
+        # 0.599 is where the jaws actually stop, read off /joint_states with the
+        # collider left ON (Isaac started without --grasp-attach, gripper
+        # commanded to 0.8, joint held 0.5988 for 20 s). The pad-gap formula
+        # predicted 0.470 and was WRONG AGAIN -- it is built on inner_finger link
+        # origins, the same proxy that caused the 31 mm aim error and the
+        # fabricated gripper inversion (HISTORY.md 26.2, 28, 33).
+        #
+        # Depends on part width: re-measure if --object-size changes.
+        p("grip_closed", 0.52)
+        # Close in TWO stages. Commanding grip_closed directly slams the fingers
+        # shut in a few physics steps and the part is EJECTED before Isaac's grasp
+        # attach (D5) can fire -- measured: part at (0.597, -0.096, 0.225) after
+        # GRASP, then (1.258, -0.186, 0.036) after LIFT, i.e. flung across the
+        # table, and the attach fired in only 2 of 15 cycles. So: stop part-way,
+        # let the attach fire, then close the rest of the way onto a part whose
+        # collider is already disabled.
+        #
+        # 0.28 sits just above --grasp-close 0.25 (the attach threshold) and below
+        # the opening where the pads reach a 35 mm part. The pad-gap figure that
+        # bounds the second half of that window is a LINK-ORIGIN proxy, and link
+        # origins are exactly what produced two wrong conclusions on 2026-09-09
+        # (HISTORY.md 26.2, 28) -- so this value is confirmed by looking at the
+        # grasp-moment wrist frames, not by the arithmetic.
+        p("grip_preclose", 0.28)
+        p("grip_open", 0.0)
+        # Jaw opening for the approach, the descent and the release (NOT the final
+        # close, and not the recovery open). Fully open, on both backends.
+        #
+        # This was briefly 0.30 in sim, to dodge a "descending fully open fouls on
+        # the part" effect. That effect was not real: the gripper convention had
+        # been mis-diagnosed as inverted, so commanding 0 was physically CLOSING
+        # the jaws and the arm was descending shut. HISTORY.md 28.
         p("grip_approach", 0.0)
         p("grip_effort", 60.0)
         p("vel_scale", 0.2)
@@ -191,7 +201,7 @@ class PickPlace(Node):
         # the old ori_tol of 0.05 rad (~3 deg) a 0.15 m descent lands ~8 mm off
         # sideways, and the part was measured moving 11 mm before the gripper even
         # closed. A nudged part then gets caught corner-on, the fingers stall below
-        # the weld threshold (grasp_close 0.25), and the squeeze flings it away
+        # the attach threshold (grasp_close 0.25), and the squeeze flings it away
         # -- observed: part ended at (0.194, 0.150, 0.040), across the room.
         # Reverted to the values that plan reliably. Tightening these to
         # 0.005 / 0.01 rad did NOT stop the part being nudged (still 11 mm) and
@@ -201,7 +211,25 @@ class PickPlace(Node):
         p("pos_tol", 0.01)               # [m] goal position tolerance
         p("ori_tol", 0.05)               # [rad] per-axis orientation tolerance
         p("tcp_offset", -1.0)            # [m] tool0->pads; <0 means "measure from TF"
+        # [m] from the finger_tip_link ORIGIN to the middle of the rubber pad,
+        # along the tool axis. The link origin is at the fingertip's proximal end;
+        # robotiq_description's collision mesh runs -6..+51 mm from it. Applies to
+        # sim and real alike -- see measure_tcp_offset().
+        p("pad_offset", 0.032)
         p("settle_time", 0.7)            # [s] let physics settle before judging
+        # --- arrival checking (HISTORY.md 32) --------------------------------
+        # Two tolerances, because the two kinds of move need different things.
+        # precise: end of a straight-line move, where the gripper then acts.
+        # approach: a waypoint 150 mm away that the next absolute move re-zeros.
+        # Measured: PRE_GRASP/TRANSFER plateau at 7.2-7.3 mm and never reach 3 mm,
+        # so the old single 3 mm tolerance burned the full 5 s timeout twice per
+        # cycle -- 10 s of 41 s, all of it recorded as stationary frames.
+        p("settle_tol_precise", 0.003)   # [m]
+        p("settle_tol_approach", 0.010)  # [m]
+        # Give up waiting once the error stops improving for this long. What
+        # remains after a joint-space move is a steady-state offset, not a
+        # decaying transient: it does not shrink no matter how long you wait.
+        p("settle_plateau", 0.8)         # [s]
         # 0.06 was too generous: a cycle that DROPPED the part mid-transfer still
         # passed, because the part happened to land 57 mm from the marker. That
         # episode then gets SAVED and teaches the policy that fumbling is fine.
@@ -212,7 +240,7 @@ class PickPlace(Node):
         # the part sideways. The pads are 85 mm apart open and only ~0 mm closed, so
         # gripping the upper part of the cube holds it just as well -- and it is what
         # you would do with a real 2F-85 on a part resting on a bench.
-        p("grasp_z_offset", 0.015)       # [m] above the part origin to place the TCP
+        p("grasp_z_offset", 0.015)       # [m] above the part origin (measured, HISTORY.md 34)
         # How far BELOW the real surface to put the table's collision box.
         # The table is in the planning scene to stop the ARM sweeping through the
         # work surface -- not to stop the FINGERS approaching it, which every grasp
@@ -250,7 +278,8 @@ class PickPlace(Node):
         for k in ("approach_height", "lift_height", "place_clearance", "grip_closed",
                   "grip_preclose",
                   "grip_open", "grip_approach", "grip_effort", "vel_scale", "acc_scale", "plan_time",
-                  "pos_tol", "ori_tol", "tcp_offset", "settle_time", "place_tol",
+                  "pos_tol", "ori_tol", "tcp_offset", "pad_offset", "settle_time", "place_tol",
+                  "settle_tol_precise", "settle_tol_approach", "settle_plateau",
                   "grasp_z_offset", "table_sink"):
             setattr(self, k, float(g(k)))
         self.plan_attempts = int(g("plan_attempts"))
@@ -336,11 +365,75 @@ class PickPlace(Node):
         while rclpy.ok() and self.get_clock().now() < end:
             rclpy.spin_once(self, timeout_sec=0.02)
 
-    def measure_tcp_offset(self):
-        """Distance along tool0's z from tool0 to the midpoint of the finger pads.
+    def wait_for(self, pred, timeout, what):
+        """Spin until `pred()` holds, or `timeout` (sim seconds) elapses.
 
-        Measured from TF so it follows the URDF instead of duplicating it. Falls
-        back to the parameter only if it was set explicitly.
+        Replaces the fixed sleeps that used to guard the same conditions. A blind
+        sleep is wrong in both directions: too short and the check below it runs
+        on stale physics, too long and the surplus is recorded as stationary
+        frames -- and stationary frames are what taught ACT to hold still
+        (HISTORY.md 31). Waiting for the event itself is both faster and stricter.
+
+        Returns True if the condition was met, False on timeout. Callers keep
+        their own check afterwards, so a timeout degrades to the old behaviour
+        rather than skipping a guard.
+        """
+        end = self.get_clock().now() + Duration(seconds=timeout)
+        while rclpy.ok() and self.get_clock().now() < end:
+            if pred():
+                return True
+            rclpy.spin_once(self, timeout_sec=0.02)
+        self.get_logger().debug(f"{what}: timed out after {timeout:.1f}s")
+        return False
+
+    def wait_part_still(self, timeout, what, tol=0.001):
+        """Spin until the part stops moving, or `timeout`.
+
+        Used before judging placement. The part is dropped from a couple of
+        centimetres and needs to come to rest before its pose means anything --
+        but it usually rests in a fraction of the old fixed 0.7 s.
+        """
+        end = self.get_clock().now() + Duration(seconds=timeout)
+        prev = None
+        still = 0
+        while rclpy.ok() and self.get_clock().now() < end:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            if self.object_pose is None:
+                continue
+            q = self.object_pose.pose.position
+            cur = (q.x, q.y, q.z)
+            if prev is not None and max(abs(a - b) for a, b in zip(cur, prev)) < tol:
+                still += 1
+                if still >= 5:          # ~5 consecutive quiet samples
+                    return True
+            else:
+                still = 0
+            prev = cur
+        return False
+
+    def measure_tcp_offset(self):
+        """Distance along tool0's z from tool0 to the GRIPPING SURFACE.
+
+        Two parts, and the second one used to be missing:
+
+        1. gripper_frame -> robotiq_85_*_finger_tip_link, read from TF so it
+           follows the URDF instead of duplicating it (the coupling standoff
+           differs per set -- CLAUDE.md pitfall 7).
+        2. that link's ORIGIN is not the pad. It sits at the proximal end of the
+           fingertip: the collision mesh (robotiq_description
+           meshes/collision/left_finger_tip.stl) spans z = -6..+51 mm from it, and
+           the tip link's rotation relative to gripper_frame is identity, so the
+           rubber pad centre is `pad_offset` further along the same axis.
+
+        Treating the link origin as the pad aimed the whole grasp ~31 mm high.
+        In Isaac that drove the fingers into the table (the arm jammed and shoved
+        the part aside); on real hardware it would have done the same. This is a
+        SHARED correction, not a sim workaround -- which is why pad_offset has a
+        real default rather than living in pick_place_sim.yaml.
+
+        Cross-check, two independent models agreeing to ~1 mm:
+            URDF  : tip link 0.0983 + mesh    -> pad centre ~0.1303 m
+            Isaac : pad mesh measured in USD  -> pad centre  0.1294 m
         """
         if self.tcp_offset >= 0.0:
             self.get_logger().info(f"tcp_offset pinned by parameter: {self.tcp_offset:.4f} m")
@@ -382,10 +475,11 @@ class PickPlace(Node):
         else:
             self.get_logger().error("finger tip TF never settled; refusing to guess the TCP")
             return False
-        self.tcp_offset = prev
+        self.tcp_offset = prev + self.pad_offset
         self.get_logger().info(
-            f"measured tcp_offset ({self.ee} -> pad midpoint, gripper open) "
-            f"= {self.tcp_offset:.4f} m")
+            f"measured tcp_offset ({self.ee} -> finger pad, gripper open) "
+            f"= {self.tcp_offset:.4f} m  "
+            f"(tip link {prev:.4f} + pad_offset {self.pad_offset:.4f})")
         return True
 
     def tool0_pose_for_tcp(self, x, y, z, yaw):
@@ -478,7 +572,12 @@ class PickPlace(Node):
             f"{what}: {self.ee} -> xyz=({xyz[0]:.3f}, {xyz[1]:.3f}, {xyz[2]:.3f})")
         ok = self._send_move(c, what)
         if ok:
-            self.wait_settled(xyz, what)
+            # Approach tolerance, not grasp tolerance. This is a joint-space move
+            # to a waypoint 150 mm above the part; the straight-line descent that
+            # follows targets ABSOLUTE coordinates and re-zeros whatever is left
+            # here (measured: PRE_GRASP ends 7.4 mm off, GRASP then settles to
+            # 0.2 mm). Demanding 3 mm here bought nothing and cost 5 s.
+            self.wait_settled(xyz, what, tol=self.settle_tol_approach)
             self.report_pose_error(xyz, what)
         # Log where the part is after every motion. Without this a knocked-over part
         # only shows up as a generic "grasp failed" at the end, with no clue which
@@ -564,14 +663,15 @@ class PickPlace(Node):
             self.get_logger().error(f"{what}: execution failed ({code})")
             return False
         self.get_logger().info(f"{what}: ok (fraction {res.fraction:.2f})")
-        self.wait_settled(xyz, what)
+        # Tight on purpose: the gripper acts at the end of these moves.
+        self.wait_settled(xyz, what, tol=self.settle_tol_precise)
         self.report_pose_error(xyz, what)
         if self.object_pose is not None:
             q = self.object_pose.pose.position
             self.get_logger().info(f"{what}: part now at ({q.x:.3f}, {q.y:.3f}, {q.z:.3f})")
         return True
 
-    def wait_settled(self, want, what, tol=0.003, timeout=5.0):
+    def wait_settled(self, want, what, tol=None, timeout=5.0):
         """Wait until `ee_link` has actually REACHED `want`.
 
         *** The controller reports SUCCEEDED before the arm gets there. ***
@@ -581,11 +681,13 @@ class PickPlace(Node):
         The sim arm trails its position command, so acting on "trajectory done"
         means closing the gripper ~18 mm off-centre -- exactly the direction the
         part was seen being pushed. Everything downstream (part knocked, corner
-        grip, fingers stalling below the weld threshold, part flung across the
+        grip, fingers stalling below the attach threshold, part flung across the
         room) follows from not waiting here.
         """
+        tol = self.settle_tol_precise if tol is None else tol
         end = time.monotonic() + timeout
         best = None
+        best_t = time.monotonic()
         while time.monotonic() < end:
             rclpy.spin_once(self, timeout_sec=0.05)
             try:
@@ -594,10 +696,29 @@ class PickPlace(Node):
             except Exception:
                 continue
             err = math.sqrt((t.x - want[0]) ** 2 + (t.y - want[1]) ** 2 + (t.z - want[2]) ** 2)
-            best = err if best is None else min(best, err)
+            if best is None or err < best - 0.0002:      # 0.2 mm = real improvement
+                best, best_t = err, time.monotonic()
             if err <= tol:
                 self.get_logger().info(f"{what}: settled ({err * 1000:.1f} mm)")
                 return True
+            # PLATEAU EXIT. What is left after a joint-space move is a STEADY-STATE
+            # offset, not a decaying oscillation: the topic_based backend follows
+            # the position command and whatever gap remains does not shrink with
+            # time. Measured, every cycle: PRE_GRASP and TRANSFER stalled at
+            # 7.2/7.3 mm and burned the full 5 s timeout -- 10 s per 41 s cycle,
+            # 24% of every episode spent holding still for nothing. That idle mass
+            # is what taught ACT to freeze (HISTORY.md 31).
+            #
+            # Waiting longer cannot help once the error stops improving, so stop.
+            # The tolerance itself is NOT relaxed: the caller still learns it did
+            # not reach `tol`, and the tight check still guards GRASP/PLACE, where
+            # arriving late means closing the gripper off-centre.
+            if time.monotonic() - best_t > self.settle_plateau:
+                self.get_logger().info(
+                    f"{what}: converged at {best * 1000:.1f} mm "
+                    f"(no improvement for {self.settle_plateau:.1f}s; tol "
+                    f"{tol * 1000:.0f} mm)")
+                return best <= tol
         self.get_logger().warn(
             f"{what}: did NOT settle within {tol * 1000:.0f} mm "
             f"(best {(best or 0) * 1000:.1f} mm) after {timeout:.0f}s")
@@ -638,7 +759,41 @@ class PickPlace(Node):
         # which is exactly what a successful grasp looks like. Whether the part
         # actually came up is judged from GT after LIFT instead.
         self.get_logger().info(f"{what}: commanded {position:.2f}")
-        self.sleep(0.5)
+        # Wait for the jaws to ARRIVE instead of sleeping a fixed 0.5 s. Same
+        # reasoning as wait_settled: a blind sleep is either too short (acting on
+        # jaws still moving) or too long (recorded as stationary frames, which is
+        # what taught ACT to freeze -- HISTORY.md 31). Plateau-exit covers the
+        # stall-on-the-part case, where finger_joint deliberately never arrives.
+        #
+        # *** The plateau exit must not fire BEFORE the jaws start moving. ***
+        # It did: `best` was seeded from the first sample, nothing had moved yet,
+        # and 0.3 s later this returned with the jaws still open. The attach check
+        # that follows then had only its own 0.8 s to cover the whole close, which
+        # is enough in a warm process and not enough in a fresh one -- exactly the
+        # non-monotonic attach_failed pattern seen in the grasp-depth sweep
+        # (0.010 ok, 0.007 fail, 0.005 ok, 0.003 fail) that looked like a depth
+        # effect and was not. So: require observed motion before allowing it.
+        end = time.monotonic() + 2.5
+        start_fj = None
+        best, best_t = None, time.monotonic()
+        moved = False
+        while time.monotonic() < end:
+            rclpy.spin_once(self, timeout_sec=0.02)
+            fj = self.finger_joint()
+            if fj is None:
+                continue
+            if start_fj is None:
+                start_fj = fj
+            if abs(fj - start_fj) > 0.02:
+                moved = True
+            err = abs(fj - position)
+            if err <= 0.01:
+                return True
+            if best is None or err < best - 0.005:
+                best, best_t = err, time.monotonic()
+            # Stalled ON THE PART (a real grasp) -- but only once it has moved.
+            if moved and time.monotonic() - best_t > 0.3:
+                return True
         return True
 
     def il_call(self, which):
@@ -665,7 +820,11 @@ class PickPlace(Node):
         r = fut.result()
         if r is not None:
             self.get_logger().info(f"reset_episode: {r.message}")
-        self.sleep(1.0)                   # let the part settle where it was dropped
+        # The reset teleports the objects; wait for them to come to rest rather
+        # than sleeping 1.0 s. This is OUTSIDE the recorded window (recording
+        # starts later, deliberately, so the episode does not open with a part
+        # teleporting into place) so it costs cycle time, not data quality.
+        self.wait_part_still(1.0, "reset settle")
         return r is not None and r.success
 
     def add_table_to_scene(self):
@@ -820,6 +979,12 @@ class PickPlace(Node):
         ok, reason = self._run_cycle_inner(index)
         if self.record:
             self.il_call("stop" if ok else "discard")
+        if ok:
+            # Outside the recorded window on purpose -- see the note in
+            # _run_cycle_inner where this move used to live. The failure path does
+            # the same thing in _release_after_failure().
+            if not self.move_joints(READY, "READY(next cycle)"):
+                return False, "plan_failed_ready"
         if not ok:
             # Let go NOW, in this process, while the scene services are still up.
             # A cycle that fails after CLOSE leaves the fingers loaded against the
@@ -894,18 +1059,21 @@ class PickPlace(Node):
         if not self.move_linear(xyz, q, "GRASP"):
             return False, "plan_failed_grasp"
 
-        # CLOSE, in two stages (see grip_preclose). Isaac welds the part
+        # CLOSE, in two stages (see grip_preclose). Isaac attaches the part
         # automatically (D5) -- do NOT call /scene/attach_object here: the
         # automatic path is what teleop and the real robot do, and calling the
         # service would make recorded demos differ from lived ones (HISTORY.md 16).
         if not self.gripper(self.grip_preclose, "CLOSE(pre)"):
             return False, "gripper_failed"
-        self.sleep(0.8)                       # let the weld fire before contact
+        # Wait for the attach EVENT, not a fixed 0.8 s. /scene/grasp_active tells
+        # us exactly when it fired; the check below is unchanged, so a timeout
+        # still fails the cycle rather than closing blind.
+        self.wait_for(lambda: self.grasp_active, 0.8, "attach")
         if not self.grasp_active:
             self.get_logger().error(
-                "weld did not fire at the pre-close stop; closing further would "
+                "grasp attach did not fire at the pre-close stop; closing further would "
                 "eject the part")
-            return False, "weld_failed"
+            return False, "attach_failed"
         if not self.gripper(self.grip_closed, "CLOSE"):
             return False, "gripper_failed"
 
@@ -914,7 +1082,13 @@ class PickPlace(Node):
             return False, "plan_failed_lift"
 
         # Did the part actually come up? This is what GT is genuinely for.
-        self.sleep(self.settle_time)
+        # Wait for the condition itself: a successful lift satisfies it almost
+        # immediately, and only a genuine failure spends the full timeout.
+        lift_z = oz + 0.5 * self.lift_height
+        self.wait_for(
+            lambda: self.object_pose is not None
+            and self.object_pose.pose.position.z >= lift_z,
+            self.settle_time, "lift check")
         if self.object_pose is None or \
                 self.object_pose.pose.position.z < oz + 0.5 * self.lift_height:
             got = None if self.object_pose is None else self.object_pose.pose.position.z
@@ -945,7 +1119,7 @@ class PickPlace(Node):
         if not self.move_linear(xyz, q, "PLACE"):
             return False, "plan_failed_place"
 
-        # OPEN. Isaac's automatic rule releases the weld when the gripper opens.
+        # OPEN. Isaac's automatic rule releases the attach when the gripper opens.
         # Release only as far as grip_approach, NOT wide open. Fully opening is
         # what jams the descent, and it does the same damage on the way out:
         # measured, PLACE put the part within 1.2 mm of the marker and the
@@ -953,16 +1127,24 @@ class PickPlace(Node):
         # grasp_release must sit ABOVE this value or the attach never lets go.
         if not self.gripper(self.grip_approach, "OPEN"):
             return False, "gripper_failed"
-        self.sleep(self.settle_time)
+        # Retract as soon as the part is released, not after a fixed delay.
+        self.wait_for(lambda: not self.grasp_active, self.settle_time, "release")
 
         xyz, q = self.tool0_pose_for_tcp(px, py, pz + self.approach_height, gyaw)
         if not self.move_linear(xyz, q, "RETRACT"):
             return False, "plan_failed_retract"
-        if not self.move_joints(READY, "READY"):
-            return False, "plan_failed_ready"
+
+        # NOTE: the READY return used to be here, INSIDE the recorded window. It is
+        # now in run_cycle(), after the recorder stops. Going back to READY is
+        # preparation for the next cycle, not part of "put the block on the marker",
+        # and at ~4.5 s of motion plus its settle it was a sizeable tail of every
+        # episode. The next cycle still starts from READY, so nothing the policy
+        # sees at t=0 changes.
 
         # Judge from GT: is the part on the marker, and did we let go?
-        self.sleep(self.settle_time)
+        # The part is dropped from ~20 mm and must come to rest before its pose
+        # means anything -- but it usually does so well inside settle_time.
+        self.wait_part_still(self.settle_time, "place judge")
         fp = self.object_pose.pose.position
         dist = math.hypot(fp.x - px, fp.y - py)
         if dist > self.place_tol:

@@ -24,14 +24,57 @@
     approach_height: 0.15      # [m] above the part for PRE_GRASP / TRANSFER
     lift_height: 0.20          # [m] to raise the part after CLOSE
     place_clearance: 0.02      # [m] gap above the marker when releasing
-    grasp_z_offset: 0.015      # [m] aim this far above the part centre
+    # [m] above the part origin. 0.015 -- and going DEEPER does not work.
+    #
+    # MEASURED, and the first measurement was judged on the wrong criterion:
+    #   success rate   0.010 = 6/6,  0.012 = 6/6,  0.015 = 6/6   <- looked equal
+    #   cycle time     0.010 = 29.6s, 0.012 = 28.3s, 0.015 = 10.9s
+    # The deeper settings still SUCCEED, they just burn ~15 s per cycle inside
+    # gripper()'s action-result wait, and that time is recorded as stationary
+    # frames: it took the dataset from 9.1% idle (v3) to 26.2% (v4), which is the
+    # thing that makes ACT freeze (HISTORY.md 31). Below ~0.007 it fails outright,
+    # finger_joint stalling at 0.103 (HISTORY.md 34).
+    #
+    # Mechanism: deeper puts the fingers into the table, and the reaction makes the
+    # grasp attach flap -- WELD/released pairs 58 ms apart were logged -- so the
+    # GripperCommand action never reports done.
+    #
+    # ★ Judging a grasp parameter by success rate alone is not enough. Time it.
+    #
+    # Costs: the pads end 2.5 mm below the top of a 35 mm block, a shallow grip
+    # that holds here only because the attach is a FixedJoint. A real 2F-85 would
+    # want more, so on real hardware raise the TABLE-to-part clearance (thinner
+    # table collision, taller part) rather than lowering this.
+    grasp_z_offset: 0.015
 
-    # Gripper, in the URDF / robotiq_driver convention: 0 = open, 0.8 = closed.
+    # Gripper, in the URDF / robotiq_driver convention: 0 = open, 0.8 = FULLY shut.
     # tcp_offset < 0 means "measure gripper_frame -> finger tips from TF", which
     # follows the URDF instead of duplicating it -- correct on real hardware.
-    grip_closed: 0.8
+    #
+    # grip_closed is the opening where the pads MEET the part, not where the
+    # drive gives up pushing into it. Those are different, and the difference is
+    # visible: at 0.599 the fingers were seen biting into the block (user's
+    # observation, 2026-09-09), because 0.599 was measured by commanding 0.8 at
+    # max_effort 100 and reading where the joint settled -- a force BALANCE point,
+    # already well inside the part.
+    #
+    # Stepped shut at max_effort 10 with the block's collider on and the arm
+    # parked on the block (HISTORY.md 35):
+    #     cmd 0.48 -> fj 0.4801   commanded = actual, still free
+    #     cmd 0.50 -> fj 0.5000   block first moves        <- pads meet the part
+    #     cmd 0.60 -> fj 0.5406   actual lags: pushing in
+    #     cmd 0.80 -> fj 0.5669   goes no further
+    # So contact starts near 0.50 and 0.599 is ~0.1 rad of squeeze past it.
+    #
+    # 0.52 is just past contact: the pads close ON the part without driving into
+    # it, which is what a real 2F-85 does before it stalls.
+    #
+    # Depends on part width. Re-measure if --object-size changes.
+    grip_closed: 0.52
     grip_open: 0.0
-    grip_preclose: 0.40
+    # Below grip_closed and above --grasp-close 0.25, so the attach fires here
+    # while the pads are still clear of the part.
+    grip_preclose: 0.28
     grip_effort: 60.0
     tcp_offset: -1.0
 

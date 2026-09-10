@@ -9,13 +9,14 @@ same MoveIt actions. This is what makes "prove it in sim, then run it on the rea
 arm" a configuration change rather than a rewrite.
 
     pick_place.yaml       task parameters, both backends
-    pick_place_sim.yaml   ON TOP, sim only: compensations for the stock Isaac
-                          2F-85 asset disagreeing with the ROS URDF
+    pick_place_sim.yaml   ON TOP, sim only
 
-The sim file is layered LAST so it wins, and it is absent on real hardware, where
-the code defaults (which follow the URDF) are the correct ones. Getting this
-direction right matters: forget the sim file and sim fails loudly and obviously;
-leak it onto the real robot and the arm aims 31 mm low into the table.
+The sim file is layered LAST so it wins, and it is absent on real hardware. It is
+currently EMPTY: both overrides it once carried turned out to be bugs, not real
+sim/real differences (see the file's own header, and HISTORY.md 28). The seam is
+kept because a genuine difference will show up the day the real gripper runs, and
+because getting the direction right matters -- a sim compensation that leaks onto
+the real robot aims the arm into the table.
 
 Expects the control stack and MoveIt to be up already -- see README.md.
 """
@@ -57,8 +58,12 @@ def generate_launch_description():
                               description="e.g. /scene/objects/red/pose"),
         DeclareLaunchArgument("place_topic", default_value="/scene/place_pose",
                               description="e.g. /scene/places/left/pose"),
-        DeclareLaunchArgument("extra_params", default_value="",
-                              description="optional extra YAML, layered last"),
+        # Layered LAST, so it wins over both files above. Defaults to an empty
+        # overrides file rather than "": the argument was previously declared and
+        # never used, so anything passed to it was silently dropped.
+        DeclareLaunchArgument(
+            "extra_params", default_value=os.path.join(cfg, "empty_overrides.yaml"),
+            description="extra YAML, layered last (wins over pick_place*.yaml)"),
     ]
 
     common = [
@@ -77,12 +82,13 @@ def generate_launch_description():
     sim_node = Node(
         package="ur_bringup", executable="pick_place_demo.py", name="pick_place_demo",
         output="screen", condition=IfCondition(use_sim),
-        parameters=[common[0], os.path.join(cfg, "pick_place_sim.yaml"), common[1]],
+        parameters=[common[0], os.path.join(cfg, "pick_place_sim.yaml"), common[1],
+                    LaunchConfiguration("extra_params")],
     )
     real_node = Node(
         package="ur_bringup", executable="pick_place_demo.py", name="pick_place_demo",
         output="screen",
         condition=UnlessCondition(use_sim),
-        parameters=common,
+        parameters=common + [LaunchConfiguration("extra_params")],
     )
     return LaunchDescription(args + [sim_node, real_node])

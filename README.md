@@ -9,11 +9,17 @@
 - 이 문서는 **현재 상태** 기준 정리. 변경 이력·검증 로그·디버깅 교훈은 [`HISTORY.md`](HISTORY.md),
   실물 HW 연결 후 절차는 [`HARDWARE.md`](HARDWARE.md), 재현 매뉴얼은 [`SETUP.md`](SETUP.md),
   개념 Q&A 는 [`qna.md`](qna.md).
-- **계획/설계(구현 전)**:
-  **IL/VLA 정본** = [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md)(LeRobot → ACT → 소형 VLA → GR00T),
-  **작업레이어 정본** = [`to_do.md`](to_do.md)(foundation-model perception + pick&place 상태머신;
-  그 M3 가 IL 데이터 생성 엔진을 겸함),
-  [`LEARNING.md`](LEARNING.md)는 **RL insertion 설계로 보존**(IL 절반은 `plan_il_vla.md` 로 대체됨).
+- **★ 새 PC 에서 처음부터 실물까지** = [`CHECKLIST.md`](CHECKLIST.md).
+  설치 → 하드웨어 0개 검증 → 팔 → 리더 → 그리퍼 → 카메라 순서를 체크박스로만 정리한 것.
+  *왜* 그렇게 하는지는 SETUP/HARDWARE 로 링크가 걸려 있다.
+- **★ IL 파이프라인 실행 명령** = [`PIPELINE.md`](PIPELINE.md).
+  수집 → 변환 → 학습 → 추론을 재현하는 명령 전부와, 각 단계의 **합격 기준**(정지 프레임·그리퍼
+  최대값·롤아웃 판정). 9/10 까지 확인한 그 명령들이다.
+- **계획/설계**: **IL/VLA 정본** = [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md)
+  (teleoperation → LeRobot ACT → 소형 VLA → GR00T N1.7). 이 워크스페이스의 방향은 이 문서 하나로 읽으면 된다.
+- **보류**: IL/VLA 전환 이전 트랙의 설계문서(`to_do.md` foundation perception,
+  `LEARNING.md` RL insertion)는 [`archive/`](archive/) 로 옮겼다. 삭제가 아니라 보류이며,
+  사유·살아남은 부분의 행방·복귀 시 주의사항은 [`archive/README.md`](archive/README.md).
 
 ---
 
@@ -228,8 +234,8 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=true cycles:=6       #
 #   ur_only:=false 필수 — true 면 move_group 이 팔만 아는 모델을 써서 gripper_frame 을 모르고,
 #   MoveIt 은 모르는 링크 제약을 "이미 만족"으로 처리해 매번 SUCCESS 를 반환하며 팔이 안 움직인다.
 #   그리퍼 관련 값은 스크립트/런치 기본값에 들어 있어 명령줄에 쓸 필요가 없다.
-#   sim 전용 보정(tcp_offset·grip_approach)은 config/common/pick_place_sim.yaml 에 격리되어
-#   use_sim:=true 일 때만 로드된다. 왜 필요한지는 HISTORY.md §26.
+#   config/common/pick_place_sim.yaml(use_sim:=true 일 때만 로드)은 sim 전용 보정 자리인데
+#   지금은 비어 있다 — 있던 두 보정이 sim/real 차이가 아니라 우리 버그였다. HISTORY.md §29.
 ```
 
 ---
@@ -259,11 +265,10 @@ ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py \
 
 # pick & place — sim 과 같은 상태머신, 백엔드만 다르다
 ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
-#   use_sim:=false 는 config/common/pick_place_sim.yaml 을 로드하지 않는다. 그 파일의 값
-#   (tcp_offset 0.1294, grip_approach 0.30)은 Isaac 2F-85 에셋의 결함을 덮는 sim 전용
-#   보정이고 실물에서는 전부 틀리다 — grip_approach 0.30 은 50 mm 물체보다 좁고,
-#   tcp_offset 0.1294 는 실물 팔을 31 mm 낮게 조준시켜 테이블에 부딪친다. HISTORY.md §26.
-#   실물에서는 코드 기본값(URDF/TF 기준)이 맞는 값이다.
+#   use_sim:=false 는 config/common/pick_place_sim.yaml 을 로드하지 않는다. 그 파일은
+#   현재 비어 있으므로 지금은 sim 과 real 이 **완전히 같은 파라미터**로 돈다(HISTORY.md §29).
+#   배선을 남겨둔 이유는 방향이 중요해서다: sim 파일을 빠뜨리면 sim 이 시끄럽게 실패하지만,
+#   sim 보정이 실물로 새면 팔이 테이블을 향해 조준된다(§26.2 의 31 mm 가 그랬다).
 #   ⚠ 첫 실행은 반드시 cycles:=1 로, 속도를 낮춰(vel_scale/acc_scale) 사람이 지켜보며.
 ```
 
@@ -281,6 +286,22 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 
 위 sim 항목은 **Isaac Sim 6.0.1 / RTX 5090 에서 2026-09-06 전수 재검증**됨.
 자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피, §14 Isaac Sim 6.0.1 이식).
+
+### IL 트랙 (ACT) — 2026-09-09
+
+| 항목 | 상태 |
+|---|---|
+| 수집 (GT 상태머신) | ✅ 100/100, 사이클 11 s, 정지 프레임 8.6% |
+| 변환 (LeRobot v3.0) | ✅ 43,222 프레임 @30 Hz, 320×240 ×2 cam, 후처리 불필요 |
+| 학습 (ACT 60k) | ✅ 1 h 08 m, loss 0.029 |
+| **롤아웃** | ✅ **9/10**, 성공 시 평균 오차 **7.6 mm** (최소 1 mm) |
+
+정책 체크포인트 `outputs/act_red_left_100`, 데이터셋 `outputs/lerobot_ds_red_left_100`.
+여기까지 오는 데 고친 것들(그리퍼 규약·대기시간·그립 기하·데이터량)은 [`HISTORY.md`](HISTORY.md)
+§28~§38. **특히 §35.4 — "측정했다"와 "맞는 것을 측정했다"는 다르다.**
+
+**★ ACT 는 지시문을 읽지 않는다**(§30). 태스크 1종당 데이터셋 1개·체크포인트 1개.
+여러 태스크를 섞은 `outputs/lerobot_ds_240_v2` 는 VLA(GR00T/π) 단계용이다.
 
 ---
 

@@ -1,0 +1,8 @@
+# Default for pick_place_demo.launch.py's `extra_params`.
+#
+# The argument used to be declared and then never passed to the Node -- an
+# override handed to it was silently ignored. Layering a parameter file
+# conditionally is awkward in launch, so the seam is always present and this file
+# is what sits in it when the caller has nothing to say.
+/**:
+  ros__parameters: {}

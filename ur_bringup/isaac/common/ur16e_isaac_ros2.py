@@ -143,18 +143,14 @@ parser.add_argument("--grasp-attach", action="store_true",
                          "*** Sim-only mechanism. It is INVISIBLE to a policy: the policy sees "
                          "images + joint states, which look the same as on the real robot where "
                          "real friction does the holding. Never put grasp state in the dataset. ***")
-# These two must BRACKET the demo's grip_approach (0.30 in sim -- see
-# config/common/pick_place_sim.yaml). The arm approaches and releases at that
-# opening, not at 0, because opening the stock 2F-85 asset all the way fouls both
-# the descent and the release. So:
-#   * grasp-close must be ABOVE it, or the attach is armed the whole way down and
-#     welds whatever drifts within grasp-distance before the arm is in position;
-#   * grasp-release must be just above it too, or opening only as far as 0.30
-#     never crosses the release threshold and the part is carried into the next
-#     cycle still attached.
-parser.add_argument("--grasp-close", default="0.35",
+# The arm approaches, descends and releases FULLY OPEN (0), so these sit low:
+# close above 0 by enough that the attach only arms once the demo really closes,
+# release above 0 so opening back up always crosses it. 0.35/0.32 were needed
+# only while grip_approach was 0.30, which was itself a workaround for the
+# inverted-convention mistake (HISTORY.md 28).
+parser.add_argument("--grasp-close", default="0.25",
                     help="finger_joint [rad] above which the gripper counts as closing (attach arms)")
-parser.add_argument("--grasp-release", default="0.32",
+parser.add_argument("--grasp-release", default="0.15",
                     help="finger_joint [rad] below which the part is released")
 parser.add_argument("--grasp-distance", default="0.09",
                     help="max distance [m] from the finger midpoint to the object centre for attach")
@@ -170,18 +166,12 @@ parser.add_argument("--grasp-tips", default="wrist_3_link/gripper/Robotiq_2F_85/
 parser.add_argument("--gripper-collision", default="convexDecomposition",
                     choices=["convexDecomposition", "convexHull", "none"],
                     help="collision approximation for the 2F-85 meshes. The stock asset ships\n                         convexHull, which FILLS the concave inner finger/knuckle and closes the\n                         jaw: measured, the gripper then cannot descend past the top of the part\n                         it is meant to grasp. 'none' leaves the asset alone")
+parser.add_argument("--camera-res", default="640x480",
+                    help="WxH for BOTH the eye-in-hand and the static camera. Lower is often\n                         better for IL: ACT feeds the dataset resolution straight into its\n                         ResNet, and GR00T N1.7 resizes everything to 256x256 anyway\n                         (N1_7_DEFAULT_IMAGE_TARGET_SIZE), so 640x480 is discarded there. It\n                         also decides whether DataLoader workers fit in a 64 MiB /dev/shm:\n                         2 cameras x batch 8 is 56 MiB at 640x480 but 14 MiB at 320x240.\n                         NOTE the static camera also feeds nvblox obstacle mapping -- keep\n                         640x480 for that, this is for IL collection")
 parser.add_argument("--grasp-tcp-offset", type=float, default=0.1294,
                     help="[m] from the inner-finger PIVOT midpoint to the finger PADS, along "
                          "the tool axis. The readable links are the pivots, not the pads; this "
                          "is the URDF gripper_frame->finger_tip distance, measured from TF")
-parser.add_argument("--gripper-invert", action="store_true", default=True,
-                    help="map finger_joint between the URDF convention (0 = open, used by "
-                         "ros2_control, MoveIt, the IL recordings and the real gripper) and the "
-                         "stock NVIDIA asset's opposite one. On by default; the asset is wrong")
-parser.add_argument("--no-gripper-invert", dest="gripper_invert", action="store_false",
-                    help="talk to the asset raw, for a gripper USD baked in the URDF sense")
-parser.add_argument("--gripper-range", type=float, default=0.8,
-                    help="finger_joint travel [rad] used by the inversion (URDF 0..0.8)")
 parser.add_argument("--grasp-debug", action="store_true",
                     help="log the finger-pad prim world poses and the resulting TCP every ~2 s. "
                          "Use this to compare Isaac's grasp TCP against the URDF finger-tip TF "
@@ -189,33 +179,20 @@ parser.add_argument("--grasp-debug", action="store_true",
                          "between them aims the whole descent wrong (CLAUDE.md pitfall 7)")
 args, _ = parser.parse_known_args()
 
-# ---- gripper joint convention -----------------------------------------------
-# NVIDIA's stock Robotiq_2F_85_edit.usd and the ROS robotiq_description URDF
-# disagree about what finger_joint = 0 MEANS. Measured on this asset, sweeping
-# the joint and reading the finger-pad link poses out of PhysX:
+# The asset's finger_joint uses the SAME convention as the URDF and the real
+# gripper: 0 = open, 0.8 = closed. Verified by photographing the wrist camera at
+# each opening (HISTORY.md 28) after a previous session concluded the opposite
+# and added a boundary inversion for it.
 #
-#     finger_joint    URDF tip separation (TF)    Isaac pad separation
-#         0.00              135.5 mm (open)             0.0 mm (closed)
-#         0.40               95.8 mm                   39.7 mm
-#         0.80               50.7 mm (closed)          84.9 mm (open)
-#
-# Same 84.8 mm of travel, opposite sense: j_isaac == GRIPPER_RANGE - j_urdf.
-# MoveIt, the demo, the IL recordings and the real robotiq_driver all use the
-# URDF convention, so the ASSET is the odd one out. Uncorrected, the arm descends
-# with the fingers SHUT: measured, that knocks the part 146 mm aside, drives
-# finger_joint past its own lower limit, and leaves the weld nothing to grab.
-#
-# Corrected HERE, at the sim boundary, rather than in the USD. Two attempts to
-# retarget the joint frames in USD both failed -- the algebra says transforming
-# localRot0/localRot1 alike only moves the joint's zero, but PhysX put the
-# fingers somewhere else entirely, and a half-corrected gripper is worse than an
-# uncorrected one. This transform is arithmetic on two topics: trivial to verify,
-# and it needs no theory about how PhysX reads joint frames.
+# That conclusion came from a derived number -- the separation between the two
+# inner_finger LINK ORIGINS, which is 0 at one end of travel and 84.9 mm at the
+# other. Link origins are not the visible geometry: the origins coincide while
+# the fingers are wide apart. The same mistake, on finger_tip_link, had already
+# cost 31 mm of aim earlier the same day. When the simulator renders images,
+# check a geometric claim by looking at one.
 GRIPPER_JOINT = "finger_joint"
-GRAPH_STATES_TOPIC = (args.joint_states_topic + "_isaac_raw"
-                      if args.gripper_invert else args.joint_states_topic)
-GRAPH_COMMANDS_TOPIC = (args.joint_commands_topic + "_isaac_raw"
-                        if args.gripper_invert else args.joint_commands_topic)
+GRAPH_STATES_TOPIC = args.joint_states_topic
+GRAPH_COMMANDS_TOPIC = args.joint_commands_topic
 
 CONFIG = {"renderer": "RaytracedLighting", "headless": args.headless}
 simulation_app = SimulationApp(CONFIG)
@@ -365,7 +342,7 @@ if args.with_camera:
     from pxr import Gf, UsdGeom, Vt
 
     CAM_PRIM = f"{ROBOT_PRIM}/{args.camera_parent}/d405_camera"
-    CAM_W, CAM_H = 640, 480
+    CAM_W, CAM_H = [int(v) for v in args.camera_res.lower().split('x')]
     # Eye-in-hand D405 mount — kept IDENTICAL to the URDF (realsense_d405_macro
     # <origin>). Pose taken from PickNik's open-source UR RealSense camera adapter
     # (picknik_accessories ur_realsense_camera_adapter, d415_mount_joint):
@@ -504,7 +481,7 @@ if args.with_static_cam:
     from pxr import Gf, UsdGeom, Vt
 
     SCAM_PRIM = "/World/static_cam"          # NOT under the robot -> world-fixed
-    SCAM_W, SCAM_H = 640, 480
+    SCAM_W, SCAM_H = [int(v) for v in args.camera_res.lower().split('x')]
     _p = np.array([float(v) for v in args.static_cam_xyz.split(",")])
     _tg = np.array([float(v) for v in args.static_cam_target.split(",")])
 
@@ -781,37 +758,6 @@ if args.scene == "pick_place":
             rclpy.init(args=[])
         _node = rclpy.create_node("isaac_scene")
 
-        # ---- finger_joint convention relays (see GRIPPER_JOINT above) --------
-        # Two small transforms, one per direction, so everything OUTSIDE Isaac --
-        # ros2_control, TF, MoveIt, the IL recordings -- sees the URDF convention
-        # while the asset keeps its own. Only finger_joint is touched; the arm's
-        # values pass through byte-for-byte.
-        if args.gripper_invert:
-            from sensor_msgs.msg import JointState as _JS
-
-            _grip_range = float(args.gripper_range)
-
-            def _flip_in_place(msg):
-                if GRIPPER_JOINT in msg.name and msg.position:
-                    i = msg.name.index(GRIPPER_JOINT)
-                    p = list(msg.position)
-                    p[i] = _grip_range - p[i]
-                    msg.position = p
-                return msg
-
-            _states_pub = _node.create_publisher(_JS, args.joint_states_topic, 10)
-            _node.create_subscription(
-                _JS, GRAPH_STATES_TOPIC,
-                lambda m: _states_pub.publish(_flip_in_place(m)), 10)
-            _cmds_pub = _node.create_publisher(_JS, GRAPH_COMMANDS_TOPIC, 10)
-            _node.create_subscription(
-                _JS, args.joint_commands_topic,
-                lambda m: _cmds_pub.publish(_flip_in_place(m)), 10)
-            _node.get_logger().info(
-                f"gripper convention: {GRIPPER_JOINT} inverted at the sim boundary "
-                f"(URDF 0 = open <-> asset {_grip_range} = open); "
-                f"graph topics {GRAPH_COMMANDS_TOPIC} / {GRAPH_STATES_TOPIC}")
-
         _pose_pub = _node.create_publisher(PoseStamped, "/scene/object_pose", 10)
         # Where the part is supposed to end up. It is a launch argument, so the
         # state machine would otherwise have to be told the same numbers twice --
@@ -1035,6 +981,100 @@ if args.scene == "pick_place":
             q[i], q[j_], q[k] = 0.25 * s, (R[j_, i] + R[i, j_]) / s, (R[k, i] + R[i, k]) / s
             return ((R[k, j_] - R[j_, k]) / s, q[0], q[1], q[2])
 
+        # ---- which gripper part is deepest over the part? ------------------
+        # The URDF answers this by transforming each link's collision mesh by its
+        # TF and taking the lowest point INSIDE the part's footprint. Isaac has to
+        # be asked the same way, or the two are not comparable.
+        #
+        # Local geometry comes from the authored USD: every gripper link's Xform is
+        # authored at identity (verified), so a link's authored mesh coordinates
+        # ARE its coordinates in that link's own frame. Multiplying by the runtime
+        # link transform gives the world geometry for whatever pose the joints are
+        # in.
+        #
+        # Built lazily, because the link<->prim mapping needs _grasp_idx, which is
+        # resolved further down. And it is built by INDEX: matching prims by name
+        # alone maps the robot's base_link (body 0) onto the gripper's base_link
+        # prim and leaves the real gripper base (body_names "base_link_0")
+        # unmapped -- the same name collision that earlier made the tool axis point
+        # at the robot base.
+        _geom = {"local": None}
+
+        def _build_link_geometry():
+            from pxr import Usd as _U, UsdGeom as _UG
+            bbc = _UG.BBoxCache(_U.TimeCode.Default(), [_UG.Tokens.default_])
+            names = list(_art_view.body_names)
+            prims = {}
+            for pr in _stage.Traverse():
+                if "Robotiq_2F_85" not in str(pr.GetPath()):
+                    continue
+                prims.setdefault(pr.GetName(), pr)
+            out = {}
+            for i, nm in enumerate(names):
+                pr = prims.get(nm)
+                if pr is None and i == _grasp_idx:
+                    pr = prims.get("base_link")      # renamed to base_link_0 in the articulation
+                if pr is None or (nm == "base_link" and i != _grasp_idx):
+                    continue                          # body 0 is the ROBOT base
+                r = bbc.ComputeWorldBound(pr).ComputeAlignedRange()
+                lo, hi = r.GetMin(), r.GetMax()
+                if lo[0] > hi[0]:
+                    continue
+                out[i] = np.array([[x, y, z] for x in (lo[0], hi[0])
+                                   for y in (lo[1], hi[1]) for z in (lo[2], hi[2])], dtype=float)
+            return out
+
+        def _deepest_in_footprint(half=0.0175):
+            """(depth below the gripper base, link name) for geometry over the part.
+
+            Only geometry inside the part's footprint can touch a part centred
+            under the tool -- the jaws at full open straddle it. Reporting the
+            whole gripper's lowest point answers a different question.
+            """
+            if _grasp_idx is None:
+                return None, None
+            try:
+                if _geom["local"] is None:
+                    _geom["local"] = _build_link_geometry()
+                    _node.get_logger().info(
+                        f"link geometry: {len(_geom['local'])} gripper links mapped "
+                        f"{sorted(_art_view.body_names[i] for i in _geom['local'])}")
+                xf = _link_xf_all()
+                bp = np.asarray(xf[0, _grasp_idx, 0:3], dtype=float)
+                # Build the frame from the MEASURED tool axis, not from the gripper
+                # base's local +z: that local axis is not the tool axis on this
+                # asset (deriving the axis from it is what put the TCP 90 degrees
+                # off earlier). Filtering the footprint in the wrong plane finds
+                # nothing and reports "no interference" -- a silent false negative.
+                zax = _tool_axis()
+                if zax is None:
+                    return None, None
+                tmp = np.array([1.0, 0.0, 0.0])
+                if abs(float(np.dot(tmp, zax))) > 0.9:
+                    tmp = np.array([0.0, 1.0, 0.0])
+                xax = np.cross(tmp, zax); xax /= np.linalg.norm(xax)
+                yax = np.cross(zax, xax)
+                bR = np.stack([xax, yax, zax], axis=1)      # columns = basis vectors
+                bn = list(_art_view.body_names)
+                best, who = None, None
+                for i, local in _geom["local"].items():
+                    p_i = np.asarray(xf[0, i, 0:3], dtype=float)
+                    R_i = _quat_mat(np.asarray(xf[0, i, 3:7], dtype=float))
+                    world = local @ R_i.T + p_i                 # link frame -> world
+                    rel = (world - bp) @ bR                     # world -> gripper base
+                    inside = rel[(np.abs(rel[:, 0]) <= half) & (np.abs(rel[:, 1]) <= half)]
+                    if inside.size == 0:
+                        continue
+                    d = float(inside[:, 2].max())
+                    if best is None or d > best:
+                        best, who = d, bn[i]
+                return best, who
+            except Exception as e:
+                if not _grasp.get("deep_warned"):
+                    _grasp["deep_warned"] = True
+                    _node.get_logger().error(f"footprint probe failed: {type(e).__name__}: {e}")
+                return None, None
+
         def _tool_axis():
             """Unit vector along the tool axis, pointing AWAY from the wrist.
 
@@ -1144,11 +1184,9 @@ if args.scene == "pick_place":
             # kind of lying diagnostic this check was added to replace.
             try:
                 _fj0 = float(_art.get_joint_positions()[_names.index(GRIPPER_JOINT)])
-                if args.gripper_invert:
-                    _fj0 = float(args.gripper_range) - _fj0
             except Exception:
                 _fj0 = None
-            _shut = _fj0 is not None and _fj0 > 0.5 * float(args.gripper_range)
+            _shut = _fj0 is not None and _fj0 > 0.4   # rad; 0 = open, ~0.8 = closed
             if _sep < 0.02 and not _shut:
                 print("  grasp TCP source    : *** BROKEN *** both pads report the same point "
                       f"(separation {_sep * 1000:.1f} mm) with the gripper open; TCP collapsed "
@@ -1299,12 +1337,6 @@ if args.scene == "pick_place":
         def _grasp_step_inner():
             try:
                 fj = float(_art.get_joint_positions()[_names.index("finger_joint")])
-                # The articulation speaks the ASSET's convention; grasp_close /
-                # grasp_release are URDF numbers (0 = open), like every other
-                # gripper value in this workspace. Convert here so the thresholds,
-                # the logs and the CLI all mean one thing.
-                if args.gripper_invert:
-                    fj = float(args.gripper_range) - fj
             except Exception as e:
                 # This except used to `return` silently, and it HID the cause of
                 # every weld failure: if the articulation has no DOF called
@@ -1326,9 +1358,12 @@ if args.scene == "pick_place":
                 ws = None if pads is None else [[round(float(v), 4) for v in p] for p in pads]
                 sep = None if pads is None else round(float(np.linalg.norm(pads[0] - pads[1])), 4)
                 tcp = _tcp()
+                deep, who = _deepest_in_footprint()
                 _node.get_logger().info(
-                    f"grasp debug: fj={fj:+.4f} pads={ws} sep={sep} tcp="
-                    f"{None if tcp is None else [round(float(v), 4) for v in tcp]}")
+                    f"grasp debug: fj={fj:+.4f} sep={sep} tcp="
+                    f"{None if tcp is None else [round(float(v), 4) for v in tcp]} "
+                    f"| deepest over the part: "
+                    f"{'n/a' if deep is None else f'{deep*1000:.1f} mm ({who})'}")
             if fj < -0.02 and _rate("neg"):
                 # finger_joint driven BELOW its own lower limit (0.0) while being
                 # commanded shut: the pads are being forced open by contact. This
@@ -1395,14 +1430,11 @@ if args.scene == "pick_place":
             try:
                 pos = np.array(_art.get_joint_positions(), dtype=float)
                 vel = np.array(_art.get_joint_velocities(), dtype=float)
-                # ALL gripper joints to the asset's authored zero. That pose is the
-                # one configuration the linkage is guaranteed to be self-consistent
-                # in. Teleporting only the driven joint to "open" and the passive
-                # ones to zero produced a physically impossible linkage (measured:
-                # finger_joint 0.539 with the pads 91 mm apart, when 0.539 should
-                # mean a 28 mm gap). In the asset's convention zero is CLOSED; the
-                # caller opens the gripper afterwards with a normal command, which
-                # the drive then tracks from a valid state.
+                # ALL gripper joints to the asset's authored zero (= fully OPEN).
+                # That pose is the one configuration the linkage is guaranteed to be
+                # self-consistent in. Teleporting only the driven joint and leaving
+                # the passive ones produced a physically impossible linkage
+                # (measured: finger_joint 0.539 with the pads 91 mm apart).
                 fixed = []
                 for i, nm in enumerate(_names):
                     if "finger" in nm or "knuckle" in nm:

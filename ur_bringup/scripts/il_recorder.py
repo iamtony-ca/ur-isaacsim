@@ -106,11 +106,17 @@ class ILRecorder(Node):
         self.out_dir = g("out_dir")
         self.rate = float(g("rate"))
         self.jpeg_q = int(g("jpeg_quality"))
+        # "none" disables a camera. An EMPTY string cannot be used for this from
+        # the command line: rcl rejects `-p cameras.exterior:=` with "Couldn't
+        # parse parameter override rule" before the node ever starts. Empty is
+        # still accepted here for callers that set the parameter programmatically.
         self.cams = OrderedDict()
         for key in ("exterior", "wrist"):
             topic = g(f"cameras.{key}")
-            if topic:
+            if topic and topic.lower() != "none":
                 self.cams[f"video.{key}"] = topic
+        if not self.cams:
+            raise SystemExit("every camera is disabled -- there would be no images to record")
         self.action_source = g("action_source")
         self.action_topic = g("action_topic")
         self.g_open = float(g("gripper_open_rad"))
