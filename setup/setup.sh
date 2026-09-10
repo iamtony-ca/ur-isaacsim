@@ -98,13 +98,21 @@ stage_preflight() {
   [ "$fail" = 0 ] && ok "preflight passed" || { err "preflight FAILED — fix the above first"; return 1; }
 }
 
+# Set by stage_pin so stage_repos can tell "the pin is missing" from "the pin is being
+# applied in this same invocation". Without it, --dry-run on a FRESH machine always dies
+# at stage 2: stage_pin only prints "would write", so the file stage_repos looks for does
+# not exist, and set -e turns that into "the whole plan stops here" -- which defeats the
+# point of a dry run.
+PIN_STAGED=0
+
 stage_pin() {
   step "pin — isolate NVIDIA repos (Pin-Priority 100)"
   local f=/etc/apt/preferences.d/99-nvidia-isolate.pref
-  if [ -f "$f" ]; then ok "$f already present"; return 0; fi
+  if [ -f "$f" ]; then ok "$f already present"; PIN_STAGED=1; return 0; fi
   echo "  NVIDIA repos ship higher-versioned copies of ROS packages"
   echo "  (measured: robotiq_description 0.0.1 -> 9.0.1, moveit_task_constructor_core -> 99.99.0)."
   echo "  Priority 100 = never upgrade an already-installed package."
+  PIN_STAGED=1
   if [ "$DRY_RUN" = 1 ]; then echo "  [dry-run] would write $f"; return 0; fi
   sudo tee "$f" >/dev/null <<'EOF'
 # UR16e workspace: keep NVIDIA repos from shadowing ROS/Ubuntu packages.
@@ -127,7 +135,7 @@ EOF
 
 stage_repos() {
   step "repos — Isaac ROS / CUDA / VPI"
-  [ -f /etc/apt/preferences.d/99-nvidia-isolate.pref ] || {
+  [ -f /etc/apt/preferences.d/99-nvidia-isolate.pref ] || [ "$PIN_STAGED" = 1 ] || {
     err "pin missing. Run the 'pin' stage first (order matters)."; return 1; }
   need_cmd curl
   _repo() { # name key_url list_line
@@ -145,7 +153,14 @@ stage_repos() {
   _repo nvidia-vpi "https://repo.download.nvidia.com/jetson/jetson-ota-public.asc" \
     "deb [signed-by=/usr/share/keyrings/nvidia-vpi.gpg] https://repo.download.nvidia.com/jetson/x86_64/noble r38.2 main"
   run "sudo apt-get update -qq"
-  # Prove the pin works before anything gets installed.
+  # Prove the pin works before anything gets installed. Only meaningful once the NVIDIA
+  # repos are actually in sources.list -- in a dry run they are not, so the candidate
+  # would be the ROS one and "pin verified" would be verifying nothing.
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  [dry-run] pin effectiveness is checked here on a real run"
+    echo "            (apt-cache policy ros-$ROS_DISTRO-robotiq-description must NOT be 9.x)"
+    return 0
+  fi
   local cand
   cand="$(apt-cache policy "ros-$ROS_DISTRO-robotiq-description" 2>/dev/null | awk '/Candidate:/{print $2}')"
   case "$cand" in
@@ -487,10 +502,35 @@ main() {
   echo "  WS=$WS  ROS_DISTRO=$ROS_DISTRO  DRY_RUN=$DRY_RUN  ALLOW_UPGRADES=$ALLOW_UPGRADES"
   [ -d "$WS/src" ] || { err "workspace src not found at $WS/src (set WS=...)"; return 1; }
 
+  local unsimulated=() rc=0
   for s in "${want[@]}"; do
     [[ " ${STAGES[*]} " == *" $s "* ]] || { err "unknown stage '$s' (see --list)"; return 2; }
-    "stage_$s"
+    # `set -e` would abort the whole run on a stage that returns non-zero. That is right
+    # for a real install and WRONG for a dry run: later stages legitimately cannot be
+    # simulated because they depend on side effects earlier stages did not perform (no
+    # NVIDIA repos in sources.list -> `apt-get install -s` for cuMotion cannot resolve,
+    # no cumotion -> no nvcc for build, ...). Aborting there hides the rest of the plan,
+    # which is the only thing a dry run is for.
+    "stage_$s" && rc=0 || rc=$?
+    [ "$rc" = 0 ] && continue
+    if [ "$DRY_RUN" = 1 ]; then
+      warn "stage '$s' could not be simulated (rc=$rc) — see above; continuing"
+      unsimulated+=("$s")
+    else
+      err "stage '$s' FAILED (rc=$rc) — stopping."
+      return "$rc"
+    fi
   done
+
+  if [ ${#unsimulated[@]} -gt 0 ]; then
+    echo
+    warn "not simulated: ${unsimulated[*]}"
+    echo "  These depend on what an earlier stage would have done (NVIDIA repos added,"
+    echo "  CUDA installed, sources imported...). A dry run does none of it, so apt/cmake"
+    echo "  cannot resolve them yet. This is EXPECTED on a fresh machine and does not"
+    echo "  mean the real run will fail. Re-run --dry-run after the real 'pin repos'"
+    echo "  stages if you want to preview the rest."
+  fi
   echo; ok "done: ${want[*]}"
   echo "  next: source /opt/ros/$ROS_DISTRO/setup.bash && source $WS/install/setup.bash"
 }

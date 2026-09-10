@@ -202,7 +202,9 @@ ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
 ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
 #   패드: Options=enable / R3=sync (데드맨 L1 필요) · Create=disable (불필요)
 #   부호/오프셋/속도상한/clamp/랑데부 전부 런치 인자 — 실물 튜닝 시 코드 수정 불필요
-#   ★ 단, ros2 param set 은 무효다(생성자에서 1회만 읽음) — 런치 인자로 재기동할 것
+#   ★ offset/sign 은 DISABLED 일 때 ros2 param set 으로 즉시 변경된다(캘리브 반복용).
+#     ENGAGED 중이면 거부(팔이 움직인다). 나머지 파라미터는 param set 이 조용히 무시되지
+#     않고 거부되며 재기동 명령을 알려준다. param set 값은 노드와 함께 사라진다.
 
 # ── IL 데모 기록 (teleop 위에서) ──
 ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=true \

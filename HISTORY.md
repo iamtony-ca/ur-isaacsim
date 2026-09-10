@@ -3311,6 +3311,68 @@ got    offset_deg=[0.0, -90.0, 0.0, 5.7, 0.0, 11.5]
 리더 자세가 새 오프셋만큼 함께 움직인 것(J4 −90→−95.7, J6 0→−11.5)이 부수 확인이다 —
 기동 로그의 랑데부 안내가 하드코딩이 아니라 **매핑에서 역산**된다는 뜻.
 
-> 남은 개선안: 브리지가 **DISABLED 일 때만** `offset`/`sign` 런타임 변경을 받게 하면
-> 캘리브 반복이 재기동 없이 돌아간다. engage 중 변경은 목표가 즉시 바뀌어 팔이 움직이므로
-> 반드시 막아야 한다. 아직 안 만들었다.
+→ §42.6 에서 구현했다.
+
+### 42.6 `offset`/`sign` 런타임 변경 (DISABLED 일 때만) — 2026-09-10
+
+§42.5 가 남긴 개선안. 실물 캘리브레이션은 **측정 → 적용 → 조작감 → 재조정** 반복인데,
+매번 노드를 재기동하면 engage 게이트도 원점으로 돌아간다.
+
+**허용 범위를 좁게 잡았다.**
+
+| | |
+|---|---|
+| 런타임 변경 가능 | `offset`, `sign` — **DISABLED 일 때만** |
+| ENGAGED 중 | **거부.** 매핑이 바뀌면 목표가 오프셋 델타만큼 점프하고 슬루가 쫓아가 팔이 움직인다 |
+| sync 진행 중 | 거부 |
+| **그 외 모든 파라미터** | **거부 + 재기동 명령 안내** — 조용히 무시하지 않는다 |
+
+마지막 줄이 이번 작업의 요점이다. 원래는 **전부 조용히 성공**했고(§42.5), 그게
+"값을 넣었는데 조작감이 그대로 → 오프셋이 틀렸나?" 로 나타난다. 이제는:
+
+```
+Setting parameter failed: 'max_joint_speed' is read once at construction, so setting it
+here would silently do nothing. Relaunch instead: ros2 launch ur_bringup
+teleop_omy.launch.py max_joint_speed:=<value>
+```
+
+**즉시 반영**: 파라미터가 바뀌면 마지막 리더 값(`leader_raw`, 신규)을 **다시 매핑**한다.
+안 하면 `/omy_bridge/engage_error` 가 다음 리더 메시지까지 옛 값을 보여주고, 조작자가
+그걸 보고 한 번 더 조정하게 된다. 콜백 등록은 **모든 `declare_parameter` 뒤** — rclpy 는
+선언 시점에도 콜백을 부르므로, 앞에 등록하면 우리 자신의 기동값이 거부된다.
+
+#### 검증 (mock, `scratchpad/param_test.sh` + `param_ef.py`)
+
+| | 항목 | 결과 |
+|---|---|---|
+| A | DISABLED 중 offset 적용 | ✅ `engage_error` J4/J6 가 정확히 +0.09 / −0.20 이동 (즉시 재매핑 확인) |
+| B | 읽기전용 파라미터 | ✅ 거부 + 재기동 명령 |
+| C | 길이 5 | ✅ `needs 6 entries ... got 5` |
+| D | `sign` 에 0 | ✅ `must be non-zero -- the inverse map divides by them` |
+| E | ENGAGED 중 offset | ✅ 거부, 값 불변, disable 후 다시 수락 |
+| F | 원자적 배치(good+bad) | ✅ 전부 거부, 정상 offset 도 미적용 |
+
+#### ★ 내 주석이 과장이었다 — 원자성
+
+처음엔 "`param set offset ... sign ...` 이 절반만 적용되면 안 된다" 고 썼는데, 셸 테스트에서
+나쁜 `sign` 이 정상 `offset` 을 막지 못했다. 코드를 의심하기 전에 rclpy 를 봤더니 **ROS 2 의
+정의된 동작**이었다 — `node.py` L764: *"called once for each parameter"*. `ros2 param set`/`load`
+가 쓰는 비원자 서비스는 파라미터마다 콜백을 따로 부르고, 배치는 `set_parameters_atomically`
+에서만 일어난다(F 는 그래서 rclpy 로 직접 호출해야 검증된다).
+
+게다가 **`offset` 과 `sign` 사이엔 교차 불변식이 없다** — 각각 독립적으로 유효하고, 반쪽만
+적용돼도 매핑은 유효하며 `engage_error` 에 즉시 드러난다. 즉 원래 걱정 자체가 과했다.
+validate-then-apply 는 원자적 서비스에서 의미가 있고 비용이 없으니 유지하되, **주석을 실제
+의미로 고쳤다.**
+
+#### ★ 하네스 오류 3연발 — 이번 세션의 진짜 교훈
+
+`sync` 검증부터 여기까지, **틀린 것이 코드가 아니라 테스트였던 경우가 세 번**이다:
+
+1. §42.3 — 팔을 `ready` 로 보내기 전에 브리지를 띄워, 가짜 리더가 엉뚱한 영점을 latch → enable 거부
+2. §42.3-C — `param set amplitude` 가 무효라 가짜 리더가 안 움직임 → "추종 실패" 로 오독
+3. §42.6 — 직전 단계가 offset 을 `[9,9,…]` 로 만들어 둬서 engage 게이트가 거부 →
+   "ENGAGED 중 거부" 케이스가 **아예 실행되지 않았는데 통과처럼 보임**
+
+→ **테스트는 전제(precondition)를 스스로 PASS/FAIL 로 검사해야 한다.** `param_ef.py` 는
+"브리지가 정말 ENGAGED 인가" 를 먼저 판정하고, 실패하면 그 뒤 결과를 아예 해석하지 않는다.

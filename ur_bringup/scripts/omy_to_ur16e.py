@@ -90,6 +90,15 @@ USAGE
     # how far off am I?  (rad, leader-mapped minus follower, per joint)
     ros2 topic echo /omy_bridge/engage_error
 
+    # calibration loop -- `offset` and `sign` take effect live WHILE DISABLED, so
+    # measure -> apply -> feel -> adjust does not need a node restart each time:
+    ros2 run ur_bringup omy_leader_calib.py --mode match     # prints the offsets
+    ros2 param set /omy_to_ur16e offset "[0.0, -1.5708, 0.0, 0.09, 0.0, -0.2]"
+    #   -> refused while ENGAGED (changing the map would move the arm)
+    #   -> refused for every OTHER parameter, with the relaunch command, because they
+    #      are read once in __init__ and a silent no-op is worse than an error
+    # NOT persisted: put the final numbers in teleop_omy.launch.py defaults.
+
 `sync` needs move_group running (ur16e_moveit.launch.py). Without it, do the two
 steps by hand -- `switch_control_mode.py trajectory` + `reset_pose.py ready` +
 `switch_control_mode.py streaming` -- after checking the arm's surroundings by eye.
@@ -105,6 +114,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 from control_msgs.action import GripperCommand
 from controller_manager_msgs.srv import ListControllers, SwitchController
+from rcl_interfaces.msg import SetParametersResult
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (Constraints, JointConstraint, MotionPlanRequest,
                              PlanningOptions)
@@ -132,6 +142,13 @@ UR_LIMITS = [2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * ma
 # where the recorded demonstrations start, or a policy trained on them sees an
 # initial state it never saw in training (HISTORY.md 36).
 READY = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
+
+# Parameters that CAN be changed at run time (only while disabled -- see _on_set_params).
+# These two exist because calibrating J4/J6 on real hardware is measure -> apply -> feel
+# -> adjust, and restarting the node for every iteration also resets the engage gate.
+RUNTIME_PARAMS = ("offset", "sign")
+# Set by rclpy itself; never ours to reject.
+FRAMEWORK_PARAMS = ("use_sim_time",)
 
 
 class OmyToUr16e(Node):
@@ -213,6 +230,10 @@ class OmyToUr16e(Node):
         self.grip_deadband = float(g("gripper_deadband"))
 
         self.enabled = False
+        self.leader_raw = None          # latest leader joints, BEFORE the map. Kept so a
+                                        # runtime sign/offset change can be re-applied to
+                                        # the current reading instead of waiting for the
+                                        # next leader message.
         self.leader_q = None            # latest mapped target, pre-clamp
         self.leader_grip = None
         self.leader_stamp = None
@@ -253,6 +274,10 @@ class OmyToUr16e(Node):
         self.create_timer(0.2, self._publish_error)      # 5 Hz is plenty for a human
         self.create_timer(1.0, self._poll_controllers)
 
+        # Registered LAST, after every declare_parameter above: rclpy runs this callback
+        # for declarations too, and the guards below would reject our own startup values.
+        self.add_on_set_parameters_callback(self._on_set_params)
+
         self.get_logger().info(
             f"omy_to_ur16e up (DISABLED). sign={self.sign} offset_deg="
             f"{[round(math.degrees(o), 1) for o in self.offset]} "
@@ -284,7 +309,8 @@ class OmyToUr16e(Node):
         idx = {n: i for i, n in enumerate(msg.name)}
         if not all(n in idx for n in LEADER_JOINTS):
             return
-        self.leader_q = self._map([msg.position[idx[n]] for n in LEADER_JOINTS])
+        self.leader_raw = [msg.position[idx[n]] for n in LEADER_JOINTS]
+        self.leader_q = self._map(self.leader_raw)
         if LEADER_GRIPPER in idx:
             self.leader_grip = msg.position[idx[LEADER_GRIPPER]]
         self.leader_stamp = self.get_clock().now()
@@ -321,6 +347,85 @@ class OmyToUr16e(Node):
         if want_sync:
             res = self._sync(None, Trigger.Response())
             self.get_logger().info(f"pad sync: {res.message}")
+
+    # ------------------------------------------------------------- parameters
+    def _on_set_params(self, params):
+        """Accept `offset`/`sign` at run time, but ONLY while disabled.
+
+        Two things this fixes, both learned the hard way (HISTORY.md 42.3-C / 42.5):
+
+        1. Calibrating J4/J6 on hardware is measure -> apply -> feel -> adjust. Without
+           this, every iteration needs a node restart, which also drops the engage gate
+           back to square one.
+        2. Every OTHER parameter here is read once in __init__, so `ros2 param set` on
+           it used to return SUCCESS and do nothing -- which reads as "I set the offset
+           and the feel did not change", i.e. you blame the value, not the mechanism.
+           Those names are now REJECTED with the command that does work.
+
+        Everything is validated before anything is applied. Note what that does and does
+        NOT buy: rclpy calls this callback ONCE PER PARAMETER for the plain
+        `set_parameters` service -- which is what `ros2 param set` and `ros2 param load`
+        use -- and only batches the list for `set_parameters_atomically` (rclpy node.py:
+        "called once for each parameter"). So a `param load` carrying a good `offset` and
+        a bad `sign` applies the offset and rejects the sign, by ROS 2's design, not ours.
+        That is harmless here because `offset` and `sign` have no cross-parameter
+        invariant -- each is independently valid, and a half-updated calibration shows up
+        immediately in /omy_bridge/engage_error. The validate-then-apply split still
+        matters for the atomic service, and costs nothing.
+        """
+        for p in params:
+            if p.name in FRAMEWORK_PARAMS:
+                continue
+            if p.name not in RUNTIME_PARAMS:
+                return SetParametersResult(successful=False, reason=(
+                    f"'{p.name}' is read once at construction, so setting it here would "
+                    f"silently do nothing. Relaunch instead: "
+                    f"ros2 launch ur_bringup teleop_omy.launch.py {p.name}:=<value>"))
+            # Changing the map while engaged moves the arm: the target jumps by the
+            # offset delta and the slew chases it. Refuse rather than surprise.
+            if self.enabled:
+                return SetParametersResult(successful=False, reason=(
+                    "refused: the bridge is ENGAGED and changing the map would move the "
+                    "arm. Call /omy_bridge/disable first."))
+            if self.sync_state in ("to_traj", "moving", "to_stream"):
+                return SetParametersResult(successful=False, reason=(
+                    f"refused: sync in progress ({self.sync_state})"))
+            vals = list(p.value) if p.value is not None else []
+            if len(vals) != 6:
+                return SetParametersResult(successful=False, reason=(
+                    f"'{p.name}' needs 6 entries (one per joint), got {len(vals)}"))
+            try:
+                vals = [float(v) for v in vals]
+            except (TypeError, ValueError):
+                return SetParametersResult(successful=False, reason=(
+                    f"'{p.name}' entries must be numbers"))
+            # _unmap divides by sign to tell the operator where to put the leader.
+            if p.name == "sign" and any(abs(v) < 1e-9 for v in vals):
+                return SetParametersResult(successful=False, reason=(
+                    "'sign' entries must be non-zero -- the inverse map divides by them"))
+
+        for p in params:
+            if p.name == "offset":
+                self.offset = [float(v) for v in p.value]
+            elif p.name == "sign":
+                self.sign = [float(v) for v in p.value]
+                odd = [i + 1 for i, v in enumerate(self.sign) if abs(abs(v) - 1.0) > 1e-6]
+                if odd:
+                    self.get_logger().warn(
+                        f"sign is not +-1 on J{odd} -- that scales leader motion rather "
+                        "than mirroring it. Intended?")
+
+        # Re-map the CURRENT reading so /omy_bridge/engage_error reflects the new map
+        # immediately; otherwise the operator reads one stale sample and adjusts twice.
+        if self.leader_raw is not None:
+            self.leader_q = self._map(self.leader_raw)
+        self.get_logger().info(
+            f"map updated: sign={self.sign} offset_deg="
+            f"{[round(math.degrees(o), 2) for o in self.offset]} -> put the LEADER at "
+            f"{[round(math.degrees(v), 1) for v in self._unmap(self.rendezvous)]} deg "
+            "for the rendezvous. NOTE: this is not persisted -- put the final values in "
+            "teleop_omy.launch.py (and virtual_omy_leader.py) or they die with the node.")
+        return SetParametersResult(successful=True)
 
     # ---------------------------------------------------------------- services
     def _engage_error(self):

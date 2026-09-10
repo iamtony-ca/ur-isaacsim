@@ -321,27 +321,35 @@ sim 은 URDF 상의 이상적인 리더였다. 실물은 **엔코더 영점이 U
 3. **손목 J4/J6 오프셋** — L100 은 UR16e 의 축소 복제본이 **아니어서**(측면 오프셋
    UR +290.7 mm vs L100 −46 mm, 부호까지 다름) 이 둘은 *유도되는 정답이 없다*.
    조작감 기준으로 맞춘다.
+**튜닝 루프 (재기동 없이 반복 가능)** — `offset`/`sign` 은 **브리지가 DISABLED 일 때** 런타임 변경된다:
+
 ```bash
-# 측정은 이 도구가 한다 — 리더를 UR16e 자세처럼 잡고 실행하면 offset 6개를 역산한다
+# 1) 측정 — 리더를 UR16e 자세처럼 잡고 실행하면 offset 6개를 역산한다
 ros2 run ur_bringup omy_leader_calib.py --mode match
 
-# 적용: 브리지를 그 값으로 다시 띄운다 (아래 ★ 참조)
-ros2 launch ur_bringup teleop_omy.launch.py \
-    offset:="[0.0, -1.5708, 0.0, <J4>, 0.0, <J6>]" \
-    sign:="[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]"
+# 2) 적용 — ENGAGED 면 거부되므로 먼저 푼다
+ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
+ros2 param set /omy_to_ur16e offset "[0.0, -1.5708, 0.0, <J4>, 0.0, <J6>]"
+ros2 param set /omy_to_ur16e sign   "[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]"
 
-ros2 run ur_bringup omy_leader_calib.py --mode verify   # 잔차 확인
+# 3) 확인 — 적용 즉시 반영된다. 조작감은 다시 engage 해서 본다
+ros2 topic echo /omy_bridge/engage_error
+ros2 run ur_bringup omy_leader_calib.py --mode verify
+#    → 2)~3) 반복
 ```
-> **★ `ros2 param set /omy_to_ur16e offset ...` 은 쓰지 말 것.** 브리지는 파라미터를
-> **생성자에서 한 번만** 읽는다(`g = lambda n: self.get_parameter(n).value` 를 `__init__`
-> 에서만 호출). `param set` 은 **성공을 반환하고 아무 일도 하지 않는다** — 그래서
-> "값을 넣었는데 조작감이 그대로"라는 형태로 나타나고, 오프셋이 틀렸다고 오진하기 쉽다.
-> 같은 함정을 `virtual_omy_leader.py` 의 `amplitude` 에서 실제로 겪었다(`HISTORY.md` §42.3-C).
-> 조작감 튜닝은 **런치 인자를 바꿔 브리지를 재기동**하는 반복이다. 재기동하면 브리지는
-> 다시 DISABLED 로 시작하므로, 매번 랑데부 → `enable` 을 거친다(그게 안전한 순서이기도 하다).
+
+> **★ 런타임 변경은 `offset`/`sign` 뿐이다.** 나머지(예: `max_joint_speed`)는 생성자에서
+> 1회만 읽으므로 `param set` 이 **조용히 무시되지 않고 거부되며** 동작하는 명령을 알려준다:
+> `Relaunch instead: ros2 launch ur_bringup teleop_omy.launch.py max_joint_speed:=<value>`.
+> 원래는 전부 조용히 무시됐고, 그러면 "값을 넣었는데 조작감이 그대로"로 나타나 **오프셋 값이
+> 틀렸다고 오진**하게 된다 — 실제로 `virtual_omy_leader.py` 의 `amplitude` 에서 겪었다
+> (`HISTORY.md` §42.3-C·§42.5·§42.6).
 >
-> 확정되면 **`teleop_omy.launch.py` 의 기본값으로 올려 굳힐 것.** 런치 인자로만 두면
-> 다음 세션에 사라진다. 값이 바뀌면 `virtual_omy_leader.py` 쪽도 같이 고쳐야
+> **ENGAGED 중에는 `offset`/`sign` 도 거부된다.** 매핑이 바뀌면 목표가 오프셋 델타만큼 점프하고
+> 슬루가 그걸 쫓아가 팔이 움직인다. 먼저 `/omy_bridge/disable`.
+>
+> 확정되면 **`teleop_omy.launch.py` 의 기본값으로 올려 굳힐 것.** `param set` 은 노드와 함께
+> 사라진다. 값이 바뀌면 `virtual_omy_leader.py` 쪽도 같이 고쳐야
 > sim 회귀 테스트의 engage 게이트가 계속 통과한다.
 
 ### ⑤ 데이터 기록

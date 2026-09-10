@@ -17,6 +17,8 @@
   <exec_depend>controller_manager</exec_depend>
   <!-- omy_to_ur16e.py switches trajectory<->streaming controllers from /omy_bridge/sync -->
   <exec_depend>controller_manager_msgs</exec_depend>
+  <!-- omy_to_ur16e.py: SetParametersResult for the runtime offset/sign callback -->
+  <exec_depend>rcl_interfaces</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>

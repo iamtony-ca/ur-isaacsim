@@ -210,8 +210,12 @@ python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory
 python3 src/ur_bringup/isaac/common/reset_pose.py ready      # UR16e 를 랑데부로
 # 리더를 E-1 ②의 rest pose 로 놓고 가만히 둔 채로
 ros2 run ur_bringup omy_leader_calib.py --mode match          # → offset 6개 출력
-#   출력값을 launch/common/teleop_omy.launch.py 기본값에 반영
+
+# 적용 — 브리지가 DISABLED 면 바로 먹는다 (재기동 불필요)
+ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
+ros2 param set /omy_to_ur16e offset "[<출력값 6개>]"
 ros2 run ur_bringup omy_leader_calib.py --mode verify
+#   → 자세 바꿔가며 반복
 ```
 
 - ☐ `--mode match` 가 출력한 **오프셋 6개**를 기록. 이 값이 **다이나믹셀 엔코더 영점 + J4/J6
@@ -219,7 +223,11 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
 - ☐ `--mode verify` 잔차가 `engage_tol` 8.6° 보다 **확실히** 작다
 - ☐ **자세를 바꿔가며 match/verify 를 2~3회 반복.** 한 자세에서만 맞는 오프셋은 오프셋이 아니라
       그 자세의 우연이다
-- ☐ 최종값을 **양쪽에** 반영: `teleop_omy.launch.py` 기본값 **+ `virtual_omy_leader.py`**
+- ☐ **ENGAGED 중에는 `param set` 이 거부된다** — 매핑이 바뀌면 팔이 움직이기 때문. 먼저 disable.
+      런타임 변경이 되는 건 **`offset`/`sign` 뿐**이고, 나머지는 거부하면서 재기동 명령을 알려준다
+      (원래는 조용히 무시됐다 — `HISTORY.md` §42.5·§42.6)
+- ☐ **`param set` 값은 노드와 함께 사라진다.** 최종값을 **양쪽에** 반영:
+      `teleop_omy.launch.py` 기본값 **+ `virtual_omy_leader.py`**
       (후자를 빼먹으면 sim 회귀의 engage 게이트가 거부하기 시작한다)
 
 ### E-3. UR16e 에 연결 — 랑데부에서 engage (팔만, 그리퍼 없이 가능)
