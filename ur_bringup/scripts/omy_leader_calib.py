@@ -157,8 +157,11 @@ def mode_match(n, sec, sign):
     print("\n  ★ = 기본값과 10° 이상 차이. J4/J6 은 원래 유도값이 없으니 커도 정상이고,"
           "\n    J1~J3·J5 가 크면 엔코더 영점이 URDF 영점과 다르다는 뜻이다.")
     lst = ", ".join(f"{v:.5f}" for v in off)
-    print("\n  ── 적용 (임시) ──────────────────────────────────────────")
-    print(f'  ros2 param set /omy_to_ur16e offset "[{lst}]"')
+    print("\n  ── 적용 (임시) — 브리지를 이 인자로 다시 띄운다 ─────────")
+    print(f'  ros2 launch ur_bringup teleop_omy.launch.py offset:="[{lst}]"')
+    print("  ★ `ros2 param set /omy_to_ur16e offset ...` 은 쓰지 말 것 — 브리지는")
+    print("    파라미터를 생성자에서 한 번만 읽으므로 param set 은 성공을 반환하고")
+    print("    아무 일도 하지 않는다 (HISTORY.md 42.3-C).")
     print("\n  ── 영구화 (이게 진짜 할 일) ─────────────────────────────")
     print("  teleop_omy.launch.py 의 bridge 파라미터에 offset 기본값으로 넣고,")
     print("  virtual_omy_leader.py 의 offset 도 같은 값으로 맞출 것")

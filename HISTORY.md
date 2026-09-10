@@ -2992,6 +2992,325 @@ tasks: red→left / blue→left / red→right   ← 언어 조건부의 전제(�
 **미리 잡아둘 논점**:
 - GR00T N1.7 은 이미지를 **256×256 으로 강제 리사이즈**한다(`N1_7_DEFAULT_IMAGE_TARGET_SIZE`,
   크롭 230×230). 우리 320×240 은 그래서 골랐던 것(§plan 2.6) — 재수집 불필요.
-- 3B 모델 + LoRA 라 32 GB 단일 카드에서 배치가 관건. ACT(80M, 2.7~4 GB)와 규모가 다르다.
+- ~~3B 모델 + LoRA 라 32 GB 단일 카드에서 배치가 관건.~~ **→ §40.5 에서 정정.** LoRA 가 아니라
+  **동결 + 파라미터 dtype** 이고, 기본 fp32 는 **배치 크기와 무관하게** 32 GB 를 넘는다.
+  ACT(80M, 2.7~4 GB)와 규모가 다르다는 것만 맞았다.
 - **21 에피소드는 VLA 에 적다.** ACT 도 50 에서 7/10, 100 에서 9/10 이었다(§38).
   파이프라인 검증에는 충분하지만, 성능을 보려면 3태스크 각 50+ 재수집이 필요할 것.
+
+---
+
+## 40. GR00T N1.7 설계 + 게이트/VRAM 실측 — 카메라 2대 — 2026-09-10
+
+§39 가 "GR00T 착수 전"에서 멈췄던 것을 이어, **설계를 먼저 확정하고 소스로 검증**했다.
+정본 설계문서는 신규 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
+
+### 40.1 재사용 경계 — 모델·데이터 경로에 새로 짤 코드가 **0**
+
+`lerobot 0.6.1` 의 `policies/groot/`(4,912줄)가 정책·프로세서·액션헤드를 전부 제공하고,
+데이터셋 스키마·수집/변환 스크립트·`async_inference` 서버/클라이언트·`UR16eROS` 어댑터가
+**전부 그대로** 쓰인다. ACT → GR00T 는 전부 **설정 변경**이다.
+운(運)이 아니라 §2.1(LeRobot 포맷)·§2.6(절대 관절 액션)을 첫날에 못 박아 둔 대가.
+
+### 40.2 카메라 2대 — rename 없이 들어간다 (실측)
+
+소스를 읽고 추론한 게 아니라 upstream 함수를 직접 호출해 확인했다:
+
+```
+[V1] dataset-meta visual keys       -> ['exterior', 'wrist']
+[V1] checkpoint video_modality_keys -> None            (None => 데이터셋 폴백)
+[V1] _ordered_image_keys(obs)       -> ['observation.images.exterior', 'observation.images.wrist']
+[V1] checkpoint use_relative_action -> True
+[V1] image target/crop              -> [256,256] / [230,230]
+```
+
+`embodiment_tag="new_embodiment"`(=`N1_7_EMBODIMENT_MAPPING` id **10**)면 체크포인트에
+video 키가 없어 **데이터셋 메타로 폴백**하는 게 정규 경로다. 방증: 사전학습 embodiment 중
+`oxe_droid_relative_eef_relative_joint` 가 **exterior+wrist 2뷰 단일팔** — 3B 가 우리와 같은
+카메라 배치를 이미 대량으로 봤다.
+
+### 40.3 ★ 함정 — `base_model_path` 에 repo id 를 주면 사이드카가 **조용히** 무시된다
+
+`_load_n1_7_checkpoint_processor_assets()` 는 `is_raw_groot_n1_7_checkpoint()` → `Path().is_dir()`
+로 판정한다. `nvidia/GR00T-N1.7-3B` 같은 **repo id 는 `None` 을 반환**한다 — 예외도 경고도 없이.
+
+| 설정 | 체크포인트 실제값 | repo id 를 줬을 때 |
+|---|---|---|
+| `use_albumentations` | True | **False** |
+| `state_dropout_prob` | 0.2 | **0.0** |
+| `use_percentiles` | True | **False** |
+| `shortest_image_edge`/`crop_fraction` | 256 / 0.95 | **None** |
+
+가중치는 repo id 로도 정상 로드되므로 **학습은 그냥 돌아간다.** 그래서 더 위험하다 — 사전학습과
+다른 전처리로 파인튜닝하는 걸 알 방법이 없다. §35 와 같은 부류.
+→ **`snapshot_download()` 로 로컬 경로를 해석해 넘긴다.** 캐시가 있으면 받지 않고 경로만 준다.
+
+### 40.4 ★ 막힘 — `nvidia/Cosmos-Reason2-2B` 는 **gated repo**
+
+`GR00T-N1.7-3B` 자체는 gated 아님(6.5 GB, 27파일, 정상 다운로드). 그런데 학습 시작 시 401:
+
+| 필요한 것 | 어디서 | 게이트 |
+|---|---|---|
+| 백본 **아키텍처 설정** | `groot_n1_7.py:_cosmos_reason2_qwen3_vl_config()` **하드코딩** | 불필요 |
+| 백본 **가중치** | GR00T 체크포인트 안 `backbone.model.*` **494 텐서** | 불필요 |
+| **토크나이저 + 이미지/비디오 프로세서** | `_build_n1_7_processor()` → Cosmos repo | **게이트** |
+
+**2 GB 백본이 아니라 토크나이저 몇 MB 때문에 막힌다.** 다른 Qwen3-VL 토크나이저로 대체하는
+우회는 vocab 이 어긋나면 **조용히 틀린 학습**이 되므로 하지 않았다.
+→ 사용자가 라이선스 동의 + `HF_TOKEN` 발급해야 한다. `groot_smoke.sh` 가 기동 즉시 이 안내를 찍고 종료.
+
+### 40.5 ★ VRAM — 기본 설정은 32 GB 에 **안 들어간다**. 그리고 **LoRA 가 아니다**
+
+`GrootPolicy` 를 실제로 만들어 세어 본 값:
+
+```
+_groot_model.action_head   1621M   trainable 1621M    ← 전부 학습
+_groot_model.backbone      1524M   trainable    0M    ← 전부 동결
+TOTAL                      3144M   trainable 1621M  (51.5%)
+```
+
+동결 자체는 의도대로 걸린다(`tune_llm/tune_visual=False` 가 실제로 먹음). 문제는 **동결이 되는데도
+학습 대상이 1.62 B** — GR00T 의 flow-matching action head 가 백본보다 크다.
+
+`model_params_fp32=True`(기본, NVIDIA 정식 레시피) 정적 소요:
+`params 11.7 + grads 6.0 + AdamW 12.1 = 29.8 GiB / 31.8 GiB` → **활성값 자리가 없다.**
+**배치 크기와 무관하다** — `--batch_size=1` 이어도 안 된다.
+
+`--policy.model_params_fp32=false` → action head 가 bf16(백본은 fp32 유지) → **≈17.8 GiB**, 여유 14 GiB.
+upstream 이 제공하는 손잡이라 우리 우회가 아니다. 대신 **fp32 마스터 가중치를 포기**하므로
+발산 시 첫 의심 항목.
+
+> **§39 와 `plan_il_vla.md` §2.7/§6.2 의 "LoRA" 서술은 틀렸다.** `configuration_groot.py` 의
+> `lora_*` 필드는 소스 주석이 **"never-wired"** 라고 명시한 deprecated 필드다. 메모리 관리는
+> LoRA 가 아니라 **동결 + 파라미터 dtype** 으로 한다. 해당 문서들을 정정했다.
+
+### 40.6 의존성 — `transformers` 오판 정정
+
+파일 상단 import 만 보고 "transformers 불필요"라고 적었다가 스모크에서 즉시 틀렸다.
+lerobot 의 정책 의존성은 import 문이 아니라 **`require_package()` 가드**에 있다
+(`policies/groot/` 안에 6곳). → **다음엔 `grep require_package policies/<정책>/` 를 먼저 볼 것.**
+
+정본은 개별 패키지 나열이 아니라 upstream extra: **`pip install 'lerobot[groot]'`**.
+설치 전 dry-run 실측(2026-09-10): **19개 전부 신규, 기존 패키지 변경 0**,
+`torch 2.11.0+cu128` / sm_120 유지. 버전: transformers 5.5.4 · diffusers 0.39.0 · peft 0.20.0 ·
+timm 1.0.29 · decord 0.6.0 · dm-tree 0.1.10.
+
+### 40.7 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| 카메라 2대 | ✅ 확정 |
+| 상대 액션 경로 빌드 | ✅ 확정 (`relative_exclude_joints=["gripper"]`) |
+| VRAM | ⚠️ `model_params_fp32=false` 필요 |
+| step/s → 학습시간 (6h 게이트) | ❌ **HF 게이트에 막힘** |
+| 추론 지연 (<1.33 s/청크) | 미측정 |
+| 21 에피소드로 충분한가 | 미측정 — ACT 는 100 이 필요했다(§38) |
+
+---
+
+## 41. 텔레옵 랑데부 자세 — ROBOTIS `home` 이 우리 `ready` 로 매핑된다 — 2026-09-10
+
+"UR16e 가 다른 일을 하다가 텔레옵을 시작하면 리더와 시작 자세가 크게 다를 텐데 어떻게 되는가"
+라는 사용자 질문에서 출발. 현재 동작은 `/omy_bridge/enable` 이 **거부**하고 어느 관절이 몇 도
+틀렸는지 알려주는 것뿐이며, 조작자가 리더를 손으로 맞추는 경로 하나만 있다.
+
+### 41.1 결론 — 임의 자세를 쫓지 말고 **랑데부 자세**에서 만난다
+
+`open_manipulator` 를 열어 보니 OMY SRDF 에 두 자세가 있다(`omy_f3m.srdf`):
+
+```xml
+<group_state name="init">  J1..J6 = 0, 0, 0, 0, 0, 0
+<group_state name="home">  J1..J6 = 0, 0, +90°, −90°, +90°, 0     ← 손 떼도 서 있는 자세
+```
+
+이 `home` 을 우리 매핑(`sign=[1,1,1,1,−1,1]`, `offset=[0,−90°,0,0,0,0]`)에 넣으면:
+
+```
+leader home [0, 0, +90°, −90°, +90°, 0]  →  UR16e [0, −90°, +90°, −90°, −90°, 0]  =  reset_pose.py 의 ready
+```
+
+**우연이 아니다.** 양쪽 다 "팔꿈치 90° 접고 손목 정리"라는 같은 이유로 고른 자세다 —
+우리 `ready` 는 특이점 회피(elbow≠0, wrist_2≠0), ROBOTIS `home` 은 리더를 내려놓을 수 있게.
+→ **UR16e 쪽에 초기 자세를 새로 정의할 필요가 없다. 기존 `ready` 가 곧 랑데부다.**
+
+반대로 L100 의 `init`(전부 0)을 쓰면 UR16e 는 `[0,−90°,0,0,0,0]` = 우리 `home` = **팔꿈치 특이점**
+이고 팔이 수직으로 쭉 펴진다. **랑데부는 UR16e 쪽 제약(특이점·테이블·픽스처)을 기준으로 정해야 한다.**
+
+### 41.2 리더는 자동으로 초기 자세로 **가지 않는다**
+
+`omy_l100_leader_ai.launch.py` 는 `gravity_compensation_controller` + `spring_actuator_controller`
+만 스폰한다. `init_position` 인자도 `arm_controller` 도 없다 —
+`initial_positions.yaml` + `joint_trajectory_executor` 는 **팔로워 런치에만** 붙는다
+(`config/omy_l100_follower_ai/initial_positions.yaml` 은 존재하나 리더 경로가 아니다).
+
+즉 "L100 은 쉽게 초기 자세로 간다"는 **자동 구동이 아니라 "중력보상 덕에 사람이 쉽게 든다"**
+는 의미로만 참이다. 자동화하려면 사람이 잡고 있는 팔의 컨트롤러를 position 으로 바꿔야 하므로
+그 자체가 안전 사건 — 실물 확인 후 판단한다.
+
+### 41.3 ★ L100 J2 가동범위 — 사양서와 URDF가 어긋난다
+
+| 출처 | J2 |
+|---|---|
+| 공식 사양서 (§21) | **−70° ~ +100°** |
+| `omy_l100_arm.urdf.xacro` | **±180°** (7관절 전부 동일값) |
+
+URDF 는 전 관절에 ±180 을 일괄로 넣어 둔 것이라 **기구 스톱을 반영하지 않는다.**
+랑데부는 J2=0° 라 어느 쪽이든 안전하지만, **브리지가 리더 쪽 한계를 신뢰할 수 없다**는 뜻이다.
+(현재 브리지는 UR16e 한계 기준으로만 clamp → 안전 방향.)
+→ §41 이전에 적었던 "리더 J2 때문에 UR shoulder_lift 가 −160°~+10° 로 제한된다"는
+**사양서 근거이고 URDF 는 동의하지 않는다. 실측 전까지 확정된 제약이 아니다.**
+
+### 41.4 아직 없는 것
+
+| | 현재 | 있으면 |
+|---|---|---|
+| 오차 확인 | `enable` 호출해야만 보임 → 반복 호출 | 실시간 관절별 오차 발행 |
+| UR16e 이동 | `reset_pose.py` = **직선 관절 보간**(충돌검사 없음) | `/omy_bridge/sync` = MoveIt 계획 |
+| 리더 자동 이동 | 없음(중력보상 전용) | 실물 붙은 뒤 판단 |
+
+두 번째가 특히 중요하다 — 직전 작업 때문에 팔이 픽스처 근처면 직선 보간은 위험하다.
+**지금은 "팔 주변이 비어 있는지 눈으로 확인하고 `reset_pose.py ready`" 가 전제다**(CHECKLIST E-3).
+
+### 41.5 실물에서 잴 것 → `CHECKLIST.md` E-1/E-2 로 반영
+
+① 발행률·관절수·잡음 ② **rest pose 실제값** ③ **관절별 기구 가동범위(특히 J2)**
+④ 트리거 실사용 구간 ⑤ **중력보상 드리프트** / ⑥ 오프셋 6개(`--mode match`) ⑦ 잔차(`verify`).
+
+---
+
+## 42. `/omy_bridge/sync` + 패드 바인딩 — mock 검증 완료 — 2026-09-10
+
+§41 이 "아직 없는 것"으로 남긴 세 개 중 둘을 구현하고 mock 스택에서 검증했다.
+전부 `scripts/omy_to_ur16e.py` **안**에 넣었다 — 브리지가 이미 `enabled` 상태와 매핑을 갖고
+있으므로, 새 노드를 만들면 그 상태를 둘로 쪼개게 된다.
+
+### 42.1 무엇을 만들었나
+
+| 인터페이스 | 타입 | 하는 일 |
+|---|---|---|
+| `/omy_bridge/sync` | `Trigger` | MoveIt 으로 UR16e 를 `rendezvous`(기본 `ready`)로. 컨트롤러 전환 포함 |
+| `/omy_bridge/engage_error` | `Float64MultiArray` (6, 5 Hz) | 매핑된 리더 − 팔로워, 관절별 [rad] |
+| `/joy` 구독 | — | Options=enable · R3=sync · Create=disable |
+
+### 42.2 설계 결정 4개와 그 이유
+
+**① sync 는 MoveIt 으로 계획한다.** `reset_pose.py` 는 `/scaled_joint_trajectory_controller` 에
+직접 쏘는 **직선 관절 보간**이라 충돌 검사가 없다. 텔레옵 직전의 팔은 **다른 작업을 하던
+자리**에 있으므로(그게 §41 문제의 출발점이다) 픽스처 옆일 수 있다. `move_group` 이 없으면
+서비스가 **거부하면서 수동 절차를 알려준다** — 조용히 위험한 경로로 폴백하지 않는다.
+
+**② 즉시 반환한다.** 서비스 콜백에서 10 초짜리 팔 동작을 기다리면 단일 스레드 executor 의
+100 Hz 제어 타이머가 그동안 멈춘다. 그래서 `sync_state`(`to_traj→moving→to_stream→done`)
+상태기계 + `add_done_callback` 체인으로 만들고, 진행상황은 `/omy_bridge/status` 로 낸다.
+패드 버튼에서 부르기에도 이 편이 맞다.
+
+**③ 컨트롤러 전환을 서비스가 처리하고, 끝나면 streaming 으로 되돌린다.**
+안 그러면 enable 이 성공해도 명령이 비활성 컨트롤러로 가서 **팔이 안 움직인다** — 증상이
+"브리지 고장"과 구별되지 않는다. 같은 이유로 **`enable` 에 가드를 추가**했다:
+streaming 컨트롤러가 비활성이면 거부하고 무엇을 하라고 알려준다.
+
+> ★ 함정: STRICT 스위치는 **이미 active 인 것을 activate 하거나 inactive 인 것을 deactivate 하면
+> 거부**된다. sync 직전에 어느 쪽이 active 인지는 조작자가 뭘 하다 왔느냐에 달렸으므로
+> 하드코딩할 수 없다. → 1 Hz 로 `list_controllers` 를 폴링해 캐시하고, 스위치 성공 직후
+> 캐시를 즉시 갱신한다(폴링 주기 안에 두 번째 스위치가 오므로).
+> `switch_control_mode.py` 는 CLI 진입점으로 그대로 두고 둘을 나란히 유지한다.
+
+**④ 움직임을 시작하는 버튼만 데드맨을 요구한다.** enable·sync 는 L1 을 눌러야 듣고,
+disable 은 언제나 듣는다. 떠도는 `/joy` 하나가 16 kg 팔을 움직이면 안 되고, 반대로 멈추는
+동작에 조건을 다는 것도 안 된다. 기본 인덱스는 `teleop_joy.py` 가 쓰는 0~5 를 피해 잡았다.
+
+### 42.3 검증 (mock 스택, Isaac 없이 — `scratchpad/sync_test.sh`)
+
+물리가 필요 없는 검증이라 mock 을 썼다. Isaac 은 기동 1분 + `/dev/shm` 14 MiB 를 쓰고
+얻는 게 없다.
+
+| # | 항목 | 결과 |
+|---|---|---|
+| 1 | sync: `home` → `ready`, 종료 시 STREAMING | ✅ 잔차 최대 0.5° (engage_tol 8.6° 의 1/17) |
+| 2 | engage 중 sync 요청 | ✅ `disable the bridge first (arm is engaged)` |
+| 3 | streaming 비활성 상태의 enable | ✅ `'forward_position_controller' is not active -- commands would go nowhere` |
+| 4 | `/omy_bridge/engage_error` | ✅ `Float64MultiArray` 6개 발행 |
+| 5 | 패드: 데드맨 없이 enable | ✅ 거부 + 이유 로그 / 데드맨과 함께 → `engaged` |
+| 6 | 패드 disable(데드맨 없이) | ✅ `disabled` |
+
+> 검증 순서에 함정이 있었다. `virtual_omy_leader` 는 **기동 시 1회** 팔로워에서 영점을 latch
+> 한다. 그래서 "리더가 팔로워와 일치" 를 통제된 조건으로 만들려면 **브리지를 띄우기 전에
+> 팔을 `ready` 로 보내고** `leader_amplitude:=0` 으로 띄워야 한다. 처음엔 순서를 반대로 해서
+> enable 이 거부됐는데, 그건 코드가 아니라 하네스가 틀린 것이었다.
+
+### 42.3-B 같은 6개를 Isaac 에서 재검증 (`scratchpad/sync_sim_test.sh`)
+
+mock 은 명령을 그대로 상태로 되돌리므로 **MoveIt 궤적이 topic_based→Isaac 물리를 거쳐 실제로
+실행되는지, 컨트롤러 전환이 `/clock` 기반 시간에서도 되는지, 팔이 랑데부에 정말 도착하는지**
+를 보여주지 못한다. 그래서 세트1 · headless 로 그대로 반복했다.
+
+| # | 결과 |
+|---|---|
+| 1 | ✅ `home` → 랑데부, 잔차 최대 **0.5°**, 종료 시 STREAMING |
+| 2 | ✅ `disable the bridge first (arm is engaged)` |
+| 3 | ✅ 거부 **사유까지** 정확 (`'forward_position_controller' is not active`) |
+| 4 | ✅ 6개 발행 |
+| 5 | ✅ 데드맨 없이 거부 / 함께 `engaged` |
+| 6 | ✅ `disabled` |
+
+sim 전용으로 추가 확인된 것: Isaac `/clock` 정상, **`/joint_states` 가 NaN 아님**(§1 topic_based
+0.2.1 함정 회피), 기동 순서(Isaac→제어→move_group) 준수.
+
+### 42.3-C ★ 추종 경로 회귀 — 하네스 오류를 코드 실패로 오독할 뻔했다
+
+`_tick` 에 sync 분기를 넣었으니 **리더가 실제로 팔을 끄는 경로**가 멀쩡한지 봐야 한다.
+처음엔 `ros2 param set /virtual_omy_leader amplitude 0.15` 로 가짜 리더를 흔들려 했고,
+팔이 안 움직여서 실패로 보였다. 원인은 브리지가 아니라 **`virtual_omy_leader.py` L80 이
+`amplitude` 를 생성자에서 1회만 읽는 것** — `param set` 은 무효였고 리더는 latch 자세를
+그대로 유지했다. 즉 **팔이 안 움직인 게 정상 동작**이었다.
+
+런치 인자로 바꿔 다시 측정(`scratchpad/track_sim_test.sh`,
+`leader_amplitude:=0.05`=2.9° — `engage_tol` 8.6° 미만이라 위상 때문에 게이트가 거부하지 않는다):
+
+```
+관절별 자세 (12 s, joints [0,2] 만 구동):  shoulder_pan ±2.9°,  elbow ±2.9°  ← 진폭과 일치
+worst |매핑된 리더 − 팔로워| [deg]:  +0.14  +0.01  +0.14  +0.00  +0.00  +0.00
+```
+
+**추종오차 0.14°** — §22 의 기존 실측 0.24° 보다 낫다(그때는 진폭이 더 컸다). 추종 경로 무영향 확인.
+
+> §35.4 의 반복이다. "측정했다"가 "맞는 것을 측정했다"는 아니다 — 이번엔 **측정 도구가
+> 조용히 아무것도 안 하고 있었다.** 런타임에 바꿀 수 있다고 가정한 파라미터가 실제로는
+> 생성자에서만 읽히는 경우, `param set` 은 성공을 반환하고 아무 일도 일어나지 않는다.
+
+### 42.4 부수 정정
+
+`status` 는 engage 하는 순간 `sync_state` 를 `idle` 로 되돌린다. 안 그러면 텔레옵을 한참 하고
+disable 한 뒤에도 `synced` 라고 찍혀서, 방금 랑데부에 있는 것처럼 읽힌다.
+
+### 42.5 문서 갱신 중 발견한 실제 결함 — `ros2 param set` 안내가 틀렸다
+
+§42.3-C 의 함정이 **브리지 자신에게도 그대로 있었고, 문서와 도구가 그 방법을 권하고 있었다.**
+`omy_to_ur16e.py` 도 `g = lambda n: self.get_parameter(n).value` 를 `__init__` 에서만 부른다.
+
+- `scripts/omy_leader_calib.py --mode match` 가 "적용 (임시)" 로 **`ros2 param set /omy_to_ur16e
+  offset "[...]"` 을 출력**하고 있었다 → 성공을 반환하고 아무 일도 안 한다.
+- `HARDWARE.md` §4-B④ 의 캘리브레이션 절차도 같은 명령을 쓰고 있었다.
+
+실물 캘리브레이션은 **측정 → 적용 → 조작감 확인 → 재조정** 반복이라, 이대로 갔으면
+"오프셋을 넣었는데 조작감이 그대로" 가 되고 **오프셋 값이 틀렸다고 오진**했을 것이다.
+sim 에서는 드러날 수 없는 종류의 결함이다 — sim 에서는 애초에 캘리브를 안 하니까.
+
+→ 도구 출력과 `HARDWARE.md` 를 **런치 인자 재기동**으로 고치고, 그 명령이 실재하도록
+`teleop_omy.launch.py` 에 **`offset` / `sign` 런치 인자를 추가**했다(`rendezvous` 와 같은 방식).
+
+검증(`scratchpad/argcheck.sh`) — `--show-args` 는 인자 존재만 보여주고 `ParameterValue` 타입
+오류는 **런타임에만** 드러나므로 실제로 띄워서 확인했다:
+
+```
+expect offset_deg = [0.0, -90.0, 0.0, 5.7, 0.0, 11.5]
+got    offset_deg=[0.0, -90.0, 0.0, 5.7, 0.0, 11.5]
+       rendezvous: put the LEADER at [0.0, 0.0, 90.0, -95.7, 90.0, -11.5] deg
+```
+
+리더 자세가 새 오프셋만큼 함께 움직인 것(J4 −90→−95.7, J6 0→−11.5)이 부수 확인이다 —
+기동 로그의 랑데부 안내가 하드코딩이 아니라 **매핑에서 역산**된다는 뜻.
+
+> 남은 개선안: 브리지가 **DISABLED 일 때만** `offset`/`sign` 런타임 변경을 받게 하면
+> 캘리브 반복이 재기동 없이 돌아간다. engage 중 변경은 목표가 즉시 바뀌어 팔이 움직이므로
+> 반드시 막아야 한다. 아직 안 만들었다.

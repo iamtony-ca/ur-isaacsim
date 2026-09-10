@@ -428,6 +428,72 @@ ROS 쉘에 **source 하지 말 것**(ROS 파이썬 환경을 오염시킨다). �
 deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py --raw <dir> --repo-id <user>/<name>
 ```
 
+### 2-C-2. GR00T N1.7 (VLA) 추가 설치 — 2026-09-10
+
+ACT 만 할 거면 필요 없다. GR00T 단계에 들어갈 때만. 설계 정본은
+[`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
+
+**정본은 개별 패키지 나열이 아니라 upstream extra 다** — lerobot 은 정책별 의존성을 extra 로
+분리하고 런타임에 `require_package(..., extra="groot")` 로 막는다:
+
+```bash
+# 1) 반드시 dry-run 으로 기존 패키지 변경 여부 확인 (§0-A 와 같은 습관)
+deps/.venv-ml/bin/pip install --dry-run --report /tmp/plan.json 'lerobot[groot]'
+# 2) 순수 추가면 설치
+deps/.venv-ml/bin/pip install 'lerobot[groot]'
+# 3) ★ sm_120 이 살아있는지 즉시 확인
+deps/.venv-ml/bin/python -c "import torch;print(torch.__version__, torch.cuda.get_device_capability(0))"
+#    -> 2.11.0+cu128 (12, 0)
+```
+
+2026-09-10 실측: **19개 전부 신규, 기존 패키지 변경 0**. `transformers 5.5.4` · `diffusers 0.39.0` ·
+`peft 0.20.0` · `timm 1.0.29` · `decord 0.6.0` · `dm-tree 0.1.10`.
+**유일한 진짜 위험은 torch 교체**다 — PyPI 기본 인덱스 torch 로 갈아치워지면 sm_120 이 깨진다
+(§2-C 함정 ②, §14 nvblox 와 같은 부류). 3번이 그걸 잡는다.
+
+> 파일 상단 import 만 보고 "transformers 불필요"라고 판단했다가 즉시 틀렸다.
+> **lerobot 의 정책 의존성은 import 문이 아니라 `require_package` 가드에 있다** —
+> 다음에는 `grep require_package deps/.venv-ml/.../policies/<정책>/` 를 먼저 볼 것.
+
+**HF 캐시 격리** — 공유 `~/.cache/huggingface` 를 오염시키지 않는다:
+
+```bash
+export HF_HOME=/isaac-sim/volume/ur_ws/deps/hf_cache   # GR00T 6.5 GB 가 여기로
+export WANDB_DISABLED=true                              # GrootConfig.report_to 기본값이 wandb
+export TOKENIZERS_PARALLELISM=false
+```
+
+**★ 게이트 — 사용자 계정 조치가 필요하다.** `nvidia/GR00T-N1.7-3B` 는 gated 가 아니지만,
+백본 **토크나이저**가 gated `nvidia/Cosmos-Reason2-2B` 에 있어 학습 시작 시 401 로 죽는다.
+(백본 *가중치* 494 텐서와 아키텍처 설정은 로컬에 다 있다 — 몇 MB 짜리 토크나이저 때문에 막힌다.)
+
+1. https://huggingface.co/nvidia/Cosmos-Reason2-2B 라이선스 동의
+2. https://huggingface.co/settings/tokens read 토큰 발급 → `export HF_TOKEN=hf_...`
+
+다른 Qwen3-VL 토크나이저로 대체하는 우회는 **하지 않는다** — vocab 이 어긋나면 조용히 틀린 학습이 된다.
+
+**★ 학습 명령 — 두 인자가 기본값이면 안 된다**:
+
+```bash
+BASE=$(deps/.venv-ml/bin/python -c \
+  "from huggingface_hub import snapshot_download; print(snapshot_download('nvidia/GR00T-N1.7-3B'))")
+
+deps/.venv-ml/bin/lerobot-train \
+  --policy.type=groot --policy.push_to_hub=false --wandb.enable=false \
+  --policy.base_model_path="$BASE" \          # ★ repo id 금지 (아래)
+  --policy.model_params_fp32=false \          # ★ 기본 fp32 는 32 GB 초과 (아래)
+  --dataset.repo_id=<...> --dataset.root=<...>
+```
+
+- **`base_model_path` 는 로컬 디렉터리여야 한다.** `_load_n1_7_checkpoint_processor_assets()` 가
+  `Path().is_dir()` 로 판정해서 **repo id 면 `None` 을 반환**하고, albumentations·state dropout·
+  percentile 정규화·크롭 기하가 **경고 없이** lerobot 기본값으로 바뀐다. 가중치는 정상 로드되어
+  **학습이 그냥 돌아가므로** 알아챌 방법이 없다.
+- **기본 `model_params_fp32=true` 는 32 GB 에 안 들어간다.** LoRA 가 아니라 동결 방식이고
+  (`lora_*` 는 never-wired), action head **1,621 M** 이 동결 백본(1,524 M)보다 크다:
+  `params 11.7 + grads 6.0 + AdamW 12.1 = 29.8 GiB / 31.8 GiB` → **배치 크기와 무관하게** 실패.
+  `false` 로 두면 ≈17.8 GiB.
+
 ---
 
 ## 2-D. OMY-L100 teleop 리더 (IL 시연 데이터 수집용)
@@ -521,6 +587,55 @@ ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
 ### 실물 연결 시
 `port_name:=/dev/ttyUSB0`(U2D2), 4 Mbps. udev 규칙은 `open_manipulator_bringup/open-manipulator-cdc.rules`.
 남은 캘리브레이션(손목 J4/J6 오프셋, 엔코더 영점)은 `plan_il_vla.md` §3.5 표 참조.
+
+**★ 시작 자세는 랑데부에서 맞춘다 (2026-09-10)** — 임의 자세에서 engage 하지 않는다.
+ROBOTIS OMY SRDF 의 `home`(손 떼도 서 있는 자세)이 우리 매핑을 통과하면 정확히 `ready` 가 된다:
+
+```
+leader [0, 0, +90°, −90°, +90°, 0]  →  UR16e [0, −90°, +90°, −90°, −90°, 0] = reset_pose.py ready
+```
+
+리더는 **자동으로 그 자세에 가지 않는다** — 리더 런치는 중력보상 컨트롤러만 스폰하고
+`init_position`/`arm_controller` 가 없다(그건 팔로워 런치에만 붙는다). 사람이 내려놓는다.
+실물 측정 항목(rest pose 실측·기구 가동범위·중력보상 드리프트)은 `CHECKLIST.md` E-1~E-3,
+배경은 `HISTORY.md` §41.
+
+#### `/omy_bridge/sync` — UR16e 를 랑데부로 (mock + Isaac sim 검증 완료 2026-09-10)
+
+```bash
+ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger   # 리더를 먼저 내려놓고
+ros2 topic echo   /omy_bridge/status                        # sync:moving → synced
+ros2 topic echo   /omy_bridge/engage_error                  # [rad] 관절별 오차, 5 Hz
+ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
+```
+
+- **MoveIt 으로 계획한다**(`/move_action`, `plan_only=false`). 직전 작업 때문에 팔이 픽스처
+  근처일 수 있어서 `reset_pose.py` 식 직선 관절 보간은 안전하지 않다. `move_group` 이 없으면
+  서비스가 **거부하면서 수동 절차를 알려준다** — 그때는 팔 주변을 눈으로 확인하고
+  `switch_control_mode.py trajectory` + `reset_pose.py ready` + `switch_control_mode.py streaming`.
+- 컨트롤러 전환(streaming↔trajectory)을 **서비스 안에서 처리**하고, 끝나면 **streaming 으로 되돌려
+  둔다.** 안 그러면 enable 이 성공해도 명령이 갈 곳이 없어 "팔이 안 움직인다"로 보인다.
+- **즉시 반환한다**(수락 여부만). 서비스 콜백에서 10 초짜리 팔 동작을 기다리면 단일 스레드
+  executor 의 100 Hz 제어 타이머가 멈춘다. 진행상황은 `/omy_bridge/status`.
+- 목표는 `rendezvous` 파라미터(기본 = `ready`). **에피소드 리셋 자세와 함께**가 아니면 바꾸지 말 것 —
+  텔레옵은 시연 데이터가 시작하는 자세에서 시작해야 한다.
+- `enable` 은 **streaming 컨트롤러가 비활성이면 거부**한다(위와 같은 무증상 실패 방지).
+
+#### 게임패드로 enable/disable/sync — `pad:=true`
+
+손이 리더에 있으면 `ros2 service call` 을 칠 수 없다. `teleop_omy.launch.py pad:=true` 가
+`joy_node` 를 띄우고, **브리지가 직접 `/joy` 를 읽는다**(teleop_joy 는 Servo/직교 경로라 여기선
+쓰지 않는다 — 아무도 듣지 않는 twist 를 발행하게 된다).
+
+| 버튼 (DualSense 기본) | 동작 | 데드맨(L1) |
+|---|---|---|
+| Options (9) | enable | **필요** |
+| R3 (12) | sync | **필요** |
+| Create/Share (8) | disable | 불필요 |
+
+**움직임을 시작하는 버튼만 데드맨을 요구한다.** 멈추는 버튼은 언제나 눌린다. 떠도는 `/joy`
+메시지 하나가 16 kg 팔을 움직이면 안 되기 때문이다. 인덱스는 전부 파라미터
+(`button_bridge_enable` 등)이고, 0~5 는 `teleop_joy.py` 가 쓰므로 기본값을 그 위로 잡아 두었다.
 
 > **★ 함정**: `--symlink-install` 은 **원본 파일의 실행 비트를 그대로 쓴다.** `install(PROGRAMS)` 를
 > 걸어도 `chmod +x scripts/*.py` 를 안 하면 `ros2 run` 이 `No executable found` 로 실패한다.

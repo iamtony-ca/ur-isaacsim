@@ -159,6 +159,47 @@ UR_WS_TORCH_SHM_FIX=1 deps/.venv-ml/bin/lerobot-train \
 > 높게 나오지만 성능은 더 좋았다(§38.3). 정지 프레임이 많으면 loss 는 낮은데 태스크를 못 한다(§32.5).
 > **판정은 롤아웃이다.**
 
+### 3-B. 학습 (GR00T N1.7, VLA) — ⏳ 미검증
+
+**§1·§2 (수집·변환)는 그대로다.** 같은 데이터셋을 쓰되, ACT 와 달리 **태스크를 필터하지 않는다** —
+GR00T 는 `task` 문자열을 조건으로 받으므로 3종 혼합 데이터셋이 그대로 맞다(§30 의 ACT 제약과 반대).
+
+설치와 게이트는 [`SETUP.md`](SETUP.md) §2-C-2 를 먼저 볼 것 (`lerobot[groot]`, `HF_HOME`,
+**gated `nvidia/Cosmos-Reason2-2B` 라이선스 동의 + `HF_TOKEN`**).
+
+```bash
+export HF_HOME=/isaac-sim/volume/ur_ws/deps/hf_cache
+export WANDB_DISABLED=true
+BASE=$(deps/.venv-ml/bin/python -c \
+  "from huggingface_hub import snapshot_download; print(snapshot_download('nvidia/GR00T-N1.7-3B'))")
+
+deps/.venv-ml/bin/lerobot-train \
+  --policy.type=groot --policy.push_to_hub=false --wandb.enable=false \
+  --policy.base_model_path="$BASE" \
+  --policy.model_params_fp32=false \
+  --policy.use_relative_actions=true \
+  --policy.relative_exclude_joints='["gripper"]' \
+  --dataset.repo_id=tony/ur16e_pick_place_240_v2 \
+  --dataset.root=outputs/lerobot_ds_240_v2 \
+  --batch_size=8 --num_workers=2 \
+  --output_dir=outputs/groot_240_v2
+```
+
+| 인자 | 이유 |
+|---|---|
+| `--policy.base_model_path="$BASE"` | **repo id 금지** — `is_dir()` 판정에 걸려 체크포인트 사이드카가 경고 없이 무시되고 전처리가 lerobot 기본값으로 바뀐다. 학습은 그냥 돌아가서 알아챌 수 없다 |
+| `--policy.model_params_fp32=false` | 기본 `true` 는 정적 **29.8/31.8 GiB** 로 **배치 크기와 무관하게** 32 GB 초과. `false` 면 ≈17.8 GiB |
+| `--policy.use_relative_actions=true` | N1.7 은 상대 액션 청크로 사전학습됐다(`processor_kwargs.use_relative_action: True`) |
+| `--policy.relative_exclude_joints='["gripper"]'` | Isaac-GR00T 의 single-arm + absolute-gripper 규약. 그리퍼를 델타로 두면 파지/해제 같은 이산 사건이 누적오차에 녹는다 |
+| `--wandb.enable=false` | `GrootConfig.report_to` 기본값이 `wandb` |
+
+**롤아웃(§4)은 세 인자만 바뀐다**: `--policy_type=groot`, `--pretrained_name_or_path=<체크포인트>`,
+`--actions_per_chunk=40`(ACT 는 50). 판정기 `judge_rollout.py` 가 같으므로 **ACT 9/10 · 7.6 mm 와 직접 비교 가능**하다.
+
+> **아직 안 잰 것**: step/s(→ 총 학습시간), 추론 지연(청크 40 @30 Hz = **1.33 s 안에** 끝나야 한다),
+> 21 에피소드로 충분한지(ACT 는 100 이 필요했다 §38). 설계와 합격 기준은
+> [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md) §4.
+
 ---
 
 ## 4. 추론 (롤아웃)

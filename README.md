@@ -185,16 +185,24 @@ ros2 control list_controllers -c /leader/controller_manager       # ★ /leader 
 #   → /leader/joint_states (7관절), /leader/joint_trajectory (300 Hz)
 
 # ── 리더 → UR16e 브리지 (관절 직결, IK 없음 = 특이점 제약 없음) ──
-#    sim 검증됨: 전체 추종오차 0.24° (브리지 매핑 0.02°). Servo 불필요
-ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true
+#    sim 검증됨: 추종오차 0.14°. Servo 불필요.  pad:=true 면 게임패드로도 조작
+ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true pad:=true
 #    virtual_leader:=true → 하드웨어 없이 /leader/joint_states 합성 (sim 검증용).
 #    실물은 false + 위 omy_l100_leader_ai.launch.py 를 port_name:=/dev/ttyUSB0 로
-python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
+
+# ── 랑데부: 임의 자세에서 engage 하지 않는다 ──
+#    리더를 rest pose(손 떼도 서 있는 자세)로 내려놓고 → UR16e 를 MoveIt 으로 이동
+ros2 service call /omy_bridge/sync    std_srvs/srv/Trigger   # 충돌 검사됨. move_group 필요
+ros2 topic echo   /omy_bridge/status                         # sync:moving → synced
+ros2 topic echo   /omy_bridge/engage_error                   # [rad] 관절별 오차 (5 Hz)
 ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
 #   ★ 리더가 로봇 현재자세와 안 맞으면 engage 거부 + 어긋난 관절을 도(deg)로 알려줌.
-#     리더를 손으로 맞춘 뒤 다시 호출할 것 (이 게이트가 팔이 튀는 걸 막는다)
+#     engage_error 를 띄워 두면 호출 없이 보면서 맞출 수 있다 (이 게이트가 팔이 튀는 걸 막는다)
+#   ★ streaming 컨트롤러가 비활성이면 enable 도 거부 — "engage 됐는데 안 움직임" 방지
 ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
-#   부호/오프셋/속도상한/clamp 전부 파라미터 — 실물 튜닝 시 코드 수정 불필요
+#   패드: Options=enable / R3=sync (데드맨 L1 필요) · Create=disable (불필요)
+#   부호/오프셋/속도상한/clamp/랑데부 전부 런치 인자 — 실물 튜닝 시 코드 수정 불필요
+#   ★ 단, ros2 param set 은 무효다(생성자에서 1회만 읽음) — 런치 인자로 재기동할 것
 
 # ── IL 데모 기록 (teleop 위에서) ──
 ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=true \
@@ -302,6 +310,41 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 
 **★ ACT 는 지시문을 읽지 않는다**(§30). 태스크 1종당 데이터셋 1개·체크포인트 1개.
 여러 태스크를 섞은 `outputs/lerobot_ds_240_v2` 는 VLA(GR00T/π) 단계용이다.
+
+### VLA 트랙 (GR00T N1.7, 카메라 2대) — 2026-09-10
+
+설계 정본 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
+**모델·데이터 경로에 새로 짤 코드가 0** — ACT → GR00T 는 전부 설정 변경이다.
+
+| 항목 | 상태 |
+|---|---|
+| 재사용 경계 확정 | ✅ 데이터셋 스키마·수집/변환·`async_inference`·`UR16eROS` 전부 그대로 |
+| 의존성 `lerobot[groot]` | ✅ 19개 신규, 기존 변경 0, torch 2.11.0+cu128/sm_120 유지 |
+| 베이스 가중치 6.5 GB | ✅ `deps/hf_cache`(워크스페이스 로컬, 공유 캐시 미오염) |
+| **카메라 2대 인식** | ✅ rename 없이 `exterior`→`wrist` (upstream 함수 직접 호출로 확인) |
+| 상대 액션 경로 | ✅ 빌드 확인 (`relative_exclude_joints=["gripper"]`) |
+| **VRAM** | ⚠️ 기본 fp32 는 **배치 무관 초과**(29.8/31.8 GiB) → `model_params_fp32=false` (≈17.8 GiB) |
+| **학습 (step/s·6h 게이트)** | ❌ **`nvidia/Cosmos-Reason2-2B` gated repo 에 막힘** — 라이선스 동의 + `HF_TOKEN` 필요 |
+| 추론 지연 / 롤아웃 | ⏳ 학습 이후 |
+
+함정 3가지(`base_model_path` 로컬경로 필수 / gated 백본 토크나이저 / LoRA 아닌 동결·dtype)는
+[`HISTORY.md`](HISTORY.md) §40.
+
+### 텔레옵 랑데부 + sync/패드 — 2026-09-10
+
+UR16e 가 다른 작업을 하다 텔레옵으로 넘어올 때 시작 자세가 어긋나는 문제. **ROBOTIS OMY SRDF 의
+`home` 이 우리 매핑을 통과하면 정확히 `reset_pose.py ready` 가 된다** — UR16e 쪽 초기 자세를 새로
+정의할 필요가 없다. 리더는 자동 구동되지 않고(중력보상 전용) 사람이 내려놓는다.
+
+| 추가된 것 | 상태 |
+|---|---|
+| `/omy_bridge/sync` — MoveIt 으로 UR16e 를 랑데부로(컨트롤러 전환 포함, streaming 으로 복귀) | ✅ mock + Isaac sim, 잔차 0.5° |
+| `/omy_bridge/engage_error` — 관절별 오차 6개 @5 Hz | ✅ |
+| 패드 바인딩 — Options=enable · R3=sync(데드맨 필요) · Create=disable | ✅ |
+| `enable` 가드 — streaming 비활성이면 거부 | ✅ |
+| 리더 추종 회귀 | ✅ 오차 **0.14°** (기존 0.24°) |
+
+[`HISTORY.md`](HISTORY.md) §41·§42, 실물 측정 항목은 [`CHECKLIST.md`](CHECKLIST.md) E-1~E-3.
 
 ---
 

@@ -287,11 +287,22 @@ ros2 topic echo /leader/joint_states --once
 ```bash
 # 팔로워 (§1·§2 대로)
 ros2 launch ur_bringup ur16e_2f85_real.launch.py robot_ip:=<UR16e_IP>
-# 브리지 — 실물이므로 virtual_leader 는 false(기본)
-ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=false max_joint_speed:=0.3
-python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
+# 브리지 — 실물이므로 virtual_leader 는 false(기본). pad:=true 면 게임패드로도 조작
+ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=false max_joint_speed:=0.3 pad:=true
+
+# 랑데부: 리더를 rest pose 로 내려놓고 → UR16e 를 MoveIt 으로 이동 (충돌 검사됨)
+ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger
+ros2 topic echo   /omy_bridge/status                     # sync:moving → synced
+ros2 topic echo   /omy_bridge/engage_error               # [rad] 관절별 오차, 보면서 리더를 맞춘다
 ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
 ```
+> **`/omy_bridge/sync` 는 `move_group` 이 필요하다.** 없으면 서비스가 그 사실과 수동 절차를
+> 알려주고 거부한다 — 조용히 위험한 경로(`reset_pose.py` = 직선 관절 보간, 충돌검사 없음)로
+> 폴백하지 않는다. 수동 절차를 쓸 때는 **팔 주변이 비었는지 눈으로 확인**하고 실행할 것.
+> sync 는 끝나면 팔을 **streaming 모드로 되돌려 둔다**(안 그러면 enable 이 성공해도 명령이
+> 갈 곳이 없어 "안 움직인다"로 보인다 — `enable` 에 그 가드도 들어있다).
+> 패드: Options=enable · R3=sync (**데드맨 L1 필요**) / Create=disable (불필요).
+> mock + Isaac sim 검증 완료, 추종오차 0.14° (`HISTORY.md` §42).
 > **첫 연결은 `max_joint_speed:=0.3`(기본 1.0 의 1/3)으로 시작할 것.** 익숙해진 뒤 올린다.
 >
 > `forward_position_controller` 는 **실물에서도 이미 존재한다** — UR 공식
@@ -311,10 +322,25 @@ sim 은 URDF 상의 이상적인 리더였다. 실물은 **엔코더 영점이 U
    UR +290.7 mm vs L100 −46 mm, 부호까지 다름) 이 둘은 *유도되는 정답이 없다*.
    조작감 기준으로 맞춘다.
 ```bash
-ros2 param set /omy_to_ur16e offset "[0.0, -1.5708, 0.0, <J4>, 0.0, <J6>]"
-ros2 param set /omy_to_ur16e sign   "[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]"
+# 측정은 이 도구가 한다 — 리더를 UR16e 자세처럼 잡고 실행하면 offset 6개를 역산한다
+ros2 run ur_bringup omy_leader_calib.py --mode match
+
+# 적용: 브리지를 그 값으로 다시 띄운다 (아래 ★ 참조)
+ros2 launch ur_bringup teleop_omy.launch.py \
+    offset:="[0.0, -1.5708, 0.0, <J4>, 0.0, <J6>]" \
+    sign:="[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]"
+
+ros2 run ur_bringup omy_leader_calib.py --mode verify   # 잔차 확인
 ```
-> 확정되면 **`teleop_omy.launch.py` 의 기본값으로 올려 굳힐 것.** 파라미터로만 두면
+> **★ `ros2 param set /omy_to_ur16e offset ...` 은 쓰지 말 것.** 브리지는 파라미터를
+> **생성자에서 한 번만** 읽는다(`g = lambda n: self.get_parameter(n).value` 를 `__init__`
+> 에서만 호출). `param set` 은 **성공을 반환하고 아무 일도 하지 않는다** — 그래서
+> "값을 넣었는데 조작감이 그대로"라는 형태로 나타나고, 오프셋이 틀렸다고 오진하기 쉽다.
+> 같은 함정을 `virtual_omy_leader.py` 의 `amplitude` 에서 실제로 겪었다(`HISTORY.md` §42.3-C).
+> 조작감 튜닝은 **런치 인자를 바꿔 브리지를 재기동**하는 반복이다. 재기동하면 브리지는
+> 다시 DISABLED 로 시작하므로, 매번 랑데부 → `enable` 을 거친다(그게 안전한 순서이기도 하다).
+>
+> 확정되면 **`teleop_omy.launch.py` 의 기본값으로 올려 굳힐 것.** 런치 인자로만 두면
 > 다음 세션에 사라진다. 값이 바뀌면 `virtual_omy_leader.py` 쪽도 같이 고쳐야
 > sim 회귀 테스트의 engage 게이트가 계속 통과한다.
 
