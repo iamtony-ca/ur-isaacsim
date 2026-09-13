@@ -120,6 +120,10 @@ deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py \
 - `--max-idle-run N` 은 정지 구간을 N 프레임으로 제한하는 **후처리**. 상태머신이 최적화된
   지금은 필요 없다(정지 8.6%). 옛 데이터를 살릴 때만 쓴다.
 - `torchcodec` 로드 실패 트레이스백은 **무해**(pyav 폴백). 성공 판정은 `meta/info.json` 존재로.
+  디코딩은 학습 병목이 아니다(§45.4 — 병목은 메인 프로세스 스레드 과다할당, 학습 명령에 `OMP_NUM_THREADS=8`).
+- 코덱: 기본 **h264 crf23**(`--vcodec/--crf/--fast-decode`, lerobot `RGBEncoderConfig` 그대로 통과).
+  AV1(lerobot 기본 `libsvtav1`) 과 같은 크기·1 dB 이내이고 어떤 PC 에서도 디코딩된다. 기존 AV1 데이터셋은
+  `meta/info.json` 에 코덱이 박혀 있어 그대로 학습된다(재변환 불필요). 실측 [`HISTORY.md`](HISTORY.md) §45.3.
 
 ```bash
 deps/.venv-ml/bin/python -c "
@@ -159,46 +163,52 @@ UR_WS_TORCH_SHM_FIX=1 deps/.venv-ml/bin/lerobot-train \
 > 높게 나오지만 성능은 더 좋았다(§38.3). 정지 프레임이 많으면 loss 는 낮은데 태스크를 못 한다(§32.5).
 > **판정은 롤아웃이다.**
 
-### 3-B. 학습 (GR00T N1.7, VLA) — ⏳ 미검증
+### 3-B. 학습 (GR00T N1.7, VLA) — ✅ sim 검증 완료 (2026-09-13)
 
 **§1·§2 (수집·변환)는 그대로다.** 같은 데이터셋을 쓰되, ACT 와 달리 **태스크를 필터하지 않는다** —
 GR00T 는 `task` 문자열을 조건으로 받으므로 3종 혼합 데이터셋이 그대로 맞다(§30 의 ACT 제약과 반대).
 
 설치와 게이트는 [`SETUP.md`](SETUP.md) §2-C-2 를 먼저 볼 것 (`lerobot[groot]`, `HF_HOME`,
-**gated `nvidia/Cosmos-Reason2-2B` 라이선스 동의 + `HF_TOKEN`**).
+**gated `nvidia/Cosmos-Reason2-2B` 라이선스 동의 + 토큰을 `deps/hf_cache/token` 에**).
 
 ```bash
-export HF_HOME=/isaac-sim/volume/ur_ws/deps/hf_cache
-export WANDB_DISABLED=true
+source src/setup/ml_env.sh      # HF_HOME · HF_HUB_OFFLINE=1 · OMP_NUM_THREADS=8 · WANDB_DISABLED (SETUP.md §2-C)
 BASE=$(deps/.venv-ml/bin/python -c \
   "from huggingface_hub import snapshot_download; print(snapshot_download('nvidia/GR00T-N1.7-3B'))")
 
+# OMP_NUM_THREADS=8 은 위 ml_env.sh 가 준다 (§45.4)
 deps/.venv-ml/bin/lerobot-train \
   --policy.type=groot --policy.push_to_hub=false --wandb.enable=false \
   --policy.base_model_path="$BASE" \
   --policy.model_params_fp32=false \
-  --policy.use_relative_actions=true \
-  --policy.relative_exclude_joints='["gripper"]' \
+  --policy.max_steps=10000 \
   --dataset.repo_id=tony/ur16e_pick_place_240_v2 \
   --dataset.root=outputs/lerobot_ds_240_v2 \
-  --batch_size=8 --num_workers=2 \
-  --output_dir=outputs/groot_240_v2
+  --steps=10000 --batch_size=32 --num_workers=2 --save_freq=5000 \
+  --output_dir=outputs/groot_240_v2_abs
 ```
 
 | 인자 | 이유 |
 |---|---|
 | `--policy.base_model_path="$BASE"` | **repo id 금지** — `is_dir()` 판정에 걸려 체크포인트 사이드카가 경고 없이 무시되고 전처리가 lerobot 기본값으로 바뀐다. 학습은 그냥 돌아가서 알아챌 수 없다 |
-| `--policy.model_params_fp32=false` | 기본 `true` 는 정적 **29.8/31.8 GiB** 로 **배치 크기와 무관하게** 32 GB 초과. `false` 면 ≈17.8 GiB |
-| `--policy.use_relative_actions=true` | N1.7 은 상대 액션 청크로 사전학습됐다(`processor_kwargs.use_relative_action: True`) |
-| `--policy.relative_exclude_joints='["gripper"]'` | Isaac-GR00T 의 single-arm + absolute-gripper 규약. 그리퍼를 델타로 두면 파지/해제 같은 이산 사건이 누적오차에 녹는다 |
+| `--policy.model_params_fp32=false` | 기본 `true` 는 정적 **29.8/31.8 GiB** 로 **배치 크기와 무관하게** 32 GB 초과. `false` + batch 32 = 27.3 GB 실측 |
+| `--steps=10000` + **`--policy.max_steps=10000`** | 10k = NVIDIA 레퍼런스 길이, **3 h 45 m**(기본 100k 는 39 h). `max_steps` 는 "unused" 주석과 달리 **warmup 스텝**을 결정한다 — 둘을 같이 바꾼다(§43.4) |
+| **`OMP_NUM_THREADS=8`** (환경변수) | `data_s` 는 DataLoader 가 아니라 **메인 프로세스 전처리기** 시간이고, torch 기본 20 스레드에서 작은 텐서 연산이 과다할당으로 7배 느려진다. 8 스레드로 `data_s` 0.85→0.125 s, **처리량 2배**(23→51 샘플/s), 10k 스텝 ≈ 1 h 45 m 예상. 1/4/8/12 스레드 표는 §45.4 |
+| `--batch_size=32 --num_workers=2` | 처리량은 배치가 좌우(8→32 에서 samples/s +38%, VRAM +2 GB). 워커는 2 면 충분(워커 대기 0.000 s 실측), **8 은 `/dev/shm` 사망** |
+| **상대 액션을 쓰지 않는다** | N1.7 은 상대로 사전학습됐고 학습도 되지만 **`async_inference` 서버가 서비스 못 한다**(§43.7). 절대 액션이 정본 |
+| `--save_freq=5000` | 기본 20,000 > 10,000 이라 중간 체크포인트가 없다 |
 | `--wandb.enable=false` | `GrootConfig.report_to` 기본값이 `wandb` |
 
-**롤아웃(§4)은 세 인자만 바뀐다**: `--policy_type=groot`, `--pretrained_name_or_path=<체크포인트>`,
-`--actions_per_chunk=40`(ACT 는 50). 판정기 `judge_rollout.py` 가 같으므로 **ACT 9/10 · 7.6 mm 와 직접 비교 가능**하다.
+**실측** (`HISTORY.md` §44.1): loss 0.995 → 0.014, 10.4 에폭, peak VRAM 27.5 GB, shm 14.5 MiB, `rc=0`.
+전처리 5개(albumentations·dropout 0.2·percentile·256/0.95)가 체크포인트 고유값으로 기록됨 — repo id 를
+줬다면 전부 lerobot 기본값이었다. 카메라 2대는 전처리 출력 `image_grid_thw (2,3)` 로 확인.
 
-> **아직 안 잰 것**: step/s(→ 총 학습시간), 추론 지연(청크 40 @30 Hz = **1.33 s 안에** 끝나야 한다),
-> 21 에피소드로 충분한지(ACT 는 100 이 필요했다 §38). 설계와 합격 기준은
-> [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md) §4.
+**롤아웃(§4)은 네 인자가 바뀐다**: `--policy_type=groot`, `--pretrained_name_or_path=<체크포인트>`,
+`--actions_per_chunk=40`(ACT 는 50), **`--policy_device=cuda`**(기본 `cpu` 에서 bf16 이 조용히 죽는다 —
+§43.6). 3태스크 판정은 `judge_rollout.py`(red→left 하드코딩)가 아니라 **`judge_task.py`** 로.
+추론 지연 **80.8 ms**/청크(예산 1,333 ms). 첫 롤아웃 **3/8**, `WRONG_OBJECT` 0 — 파이프라인 검증이지
+성능 비교가 아니다(태스크당 7 ep vs ACT 100 ep). 설계·합격 기준·실측은
+[`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md) §4·§8.
 
 ---
 
@@ -224,7 +234,8 @@ ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py use_sim:=true u
 ### 4-2. 스트리밍 컨트롤러 + 초기 상태
 
 ```bash
-ros2 launch ur_bringup policy_inference.launch.py use_sim:=true   # forward_position_controller 스폰(inactive)
+ros2 launch ur_bringup policy_inference.launch.py use_sim:=true   # forward_position_controller 스폰(inactive) ★ 생략 금지
+ros2 control list_controllers | grep forward_position_controller  # 없으면 아래 switch 가 실패한다
 
 # ★ 학습과 같은 초기 조건을 만든다. 안 하면 정책이 얼어붙는다(§31.1)
 python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory
@@ -235,6 +246,12 @@ python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
 
 > 시연 100개의 시작 자세 편차는 **0.0002 rad** — 사실상 한 점이다. READY 가 아닌 곳에서
 > 시작하면 정책이 본 적 없는 상태이고, 명령은 나가는데 팔이 안 움직인다.
+
+> **★ 제어 스택만 띄우고 `policy_inference.launch.py` 를 빠뜨리면** `switch_control_mode.py streaming` 이
+> `controller 'forward_position_controller' is not loaded` 로 실패한다. 이 출력을 `/dev/null` 로 버리면
+> 정책은 청크를 내고 서버는 전달했다고 하는데 **팔이 0° 도 안 움직이고**, 그대로 FAIL 로 채점된다(§44.2).
+> 전환 후 `ros2 control list_controllers` 에서 `forward_position_controller ... active` 를 **눈으로 확인**할 것
+> (`grep active` 는 `inactive` 에도 걸린다).
 
 ### 4-3. 정책 실행 (upstream LeRobot)
 
@@ -259,6 +276,20 @@ deps/.venv-ml/bin/python -m lerobot.async_inference.robot_client \
 
 > `--task` 는 ACT 가 읽지 않는다(§30). 클라이언트가 요구해서 넣을 뿐이고, 정책이 VLA 가 되면
 > 그때는 실제 입력이 된다 — **명령줄은 그대로**.
+
+**GR00T 면** 위 클라이언트 명령에서 네 곳만 바뀐다 (`--robot.cameras_ros` 는 기본값이 이미 2대라 **빼야** 한다):
+
+```bash
+  --policy_type=groot \
+  --pretrained_name_or_path=outputs/groot_240_v2_abs/checkpoints/last/pretrained_model \
+  --policy_device=cuda \
+  --actions_per_chunk=40 --task="put the blue block on the left marker"
+  # --policy_device=cuda: ★ 기본 cpu 에서 bf16 이 조용히 죽는다 (§43.6)
+```
+
+서버는 `source src/setup/ml_env.sh` 한 쉘에서 띄운다(토크나이저를 `HF_HOME` 캐시에서 오프라인으로 연다 — 토큰 불필요). 3태스크
+채점은 `ur_bringup/scripts/harness/judge_task.py --object blue --place left` — `WRONG_OBJECT`/`WRONG_PLACE`/`FAIL` 을
+구분한다. 자동화된 9회 하네스: `scratchpad/groot_v8.sh 3 90 <체크포인트>`.
 
 ### 4-4. 판정 — GT 로
 

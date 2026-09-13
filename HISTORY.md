@@ -121,8 +121,8 @@ colcon build --symlink-install --packages-up-to ur_bringup \
 source install/setup.bash
 ```
 
-> 단계별 재현 매뉴얼 전체는 **[`src/SETUP.md`](src/SETUP.md)** 참고 (apt 목록, vcs, 검증, 트러블슈팅 포함).
-> 개념 Q&A (런치 구조, nav2 와의 비교 등)는 **[`src/qna.md`](src/qna.md)**.
+> 단계별 재현 매뉴얼 전체는 **[`src/SETUP.md`](SETUP.md)** 참고 (apt 목록, vcs, 검증, 트러블슈팅 포함).
+> 개념 Q&A (런치 구조, nav2 와의 비교 등)는 **[`src/qna.md`](qna.md)**.
 
 ---
 
@@ -2937,7 +2937,7 @@ CLAUDE.md 가 경고하는 "stale RSP" 함정 그대로다.
 |---|---|
 | `act_red_left_100` (1.8 G) | 최종 ACT 정책, 롤아웃 9/10 |
 | `il_raw_red_left_100` + `lerobot_ds_red_left_100` | 그 학습 데이터(100 ep) |
-| `il_raw_wrist_only` + `lerobot_ds_wrist_only` | 카메라 1대 검증, **학습만 남음** |
+| `il_raw_wrist_only` + `lerobot_ds_wrist_only` | 카메라 1대 검증 → `act_wrist_only` **8/9** (§45.7) |
 | `lerobot_ds_240_v2` | **VLA 용 3태스크** |
 
 워크스페이스 루트에 흩어져 있던 `train_*.log` 는 `logs_archive/` 로.
@@ -3376,3 +3376,405 @@ validate-then-apply 는 원자적 서비스에서 의미가 있고 비용이 없
 
 → **테스트는 전제(precondition)를 스스로 PASS/FAIL 로 검사해야 한다.** `param_ef.py` 는
 "브리지가 정말 ENGAGED 인가" 를 먼저 판정하고, 실패하면 그 뒤 결과를 아예 해석하지 않는다.
+
+---
+
+## 43. GR00T N1.7 — 게이트 해제 → 학습 완료 → 서비스 경로 함정 2개 (2026-09-13)
+
+`plan_groot_n17.md` 의 검증계획 V1~V7 을 실행했다. **설계의 핵심 주장(모델·데이터 경로에 새 코드 0)은
+실증됐고**, 막힌 곳은 전부 **서비스(추론 서버) 경로**였다. 학습은 한 번에 됐다.
+
+### 43.1 HF 게이트 — 해제됨
+
+사용자가 `nvidia/Cosmos-Reason2-2B` 라이선스 동의 + read 토큰 발급.
+- 토큰 위치 **`deps/hf_cache/token`** (600). `HF_HOME` 을 워크스페이스로 두면 여기 저장되고,
+  git repo(`src/`) **밖**이라 커밋될 경로가 아니며 공유 `~/.cache/huggingface` 를 오염시키지 않는다.
+- **`gated=auto`** 였다 → 동의 즉시 자동 승인. NVIDIA 수동 검토 대기가 없다(`gated=manual` 과 구분).
+- 검증: `whoami=iamtony-ca`, `config.json`/`tokenizer_config.json`/`preprocessor_config.json` 3개 다운로드 OK.
+- Fine-grained 토큰이면 **"Read access to contents of all public gated repos"** 스코프 필수 —
+  라이선스에 동의해도 이게 없으면 똑같이 401.
+
+### 43.2 처리량 실측 — **배치가 전부, 워커는 무의미**
+
+`lerobot_ds_240_v2`(21 ep / 30,658 프레임 / 카메라 2대 / 320×240), 절대 액션 기준:
+
+| batch | step/s | **samples/s** | peak VRAM | peak shm |
+|---|---|---|---|---|
+| 8 | 2.08 | 16.6 | 25,401 MiB | 0 |
+| 16 | 1.32 | 21.1 | 25,669 MiB | 0 |
+| 24 | 0.926 | 22.2 | 26,141 MiB | 10 MiB |
+| **32** | **0.714** | **22.9** | **27,318 MiB** | 14 MiB |
+| 48 | 0.524 | 25.2 | 29,302 MiB | 21 MiB |
+
+워커 스윕(batch 8): 2/4/6 = 2.08/1.97/1.99 step/s — **평평**. 8개는
+`unable to allocate shared memory` 로 **step 24 에서 사망**(§24 ACT 와 동일 실패, 더 늦게 도달).
+
+**★ 배치를 3배 올려도 VRAM 은 740 MiB 만 는다.** 25 GB 는 사실상 전부 모델+AdamW 상태이고
+활성값은 부수적이다 → **작은 배치는 순손해**. 배치 48이 가장 빠르지만 29.3/32.6 GB 는
+**공유 GPU 에서 위험**(다른 프로젝트가 상시 1.4 GB, 몇 시간 뒤 OOM 이면 런 전체 손실) → **32 채택**.
+
+**★ 워커 평평함은 GR00T 의 성질이 아니라 이 머신의 부하다** — `nproc 20`, loadavg 16.
+가용 코어가 4개 남짓이라 워커 2개가 이미 다 쓴다. 한가한 머신에서는 다르게 나온다(다른 PC 재현 시 재측정).
+
+병목은 **AV1 소프트웨어 디코딩**이다(`data_s 0.85` vs `updt_s 0.52`, 스텝의 63%).
+데이터셋 메타가 `video.codec: av1`, `video.g: 2`, `video.fast_decode: 0` — lerobot
+`VideoEncoderConfig` 기본값(`vcodec="libsvtav1"`)을 그대로 받은 결과다.
+**GOP 가설은 틀렸다**(이미 2라 탐색은 무료). torchcodec 도 본질이 아니다(코덱이 AV1 인 건 그대로).
+→ **변환 시점에 `vcodec="h264"` 또는 `fast_decode` 로 해결 가능. 설치 0.**
+단 `240_v2` 는 raw 가 없어 재변환 불가(`il_raw_red_left_100`·`il_raw_wrist_only` 만 남음).
+`red_left_100` 으로 효과를 재고 `raw_to_lerobot.py` 에 인자를 추가할 것.
+
+> **★ 정정 (§45.4, 2026-09-13)**: 위 "AV1 소프트웨어 디코딩 병목" 은 **틀렸다**. h264 로 재변환해도
+> `data_s` 는 그대로였고, 분해 측정 결과 DataLoader 대기 0.000 s — `data_s` 는 전부 **메인 프로세스
+> 전처리기** 시간이었다(lerobot 은 `preprocessor(batch)` 를 `data_s` 에 포함한다). 원인은 torch 기본
+> 20 스레드의 과다할당 → `OMP_NUM_THREADS=8`. "워커 평평 = 머신 부하(loadavg 16)" 도 같은 오진이다
+> (그 loadavg 는 우리 자신의 스레드였다). GOP·torchcodec 무관 판단만 맞았다.
+(참고: torchcodec 이 못 뜨는 이유는 **FFmpeg 6 leaf 2개**(`libavdevice.so.60`, `libavfilter.so.9`)뿐이지만,
+apt 전이 의존성이 20여 개(libass·libplacebo·SDL2·PulseAudio…)라 공유 컨테이너에 넣지 않기로 했다.)
+
+### 43.3 학습 — 한 번에 됐다
+
+```
+batch 32 / workers 2 / steps 10000 / max_steps 10000 / fp32=false / 상대액션+gripper절대
+loss 0.876 → 0.013   10.44 에폭   3시간 42분   rc=0   peak VRAM 27,327 MiB   peak shm 14.5 MiB
+```
+예측 3.7시간 = 실제 3.70시간. **lerobot 기본값 100,000 스텝이면 38.9시간**이었다.
+10,000 은 NVIDIA Isaac-GR00T 레퍼런스 길이(`configuration_groot.py` 의 deprecated
+`max_steps=10000`/`batch_size=32`)이고, 6시간 예산 안에 들어가는 유일한 자연스러운 값이다.
+
+**§2.0 함정 회피가 끝까지 확인됐다** — 체크포인트에 기록된 전처리가 **체크포인트 고유값**이다:
+`use_albumentations=True` / `state_dropout_prob=0.2` / `use_percentiles=True` /
+`shortest_image_edge=256` / `crop_fraction=0.95`. repo id 를 줬다면 전부 조용히 바뀐다.
+**카메라 2대도 실증**: `video_modality_keys = ['exterior','wrist']` — rename 불필요(§2.1 예측대로).
+
+### 43.4 ★ 함정 — `max_steps` 는 deprecated 블록에 있는데 **실제로 쓰인다**
+
+`configuration_groot.py` L367-368 의 `max_steps=10000` 은 *"all unused by the LeRobot N1.7
+implementation"* 주석이 달린 블록에 있지만 L500 에서 쓰인다:
+```python
+num_warmup_steps = math.ceil(self.max_steps * self.warmup_ratio)   # --steps 가 아니다
+```
+실측: 4,000 스텝 런을 기본값(10000)으로 돌리면 최고 LR 이 **step 500 = 12.5% 지점**(의도는 5%).
+`max_steps=4000` 을 주면 정확히 step 200 = 5.0%. 코사인 감쇠 자체는 정상(`num_training_steps`
+는 외부 `--steps` 에서 온다). → **`--steps` ≠ 10000 이면 `--policy.max_steps` 를 같이 줘야 한다.** 경고 없음.
+
+### 43.5 ★ 함정 — `relative_exclude_joints` 는 **부분 문자열** 매칭
+
+`_infer_n1_7_action_groups` 를 직접 호출해 확인했다:
+```
+exclude=['gripper']  single_arm[0..5] relative=True + gripper[6] relative=False   ← 의도대로
+exclude=['joint']    6축 전부 relative=False + gripper 만 relative=True           ← 완전히 뒤집힘
+```
+매칭이 `token == lowered or token in lowered` 다. 우리 관절 이름이 전부 `_joint` 로 끝나므로
+이 워크스페이스에서 특히 위험하다. **정확히 `["gripper"]` 만 쓸 것.** 에러도 경고도 없다.
+
+### 43.6 ★★ 함정 — `policy_device` 기본값이 `"cpu"` 이고, bf16 은 CPU 에서 죽는다
+
+`AsyncClientConfig.policy_device` 기본값이 **`"cpu"`**. ACT 롤아웃들은 이 인자를 준 적이 없는데도
+잘 돌았다(80M fp32). 그런데 `model_params_fp32=false` 체크포인트는 **bf16** 이고 CPU 에서:
+```
+Error in StreamActions: mixed dtype (CPU): expect parameter to have scalar type of Float
+```
+**최악의 실패 방식이다** — 서버가 예외를 삼키고 **관측은 계속 받는다.** 클라이언트는 크래시하지 않고
+아무것도 못 받는다 → **"아무것도 안 하는 정책"으로 보인다.** 실측 0 청크 전달.
+→ **`--policy_device=cuda` 필수.** 지연도 GPU 가 필요하다(V7 80 ms vs 예산 1,333 ms).
+
+### 43.7 ★★ 함정(구조적) — **상대 액션은 `async_inference` 서버로 서비스할 수 없다**
+
+`--policy_device=cuda` 로 고치니 추론은 나왔는데(0.12~0.58 s) 새 실패:
+```
+Error in StreamActions: GrootN17ActionDecodeStep cannot decode native relative actions
+one step at a time. Decode the full action chunk returned by predict_action_chunk while
+the matching GrootN17PackInputsStep state is still cached, ...
+```
+양쪽 코드를 다 읽어 확정했다:
+- `policy_server._predict_action_chunk()` 는 `for i in range(chunk_size): postprocessor(action[:, i, :])`
+  로 **스텝당 2-D** 를 넣는다.
+- `GrootN17ActionDecodeStep` 은 `use_relative_action and ndim != 3` 이면 `NotImplementedError`.
+  바로 다음 줄에 2-D 처리(`squeeze_horizon`)가 있는데 **상대일 때만 그 앞에서 거부**된다.
+
+즉 **lerobot 0.6.1 의 async 서버는 GR00T 를 절대 액션으로만 서비스한다.** 지원 플래그는 없다.
+→ `plan_groot_n17.md` §3 이 미리 등록해 둔 대비안("B 가 깨지면 A") 발동. **절대 액션으로 재학습.**
+
+**내 스모크의 빈틈**: A/B 가 **학습**되는지만 확인하고 **서비스**되는지 확인하지 않았다.
+50 스텝 절대 체크포인트로 서비스 경로를 먼저 검증했다(`probe_serve.sh`, 3분):
+**38 청크 전달, 에러 0, 140~156 ms** → A 는 서비스된다. 3.7시간을 쓰기 전에 확인한 것.
+
+### 43.8 하네스 — 전제 검사가 오기록을 처음으로 막았다
+
+§42.6 의 교훈("테스트는 전제를 스스로 PASS/FAIL 로 검사해야 한다")이 실제로 값을 했다.
+V8 1·2차 시도는 **정책 결과가 아니라 하네스 결함**이었고, 검사가 없었으면 9개 시행이 전부
+"정책 실패"로 기록됐다. 넣은 검사 둘:
+- **시행 전** `obs_ready.py` — 어댑터와 같은 순서·같은 2.0 s 타임아웃으로 관절+카메라 2대의
+  도착률/신선도 검사. 실패 시 SKIP. (어댑터는 헤더가 아니라 **콜백 도착 시각**을 쓰므로
+  sim time 문제와 혼동하면 안 된다 — 확인했다.)
+- **시행 후** 전달된 청크 수. **★ 첫 버전은 틀렸다**: `Preprocessing and inference took` 를
+  셌는데 이건 후처리 **이전** 로그다. §43.7 에서 추론은 성공하고 후처리가 터졌으니 카운트는
+  0이 아니었고, **오기록을 막으려 만든 검사가 오기록을 통과시켰다.** →
+  후처리 성공 후에만 찍히는 **`| Total time:`** 을 센다.
+- `judge_task.py` 신규 — 기존 `judge_rollout.py` 는 red→left 하드코딩이라 3태스크를 채점할 수 없고
+  ("파란 블록을 왼쪽"인데 빨간 게 왼쪽에 있으면 SUCCESS 오판), 실패를
+  **WRONG_OBJECT / WRONG_PLACE / FAIL** 로 분리한다. 언어 실패와 파지 실패는 조치가 반대다.
+
+### 43.9 남은 것
+
+| 항목 | 상태 |
+|---|---|
+| V1 빌드·카메라 2대 / V2 VRAM / V3 처리량 / V4 shm / V5 상대빌드 | ✅ |
+| 학습(상대) | ✅ 하지만 **서비스 불가**(§43.7) — 체크포인트는 `outputs/groot_240_v2_rel` 보존 |
+| V7 추론 지연 | ✅ **PASS** 중앙값 80.8 ms / 최악 188 ms / 예산 1,333 ms |
+| 절대 액션 서비스 경로 | ✅ 50스텝 체크포인트로 확인(38 청크) |
+| **절대 액션 본학습** | ⏳ **다음 작업** — `groot_train_abs.sh`, 3.7시간 예상 |
+| V8 롤아웃 3태스크 | ⏳ 본학습 후 |
+
+**★ V8 은 성능 비교가 아니라 파이프라인 검증으로 읽어야 한다.** `240_v2` 는 태스크당 **7 ep**
+(3태스크 균등, 45~52 s/ep)뿐이다. 색-위치 조합당 7 데모로는 **언어를 읽는지 vs 3개 궤적을
+외웠는지 구분이 안 된다.** ACT 대비(9/10 · 7.6 mm)를 재려면 태스크당 20~30 ep 재수집이 필요하고,
+그때 §43.2 의 h264 인코딩을 같이 적용하면 학습이 훨씬 싸진다.
+
+---
+
+## 44. GR00T N1.7 — 절대 액션 학습 + **첫 롤아웃 성공** (2026-09-13)
+
+§43.7 의 대비안(상대 → 절대) 실행. 학습은 어제와 동일 곡선으로 한 번에 됐고, 롤아웃은 **하네스
+결함 하나를 더 걷어낸 뒤** 3/8 — 이 워크스페이스에서 GR00T 가 처음으로 태스크를 완수했다.
+
+### 44.1 학습 (절대 액션)
+
+```
+groot_train_abs.sh = groot_train.sh 에서 use_relative_actions/relative_exclude_joints 만 제거
+batch 32 / workers 2 / 10k steps / max_steps 10000 / fp32=false / 로컬 스냅샷
+loss 0.995 → 0.014   10.44 에폭   3시간 45분   rc=0   peak VRAM 27,485 MiB   shm 14.5 MiB
+```
+| step | abs(오늘) | rel(어제) |
+|---|---|---|
+| 1K / 3K / 5K / 10K | 0.053 / 0.027 / 0.017 / **0.014** | 0.044 / 0.024 / 0.017 / 0.013 |
+
+두 곡선이 겹친다 → **상대→절대 전환은 학습 측면에서 대가가 없다.** CPU load 가 어제 16 → 오늘
+0.75~6.5 인데 step/s 가 같다 → §43.2 의 "워커 평평함은 머신 부하 때문" 추정은 **약해지고**,
+**AV1 디코딩 자체가 병목**이라는 쪽이 맞다(`data_s 0.90` > `updt_s 0.52`, 오늘도 동일).
+
+**카메라 2대 소비 — 실측 확정.** abs 체크포인트는 `video_modality_keys: null` 로 기록됐다(rel 은
+`['exterior','wrist']` 명시 — 상대 액션 자산이 데이터셋 메타를 박아 넣기 때문). §2.1 폴백이 실제로
+작동하는지 전처리기에 넣어 세었다:
+```
+cams=[exterior,wrist]  image_grid_thw (2,3)  pixel_values (704,1536)  tokens 193
+cams=[wrist]           image_grid_thw (1,3)  pixel_values (352,1536)  tokens 103
+```
+정확히 2배 → 둘 다 백본에 들어간다. **★ 함정**: 카메라 **1대만 줘도 에러 없이 돈다** — 모델 쪽엔
+"카메라가 빠졌다"는 검사가 없다. 방어선은 `UR16eROS` 어댑터의 `no fresh image` 한 겹뿐.
+
+### 44.2 ★★ 하네스 결함 5 — `forward_position_controller` 가 spawn 되지 않았다
+
+오늘 1차 롤아웃: 청크 110개 전달, 판정 FAIL — 그런데 **팔이 READY 에서 0.0° 도 안 움직였다**
+(40 s 샘플링: 관절·그리퍼·블록 전부 정지). `switch_control_mode.py streaming` 이 실패하고 있었다:
+```
+FAIL: controller 'forward_position_controller' is not loaded.
+```
+`bringup.sh` 는 이 컨트롤러를 spawn 하지 않는다 — 텔레옵 런치와 **`policy_inference.launch.py`** 만
+한다. 어제 ACT 롤아웃 드라이버(`rollout_gui_then_n_w1.sh`)는 그 런치를 먼저 띄웠는데 `groot_v8.sh`
+를 만들 때 빠뜨렸다. **그 런치의 docstring 이 이 실패를 문자 그대로 예언해 뒀다**:
+*"the policy publishes into a topic nobody serves and the arm simply never moves, which looks
+exactly like a broken policy."* 그리고 롤아웃 스크립트가 전환 출력을 `> /dev/null 2>&1` 로 삼켰다.
+§43.8 의 두 검사(관측 신선도 / 전달된 청크 수)는 이 단계의 앞·뒤라 잡지 못했다.
+
+→ `groot_v8.sh`: bringup 뒤 `policy_inference.launch.py` + 로드 검증.
+→ `groot_rollout.sh`: 전환 출력 보존, 실패 시 **런 전체 중단**, 전환 후 상태를 awk 로 정확히
+  `active` 인지 검증(`grep "active"` 는 `inactive` 에도 걸린다), 일시 타임아웃 대비 **재시도 3회**
+  (실측: `list_controllers timed out` 1회 — 스택은 정상, `reset_pose` 직후 controller_manager 가 바쁨).
+  되돌림(`trajectory`) 전환도 동일 처리(실패 시 `goal REJECTED by controller` → SKIP 1회 낭비).
+
+**부수 함정 둘**: ① `ps | grep 패턴 | kill` 이 **두 번 내 셸을 죽였다** — 패턴이 같은 명령줄
+(뒤쪽 `pgrep -f`, 히어독 본문)에 들어가 부모 래퍼가 매칭됐다. `bringup.sh` 주석이 경고한 그것.
+정리 로직은 **파일**(`prep_streaming.sh`)로 뺀다. ② `TaskStop` 으로 `groot_v8.sh` 를 멈추면
+같은 프로세스 그룹의 Isaac 이 같이 죽는다(어제는 Isaac 을 별도 호출로 띄워 살아남았음).
+
+### 44.3 V8 결과 — **3/8 (1 SKIP)**, 절대 액션, 3태스크 교대
+
+```
+1  red→left    FAIL   d=274  grip 0.39   red 30 mm 이동, 파지 실패
+2  blue→left   SKIP   (trajectory 전환 타임아웃 → READY 불가, 점수 제외)
+3  red→right   ✅ 27 mm
+4  red→left    FAIL   d=321  grip 0.00   red 미접촉
+5  blue→left   FAIL   d=358  grip 0.49   ★ blue 를 잡아 250 mm 운반, 놓기 전 시간 초과
+6  red→right   ✅ 18 mm
+7  red→left    FAIL   d=315  grip 0.80   red 미접촉, 허공에서 닫힘
+8  blue→left   ✅ 27 mm   ★ red(299 mm) 를 두고 blue 를 골라 왼쪽에
+9  red→right   FAIL   d=533  grip 0.01   red 미접촉
+```
+| 태스크 | 성공 | 비고 |
+|---|---|---|
+| red→right | **2/3** | |
+| blue→left | **1/2** | 실패 1건도 blue 를 정확히 집었다 |
+| red→left | **0/3** | 셋 다 **파지 단계**에서 실패 — 목적지가 관여하기 전 |
+
+**언어 독해 신호**: `WRONG_OBJECT` **0건**. blue 지시 2회 모두 blue 를 집었고, red 지시 6회 모두
+blue 는 시작 위치(102~130 mm)에 그대로였다. 두 블록이 항상 같이 있는 씬에서 **"어떤 물체"는
+8/8 맞췄다.** "어디"는 실패가 전부 파지 전이라 관측 불가(`WRONG_PLACE` 0건).
+red→left 0/3 vs red→right 2/3 은 같은 물체·다른 목적지인데 파지에서 갈렸다 — n=3 이라 우연일 수
+있고, 지시문에 따라 접근 궤적이 초반부터 달라지는 것일 수도 있다. 이 데이터로는 판정 불가.
+
+**ACT 9/10 과 비교하면 안 된다**: ACT 는 red→left **100 ep**, GR00T 는 태스크당 **7 ep** 다.
+같은 태스크 0/3 vs 9/10 은 데이터 14배 차이의 결과이지 모델 비교가 아니다.
+
+### 44.4 검증 계획 최종 상태
+
+| | 결과 |
+|---|---|
+| V1~V5 | ✅ (§43) |
+| V7 추론 지연 | ✅ 80.8 ms / 1,333 ms |
+| **V8 파이프라인** | ✅ **관측→GR00T(cuda)→절대 액션 후처리→스트리밍 컨트롤러→Isaac 루프 닫힘, 3/8 성공** |
+| 성능 비교 | ⏳ 태스크당 20~30 ep 재수집 필요 (변환 기본이 h264 crf23 로 바뀜, §45.2) |
+
+**설계 문서의 핵심 주장은 끝까지 유지됐다** — 모델·데이터 경로 신규 코드 **0**. 오늘까지 걷어낸
+결함 다섯(§43.6·43.7·43.8·44.2) 은 전부 **서비스 경로의 설정·하네스** 였다.
+
+## 45. 코덱 h264 + ★ GR00T `data_s` 의 진짜 원인은 스레드 과다할당 — 손목 ACT 파이프라인 (2026-09-13)
+
+요청: *"2번은 안 해도 될거 같고, 4번 -> 1번 순으로 진행해줄래?"* — ② 소형 VLA 생략(`plan_il_vla.md` §2.7),
+④ `raw_to_lerobot.py` h264 → ① 손목 1-카메라 ACT 전체 파이프라인.
+
+### 45.1 ④ 변환기 — `--vcodec / --crf / --fast-decode` (신규 인코더 코드 0)
+
+lerobot 0.6.1 의 `RGBEncoderConfig`(기본 `vcodec="libsvtav1"`, `g=2`, `crf=30`) 를 그대로
+`LeRobotDataset.create(..., rgb_encoder=)` 에 넘긴다. 잘못된 코덱은 프레임을 쓰기 전에 업스트림이
+`ValueError: Invalid vcodec` 로 거부(확인). **기본 `h264`, crf 는 h264 일 때 23**(아래 실측 근거).
+코덱은 `meta/info.json` 에 기록되므로 기존 AV1 데이터셋(`240_v2`·`red_left_100`·`wrist_only`) 은 그대로 학습된다.
+
+### 45.2 실측 — `il_raw_red_left_100` (100 ep, 43,222 프레임, 320×240 × 2 카메라)
+
+| | AV1 crf30 (기존) | h264 crf30 | **h264 crf23 (채택)** |
+|---|---|---|---|
+| 비디오 용량 | 187 MB | 83 MB | 174 MB |
+| PSNR vs 원본 JPEG (20 ep, ext/wrist) | 40.25 / 40.47 dB | 35.92 / 36.61 dB | 39.24 / 39.44 dB |
+| 변환 시간 (100 ep) | – | 444 s | 448 s |
+| 격리 디코딩, **1 스레드** (wrist) | 2.7 ms/프레임 | – | 3.1 ms/프레임 |
+| GR00T `data_s` (batch 32 / 2 워커 / 60 스텝) | 0.80~0.86 s | 0.70~0.97 s | 0.61~0.85 s |
+
+h264 crf30 은 4.3 dB 손실, crf23 은 AV1 과 같은 크기에 1 dB 이내 → **crf23**.
+**그리고 h264 는 `data_s` 를 줄이지 못했다.** 여기서 §43.2 의 진단이 무너졌다.
+
+### 45.3 ★★ 추적 — "26 ms/프레임" 은 측정 아티팩트였다
+
+1. **lerobot 의 `data_s` 정의**: `lerobot_train.py` 는 `next(dl_iter)` + uint8→float + **`preprocessor(batch)`**
+   를 합쳐 `dataloading_s` 로 잰다(`AverageMeter(..., reduction="max")` — 로그 구간 **최댓값**). GR00T 의
+   전처리기(256×256 리사이즈·크롭·정규화·토큰화)는 **메인 프로세스**에서 돈다.
+2. **격리 벤치 재검**: 같은 파일을 최소 pyav 루프로 열면 **2.2 ms**, lerobot `decode_video_frames_pyav` 는
+   **44 ms**(ACT 학습과 동시 측정). cProfile: 시간의 대부분이 3×240×320 uint8 텐서의 `contiguous`(6 ms)·
+   `torch.stack`(8 ms)·`.type()`(8 ms) — 마이크로초짜리 연산이다. torch 기본 스레드 = `nproc` **20** 이라
+   작은 연산마다 OpenMP 병렬 구간이 열려 과다할당된다. **`torch.set_num_threads(1)` 로 2.7 ms.**
+   DataLoader 워커는 원래 1 스레드로 돌기 때문에 **워커 디코딩은 처음부터 병목이 아니었다** —
+   어제의 26 ms 는 메인 프로세스에서 20 스레드로 잰 값이고, 우연히 `data_s` 와 산술이 맞아 오진했다.
+3. **분해 측정** (`scratchpad/bench_data_s.py`, 실제 `make_dataset`/`make_pre_post_processors`/DataLoader 재사용):
+
+   | 메인 스레드 | loader 대기 | to_float | **preprocessor** | 합 (=data_s 평균) |
+   |---|---|---|---|---|
+   | 20 (기본), AV1 | **0.000 s** | 0.025 | **0.864** | 0.889 |
+   | 1, AV1 | 0.001 | 0.014 | **0.316** | 0.331 |
+   | 20, h264 | 0.001 | 0.020 | 0.983 | 1.004 |
+   | 1, h264 | 0.000 | 0.014 | 0.313 | 0.327 |
+
+   워커는 항상 앞서 있다(대기 0). `data_s` 는 **전부 전처리기**, 코덱 무관.
+
+### 45.4 ★ 해결 — `OMP_NUM_THREADS=8` (설치 0, 코드 0)
+
+`lerobot-train` 60 스텝, `red_left_100`(AV1), batch 32, 2 워커, `model_params_fp32=false`:
+
+| `OMP_NUM_THREADS` | `data_s` | `updt_s` | 샘플/s | 10k 스텝 예상 |
+|---|---|---|---|---|
+| 20 (기본 = nproc) | 0.80~0.86 | 0.498 | 23~25 | 3 h 45 m (§44.1 실측) |
+| 1 | 0.31 | 0.494 | 40 | 2 h 15 m |
+| 4 | 0.15 | 0.497 | 49 | 1 h 50 m |
+| **8** | **0.125** | 0.498 | **51** | **≈ 1 h 45 m** |
+| 12 | 0.12 | 0.500 | 52 | 1 h 43 m |
+
+**8 채택**(12 와 동률, 여유 코어를 남긴다). `updt_s` 는 불변(GPU). ACT 는 전처리가 가벼워 무관(`data_s 0.007`).
+정정 목록: §43.2 "AV1 디코딩 병목" ✗, "워커 평평 = 머신 부하 loadavg 16" ✗(그 부하가 우리 스레드였다),
+§43.2 의 배치 스윕 표는 전부 20 스레드 값. GOP 무관·torchcodec 무관 판단은 ✓.
+`CLAUDE.md`·`PIPELINE.md` §3-B·`SETUP.md` §2-C-2·`plan_groot_n17.md` §8.6·`README.md` 를 정정했다.
+**교훈**: 병목 진단은 **그 값을 만드는 코드가 무엇을 재는지** 부터 읽을 것. 산술이 맞는 것은 증거가 아니다.
+
+### 45.5 ① 손목 1-카메라 ACT — 학습
+
+`lerobot_ds_wrist_only`(49 ep / 20,996 프레임 / `observation.images.wrist` 만, AV1 그대로 — ACT 는
+GPU 바운드라 재변환 무의미), `scratchpad/train_wrist1.sh`: 60k 스텝, batch 32, `num_workers=4`
+(`UR_WS_TORCH_SHM_FIX=1`, Isaac 정지 상태), **40 m 11 s, 24.9 step/s**, loss 5.87 → **0.029**.
+체크포인트 `outputs/act_wrist_only/checkpoints/{020000,040000,060000,last}`.
+
+### 45.6 ① 롤아웃 하네스 이식
+
+`rollout_wrist1.sh` 에 §44.2 에서 확정된 세 검사를 넣었다(없으면 "팔이 안 움직이는데 FAIL 채점" 재발):
+스트리밍 전환 3회 재시도 + `list_controllers` 의 상태 열 awk `active` 확인(`grep active` 는 `inactive` 도
+잡는다) / `obs_ready.py --cameras wrist=...` 사전검사 → SKIP / 서버 로그 `| Total time:` 의 **시행별 증분**
+(서버는 전체 시행에 하나라 누적값을 빼야 한다) 0 이면 SKIP. `rollout_gui_then_n_w1.sh` 는 이미
+`policy_inference.launch.py` 를 띄운다. 씬: 3태스크 씬(red·blue / left·right), `--randomize-radius 0.06`,
+seed 151(수집 seed 111·21 과 다름), 320×240, 시행 10 × 70 s.
+
+### 45.7 ① 롤아웃 결과 — **8/9 (1 SKIP)**, 손목 카메라 1대만으로 파이프라인 닫힘
+
+| 시행 | 시작 위치 (x, y) | 결과 |
+|---|---|---|
+| 1 | 0.599, -0.117 | SUCCESS d=14 mm |
+| 2 | 0.541, -0.051 | **FAIL** d=273 mm (파지 실패, 78 청크는 정상 전달) |
+| 3 | 0.611, -0.109 | SUCCESS d=20 mm |
+| 4 | – | **SKIP** — `/joint_states` 1.3 Hz (Isaac 순간 정체). 사전검사가 잡아 채점 제외 |
+| 5~10 | 6회 | SUCCESS d=11/25/19/18/16 mm, 12 mm |
+
+채점 시행 **8/9**, 성공 시 평균 오차 **17 mm**(11~25). 시행당 76~80 청크 전달(70 s × 30 Hz / 50 ≈ 42 관측 →
+서버가 관측마다 응답, 전부 후처리 통과). 하네스 출력의 "8/10" 은 SKIP 을 분모에 넣은 값이라 8/9 가 맞다.
+
+**의미**: 2-카메라 ACT(`act_red_left_100`, 100 ep) 9/10 과 같은 급이 **손목 카메라 1대 + 49 ep** 로 나왔다.
+어댑터 `--robot.cameras_ros='{"wrist": ...}'` 1개 지정만으로 정적 카메라 없이 서비스된다(PIPELINE §4 의
+"카메라 1대" 절차 실증). 단 무작위 반경은 학습 0.06 = 롤아웃 0.06 이고 seed 만 다르다. 실물 D455 정적
+카메라(#10)가 늦어져도 **손목 D405 하나로 ACT 트랙은 진행 가능**하다는 근거.
+④·① 완료로 `HISTORY.md` §44.4 "계획만 세우고 안 한 것" 중 남은 것: ③ 3태스크 재수집(20~30 ep/태스크, h264),
+⑤ D455 정적 카메라 런치, ⑥ 리더 자동 랑데부(실물), ⑦ 실물 캘리브, ⑧ 그리퍼 에셋 재베이크.
+롤아웃 프로세스는 `shutdown_rollout.sh` 로 전부 종료(GPU 641 MiB, ros2 노드 0).
+
+### 45.8 재현 점검 — 셋업 스크립트에 GR00T 가 없었다 (2026-09-13)
+
+요청: *"다른 pc에서도 동일하게 셋업을 해야되는데, 현재 셋업 가이드 및 스크립트가 제대로 업데이트 되어있는지
+확인해줄래? … huggingface 에서 다운받아야되는건, 직접 내가 필요한걸 다운로드 받아서 필요한 디렉토리에 파일들을 옮겨놓을거야."*
+
+**발견**: `setup.sh`·`check_env.sh`·`requirements-ml.txt` 에 GR00T 관련 항목이 **0** — `lerobot[groot]` 설치,
+`deps/hf_cache`, 토크나이저 게이트 전부 `SETUP.md` 의 손 절차로만 존재했다. 환경변수(`HF_HOME`·`OMP_NUM_THREADS`
+등)는 scratchpad 의 `groot_env.sh` 에만 있어 repo 에 없었다. 그리고 수동 배치 요구에 맞는 절차가 없었다:
+lerobot 은 토크나이저를 **repo id 로** 연다(`processor_groot.py`: `AutoTokenizer.from_pretrained("nvidia/Cosmos-Reason2-2B")`)
+→ 경로 지정이 불가능하고, 캐시 레이아웃 + `HF_HUB_OFFLINE=1` 이 유일한 오프라인 경로다.
+
+**추가한 것** (`src/setup/`):
+- `requirements-groot.txt` + `setup.sh groot` 단계(기본 제외): `pip --dry-run --report` 로 **기존 패키지 변경 시 거부**
+  → 설치 → sm_120 재확인 → `deps/hf_cache` 생성 → `check_hf_cache.sh`. 이 PC 에서 실행: 변경 0, 8 초, 전부 ok.
+- `ml_env.sh`: `HF_HOME`·`HF_HUB_OFFLINE=1`·`HF_HUB_ENABLE_HF_TRANSFER=0`·`WANDB_DISABLED`·`TOKENIZERS_PARALLELISM`·
+  `OMP_NUM_THREADS=8`·`UR_WS_TORCH_SHM_FIX=1` 을 한곳에. PIPELINE/SETUP/CHECKLIST 의 명령이 이걸 source 한다.
+- `check_hf_cache.sh`: 두 repo 의 `refs/main`·스냅샷·필수 파일 존재 + **오프라인** `snapshot_download`·토크나이저·
+  이미지/비디오 전처리기 로드(vocab 151669). `check_env.sh` 에 "GR00T N1.7" 절로 편입(+ `nproc>12` 면 스레드 경고).
+- `requirements-ml.lock`: `pip freeze`(299개) 참고용.
+
+**수동 배치 검증**: 임시 `HF_HOME` 에 `refs/main` + `snapshots/<해시>/` 에 **필요 파일만**(GR00T 7개 = config·
+processor_config·statistics·embodiment_id·index·safetensors×2, Cosmos 7개 = config·tokenizer·tokenizer_config·
+vocab·merges·preprocessor_config·video_preprocessor_config), `blobs/` 없이, 심볼릭링크 없이 두고 `HF_HUB_OFFLINE=1`
+로 `lerobot-train --policy.type=groot` 3 스텝 → **rc 0, 401/네트워크 접근 없음**. lerobot 이 GR00T 스냅샷에서 실제로
+여는 파일은 grep 으로 확인(`experiment_cfg/` 등 나머지는 안 읽음). Cosmos 는 **가중치 불필요**(백본 설정은
+`_cosmos_reason2_qwen3_vl_config()` 하드코딩, 가중치는 GR00T safetensors 안). 레이아웃은 `SETUP.md` §2-C-2.
+
+**남은 재현 구멍(미해결, 사용자 결정 필요)**: 롤아웃 하네스(`groot_v8.sh`·`groot_rollout.sh`·`rollout_wrist1.sh`·
+`bringup.sh`·`judge_task.py`·`judge_rollout.py`·`obs_ready.py`·`shutdown_rollout.sh`·`train_*.sh`·`collect*.sh`)가
+**전부 세션 scratchpad 에만 있다**. `CLAUDE.md`·`PIPELINE.md` §4 가 `scratchpad/...` 를 참조한다. 다른 PC 에서는
+존재하지 않으므로 repo(예: `ur_bringup/scripts/harness/`)로 옮겨야 한다.
+
+### 45.9 하네스 스크립트 repo 편입 — `ur_bringup/scripts/harness/` (2026-09-13)
+
+요청: *"하네스 스크립트들 repo로 옮기고 문서 경로 맞춰줘"*. 세션 scratchpad 의 약 170개 중 **현재 문서가 참조하고
+검증된 파이프라인을 구성하는 38개**만 옮겼다(나머지는 일회성 진단 — §28~§44 의 증거로 HISTORY 에 이름만 남는다).
+목록·인터프리터·로그 규칙은 `ur_bringup/scripts/harness/README.md`.
+
+옮기며 바꾼 것(내용 변경 없음, 경로만): ① `WS=/isaac-sim/volume/ur_ws` 하드코딩 → 스크립트 위치에서 유추
+(`UR_WS=` 덮어쓰기), heredoc 파이썬의 절대경로 5곳은 argv 로; ② 로그를 스크립트 옆에 쓰던 `"$S/*.log"` →
+`outputs/harness_logs/`(`HARNESS_LOG=`); ③ `groot_env.sh` → `src/setup/ml_env.sh`; ④ `rollout_gui_then_n*.sh` 에
+`[N] [초] [ckpt]` 인자. 함정: `set -u` 스크립트에서 `LOG=` 줄이 `WS=` 보다 먼저 들어가면 즉사 — 순서 검사로 잡음.
+`CLAUDE.md`·`PIPELINE.md` §4-3·`plan_groot_n17.md` 의 `scratchpad/...` 참조를 새 경로로, `README.md`·`CHECKLIST.md` 에 위치 추가.
+**검증(repo 위치에서 실행)**: `rollout_gui_then_n_w1.sh 2 60` → Isaac 기동·`bringup.sh`·`policy_inference.launch.py`·
+사전검사·68 청크 전달·채점(1/2) 정상, `groot_v8.sh 1 60 <abs ckpt>` → 3태스크 3시행 전부 70~72 청크 전달·`judge_task.py`
+채점(0/3 — 60 s 는 §44.3 의 90 s 보다 짧아 성능 판정 아님, 하네스 동작 확인용), `shutdown_rollout.sh` 로 GPU 640 MiB·노드 0.
+로그 23개가 `outputs/harness_logs/` 에 생성됐고 소스 트리에는 아무것도 쓰이지 않았다.

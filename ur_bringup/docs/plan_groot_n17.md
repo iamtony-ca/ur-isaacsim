@@ -91,7 +91,7 @@ observation.images.wrist      video (240, 320, 3)
 `sorted(available)` 로 **관측에 있는 모든 카메라를 알파벳 순서로** 넣는다. 우리 경우
 `exterior` → `wrist` 순서. **드롭도 rename 도 없다.**
 
-소스를 읽고 추론한 게 아니라 **upstream 함수를 직접 불러 확인했다**(`scratchpad/groot_probe.py`):
+소스를 읽고 추론한 게 아니라 **upstream 함수를 직접 불러 확인했다**(`ur_bringup/scripts/harness/groot_probe.py`):
 
 ```
 [V1] dataset-meta visual keys       -> ['exterior', 'wrist']
@@ -184,6 +184,19 @@ Isaac-GR00T single-arm + absolute-gripper convention"*. 우리 액션 피처 이
 > 가 **반드시** 넘어가야 한다(없으면 명시적 `ValueError`). `lerobot-train` 은 넘겨준다.
 > 이건 §5 의 미검증 항목이 아니라, 실패 시 조용하지 않고 **크게 터지는** 항목이다.
 
+> **★ 2026-09-13 결정 변경 — A(절대) 채택.** B 는 예정대로 학습됐다(loss 0.013, 3h 42m). 그러나
+> **`lerobot.async_inference.policy_server` 가 B 를 서비스하지 못한다**: 서버는 청크를 스텝당 2-D 로
+> 잘라 후처리기에 넣는데, `GrootN17ActionDecodeStep` 은 `use_relative_action and ndim != 3` 이면
+> `NotImplementedError` 다(2-D 처리 코드는 바로 다음 줄에 있지만 상대일 때만 그 앞에서 거부).
+> 양쪽 코드에 지원 플래그가 없다. 위의 "B 가 깨지면 A 로 간다"가 발동했고 — **내 스모크의 빈틈은
+> A/B 가 *학습*되는지만 보고 *서비스*되는지 안 본 것**이었다. A 는 50스텝 체크포인트로 서비스 경로를
+> 먼저 확인(38 청크 전달, 에러 0)한 뒤 본학습했고, 학습 곡선은 B 와 겹쳤다(§8.7).
+> 즉 "사전학습 전이가 약해진 결과"라는 걱정은 **학습 손실에서는 보이지 않았다.**
+>
+> **부수 함정**: `relative_exclude_joints` 는 **부분 문자열** 매칭(`token in name`)이다. 우리 관절 이름이
+> 전부 `_joint` 로 끝나므로 `["joint"]` 을 주면 6축이 절대·그리퍼만 상대로 **정반대**가 된다 — 경고 없음.
+> (`_infer_n1_7_action_groups` 직접 호출로 확인.)
+
 ---
 
 ## 4. 검증 계획 — 무엇이 나와야 통과인가
@@ -230,12 +243,13 @@ ACT(80M)는 추론이 사실상 공짜였다. GR00T 는 2뷰 × 256² VLM 인코
 
 | 항목 | 현재 상태 | 닫는 방법 |
 |---|---|---|
-| 카메라 2대가 그대로 들어가는가 | **✅ 확정 (2026-09-10)** — §2.1 | 완료 |
-| 상대 액션 경로가 우리 데이터로 빌드되는가 | **✅ 확정 (2026-09-10)** — §8 | 완료 |
-| 32 GB 에서 3B 부분 파인튜닝이 도는가 | **⚠️ 기본 설정으로는 안 됨** — §8.2 | 설정 변경 후 V2 |
-| step/s → 총 학습시간 | 미검증 — **HF 게이트에 막힘** | V3 (게이트 해제 후) |
-| 추론이 실시간을 따라가는가 | 미검증 | V7 |
-| 21 에피소드로 3B 가 학습되는가 | 미검증 — ACT 는 100 에피소드가 필요했다 | V8 |
+| 카메라 2대가 그대로 들어가는가 | **✅ 확정 (09-10 함수 호출, 09-13 전처리 출력 2배 실측)** — §2.1·§8.7 | 완료 |
+| 상대 액션 경로가 우리 데이터로 빌드되는가 | **✅ 빌드·학습 됨 — 그러나 서비스 불가** — §3·§8.8 | 절대 액션 채택 |
+| 32 GB 에서 3B 부분 파인튜닝이 도는가 | **✅ `fp32=false` + batch 32 = 27.3 GB** — §8.6 | 완료 |
+| step/s → 총 학습시간 | **✅ 0.76 step/s → 10k 스텝 3.7 h** — §8.6 | 완료 (6h 게이트 통과) |
+| 추론이 실시간을 따라가는가 | **✅ 80.8 ms / 1,333 ms** — §8.7 | 완료 |
+| 21 에피소드로 3B 가 학습되는가 | **⚠️ 학습은 되고 롤아웃 3/8** — 태스크당 7 ep 로는 판정 불가 — §8.9 | 태스크당 20~30 ep 재수집 |
+| 언어를 읽는가 | **부분 신호**: 어떤 물체 8/8, 어디는 미관측 — §8.9 | 위와 같음 |
 
 > **21 에피소드는 ACT 기준으로도 적다.** ACT 는 50→100 으로 늘려서야 가장자리 실패가 없어졌다
 > (`HISTORY.md` §37). 사전학습 전이 덕에 GR00T 가 더 적은 데이터로 될 것이라는 **기대는 있지만
@@ -311,10 +325,15 @@ S6  V8           롤아웃 N회 (ACT 와 같은 판정기 judge_rollout.py 재�
 S7  문서화       PIPELINE.md 에 GR00T 절 추가, HISTORY.md 기록
 ```
 
-**S6 은 ACT 롤아웃 하네스를 그대로 쓴다** — `rollout_n.sh` 에서 바뀌는 건
-`--policy_type=groot`, `--pretrained_name_or_path`, `--actions_per_chunk=40` 세 개뿐이다.
-판정기(GT 기반 `judge_rollout.py`)가 같으므로 **ACT 9/10 · 7.6 mm 와 직접 비교 가능**하다.
-이 비교가 `plan_il_vla.md` §2.8 이 설계한 "ACT vs VLA 동일조건 비교"의 실현이다.
+**S6 은 ACT 롤아웃 하네스를 그대로 쓴다**(스크립트는 전부 `ur_bringup/scripts/harness/`, 2026-09-13 repo 편입) — `rollout_n.sh` 에서 바뀌는 건
+`--policy_type=groot`, `--pretrained_name_or_path`, `--actions_per_chunk=40`, **`--policy_device=cuda`**
+네 개다(마지막은 §8.8 — 기본 `cpu` 에서 bf16 이 조용히 죽는다).
+
+> **2026-09-13 정정 두 가지.** ① 판정기는 `judge_rollout.py` 가 아니라 **`judge_task.py`** 다 —
+> 전자는 red→left 하드코딩이라 3태스크를 채점할 수 없고("파란 블록을 왼쪽"인데 빨간 게 왼쪽에
+> 있으면 SUCCESS 오판), 후자는 실패를 `WRONG_OBJECT / WRONG_PLACE / FAIL` 로 나눈다 — 언어 실패와
+> 파지 실패는 조치가 반대다. ② **"ACT 9/10 과 직접 비교 가능"은 데이터가 같을 때만 참이다.**
+> ACT 는 red→left **100 ep**, 이 GR00T 는 태스크당 **7 ep** 다. 동일조건 비교는 재수집 후의 일이다.
 
 ---
 
@@ -348,7 +367,7 @@ Access to model nvidia/Cosmos-Reason2-2B is restricted.
 
 ### 8.2 ★ VRAM — **기본 설정은 32 GB 에 안 들어간다**
 
-`GrootPolicy` 를 실제로 만들어 파라미터를 세어 보면(`scratchpad/groot_mem.py`):
+`GrootPolicy` 를 실제로 만들어 파라미터를 세어 보면(`ur_bringup/scripts/harness/groot_mem.py`):
 
 ```
 module                          total   trainable
@@ -391,3 +410,75 @@ params 8.7 + grads 3.0 + AdamW 6.0 ≈ 17.8 GiB      → 활성값 여유 14 GiB
 
 `lerobot[groot]` 설치로 `transformers 5.5.4` 외 19개 신규, **기존 패키지 변경 0**,
 `torch 2.11.0+cu128` / sm_120 유지 확인.
+
+### 8.5 게이트 해제 (2026-09-13)
+
+`gated=auto` 였다 — 동의 즉시 열린다. 토큰은 `HF_HOME` 아래 `deps/hf_cache/token`(git 밖).
+절차는 `SETUP.md` §2-C-2. Fine-grained 토큰은 gated-repo 읽기 스코프가 따로 있다.
+
+### 8.6 처리량 — 배치가 전부, 워커는 무의미 (V2·V3·V4)
+
+| batch | step/s | samples/s | peak VRAM | peak shm |
+|---|---|---|---|---|
+| 8 | 2.08 | 16.6 | 25,401 MiB | 0 |
+| 16 | 1.32 | 21.1 | 25,669 MiB | 0 |
+| **32** | **0.714** | **22.9** | **27,318 MiB** | 14 MiB |
+| 48 | 0.524 | 25.2 | 29,302 MiB | 21 MiB |
+
+배치 8→48 에서 VRAM 은 +3.9 GB 뿐 — **바닥 25 GB 는 모델+AdamW 상태**이고 활성값은 부수적이다.
+48 이 더 빠르지만 공유 GPU 에서 3.3 GB 여유는 위험 → **32 채택** (NVIDIA 레퍼런스 배치와 같다).
+워커 2/4/6 = 2.08/1.97/1.99 step/s 로 평평, **8 은 `/dev/shm` 사망**(step 24). `data_s 0.90 > updt_s 0.52`.
+
+> **정정 2026-09-13 (`HISTORY.md` §45.4)**: 위 `data_s` 를 "AV1 디코딩 병목" 으로 읽었던 것은 **오진**.
+> h264 로 재변환해도 `data_s` 가 안 줄었고, 분해 측정에서 DataLoader 대기는 **0.000 s**, 전부
+> **메인 프로세스 전처리기** 시간이었다. 원인은 torch 기본 20 스레드의 **과다할당** — `OMP_NUM_THREADS=8`
+> 로 `data_s` 0.85→**0.125 s**, 51 샘플/s(2배). 위 표는 전부 20 스레드에서 잰 값이다.
+> §4.1 게이트는 더 여유로워진다: 10k 스텝 ≈ **1 h 45 m** 예상.
+
+**§4.1 게이트**: 10,000 스텝 × 1.32 s = **3.7 h < 6 h → 통과.** lerobot 기본 100,000 이면 39 h.
+10,000 은 `configuration_groot.py` 의 NVIDIA 레퍼런스 값이고, **`--policy.max_steps` 를 같이 줘야**
+warmup(`ceil(max_steps × 0.05)`)이 의도대로 5% 다 — deprecated 블록의 "unused" 주석이 틀렸다.
+
+### 8.7 학습 + V7 (2026-09-13)
+
+| | 상대(rel) | 절대(abs) |
+|---|---|---|
+| 소요 | 3 h 42 m | 3 h 45 m |
+| loss 1K / 5K / 10K | 0.044 / 0.017 / 0.013 | 0.053 / 0.017 / 0.014 |
+| peak VRAM | 27,327 MiB | 27,485 MiB |
+| 서비스 | ❌ (§8.8) | ✅ |
+
+§2.0 전처리 5개(`use_albumentations=True`, `state_dropout_prob=0.2`, `use_percentiles=True`,
+`shortest_image_edge=256`, `crop_fraction=0.95`)가 체크포인트 고유값으로 기록됨 — 폴백 없음.
+카메라 2대: abs 체크포인트는 `video_modality_keys: null`(폴백 경로)인데, 전처리 출력이
+2대 → `image_grid_thw (2,3)` / `pixel_values (704,1536)` / 193 토큰, 1대 → `(1,3)` / `(352,1536)` / 103 토큰.
+**★ 1대만 줘도 에러 없이 돈다** — 모델에는 "카메라 누락" 검사가 없고, 방어선은 `UR16eROS` 의 `no fresh image` 뿐.
+
+**V7 PASS**: 서버와 같은 경로(`from_pretrained` + `make_pre_post_processors` + `predict_action_chunk`)로
+청크 40액션 **중앙값 80.8 ms / 최악 188 ms**, 예산 1,333 ms. (`select_action` 만 재면 전처리·
+상대 복원이 빠져 낙관적이고 무의미한 숫자가 나온다.)
+
+### 8.8 ★★ 서비스 경로 함정 3개 — 전부 "정책이 아무것도 안 함"으로 보인다
+
+| # | 증상 | 원인 | 처방 |
+|---|---|---|---|
+| 1 | 0 청크, `joint states are stale` | 기동 과도기에 클라이언트 시작 | 시행 전 `obs_ready.py`(어댑터와 같은 2 s 기준) |
+| 2 | 추론 0회, `mixed dtype (CPU)` | `policy_device` 기본 `cpu` + bf16 체크포인트. **서버가 예외를 삼키고 관측은 계속 받는다** | `--policy_device=cuda` |
+| 3 | 추론 됨, 후처리 `NotImplementedError` | 상대 액션은 스텝당 후처리 불가 (§3) | 절대 액션 |
+| 4 | 청크 110개 전달, **팔 0.0°** | `forward_position_controller` 미 spawn — `bringup.sh` 는 안 띄운다, `policy_inference.launch.py` 가 띄운다. 전환 스크립트 출력이 `/dev/null` 로 삼켜짐 | 롤아웃 전 그 런치 실행 + 전환 후 `active` 검증 + 재시도 |
+
+하네스의 "전달된 청크 수" 검사는 **후처리 성공 후에만 찍히는 `| Total time:`** 을 센다 —
+후처리 이전 로그(`Preprocessing and inference took`)를 세면 #3 을 통과시킨다(실제로 그랬다).
+
+### 8.9 V8 — 3/8, 절대 액션, 3태스크 교대 (2026-09-13)
+
+```
+red→right  2/3  (27 mm, 18 mm)      blue→left  1/2  (27 mm; 실패 1건도 blue 를 집어 250 mm 운반)
+red→left   0/3  (셋 다 파지 단계 실패)          SKIP 1 (trajectory 전환 타임아웃 → READY 불가)
+WRONG_OBJECT 0  — blue 지시 2회 모두 blue, red 지시 6회 모두 blue 미접촉 → "어떤 물체" 8/8
+WRONG_PLACE  0  — 실패가 전부 파지 전이라 "어디"는 미관측
+```
+**파이프라인은 닫혔다**: 관측 → GR00T(cuda) → 절대 액션 후처리 → 스트리밍 컨트롤러 → Isaac.
+**성능은 판정하지 않는다**: 태스크당 7 ep. ACT(100 ep) 9/10 과의 0/3 은 데이터 14배 차이다.
+§5 의 경고대로 — "GR00T 가 나쁘다"가 아니라 **데이터가 부족한 것**부터 본다.
+

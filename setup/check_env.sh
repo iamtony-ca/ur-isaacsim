@@ -171,6 +171,19 @@ else
   warn "ML venv not built (run: setup/setup.sh ml). Only needed for IL/VLA training + LeRobot conversion."
 fi
 
+step "GR00T N1.7 (VLA — optional, setup/setup.sh groot)"
+if [ -x "$mlpy" ] && "$mlpy" -c "import lerobot.policies.groot.modeling_groot" 2>/dev/null; then
+  ok "lerobot[groot] extra importable (transformers $("$mlpy" -c 'import transformers;print(transformers.__version__)' 2>/dev/null))"
+  # Offline check of the workspace-local HF cache -- the models are usually copied in by
+  # hand on a reproduced PC, and training runs with HF_HUB_OFFLINE=1 (setup/ml_env.sh).
+  if "$WS/src/setup/check_hf_cache.sh"; then ok "deps/hf_cache complete: GR00T-N1.7-3B + Cosmos-Reason2-2B tokenizer (offline)"
+  else warn "deps/hf_cache incomplete -> SETUP.md 2-C-2 (copy by hand or hf download)"; fi
+  nth="$(nproc)"
+  [ "$nth" -gt 12 ] && warn "nproc=$nth: run GR00T training with OMP_NUM_THREADS=8 (ml_env.sh does) — default threads = 2x slower (HISTORY.md 45.4)"
+else
+  warn "lerobot[groot] not installed (setup/setup.sh groot). Only needed for the GR00T N1.7 stage."
+fi
+
 step "OMY-L100 teleop leader stack (optional — IL data collection)"
 if [ -d "$WS/install/open_manipulator_description" ]; then
   for p in open_manipulator_description open_manipulator_bringup dynamixel_hardware_interface \

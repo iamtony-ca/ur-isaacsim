@@ -9,6 +9,16 @@ that boundary is kept. il_recorder.py writes a plain, self-describing raw format
 
     python3 raw_to_lerobot.py --raw <recorder out_dir> --repo-id <user>/<name>
     python3 raw_to_lerobot.py --raw <dir> --repo-id x/y --dry-run   # inspect only
+    python3 raw_to_lerobot.py ... --vcodec libsvtav1                 # old default
+
+Video codec: default is h264 crf23, NOT lerobot's libsvtav1 (AV1) crf30. It was
+added on the belief that AV1 decode was the GR00T training bottleneck; measured
+afterwards (HISTORY.md 45.4) it was NOT -- data_s did not move, the DataLoader
+never waits, and the real cost was thread oversubscription in the main-process
+preprocessor (fixed with OMP_NUM_THREADS=8). h264 stays the default anyway:
+same size as AV1 within 1 dB PSNR at crf23, and it decodes anywhere (hardware,
+any ffmpeg build). The codec is recorded in meta/info.json, so old AV1 datasets
+keep working -- lerobot reads the stream, not this flag.
 
 The schema written here is ur_bringup/docs/plan_il_vla.md 2.6:
     video.exterior, video.wrist, state.single_arm(6), state.gripper(1),
@@ -101,6 +111,19 @@ def main():
     ap.add_argument("--fps", type=int, default=None, help="override fps (default: from meta)")
     ap.add_argument("--robot-type", default="ur16e_2f85")
     ap.add_argument("--dry-run", action="store_true", help="inspect the raw set and exit")
+    # Passed straight through to lerobot's RGBEncoderConfig -- no encoder logic
+    # here. Validation (unknown codec, encoder not built into this pyav) is
+    # upstream's and raises before any frame is written.
+    ap.add_argument("--vcodec", default="h264",
+                    help="video codec for the camera streams (lerobot RGBEncoderConfig.vcodec; "
+                         "h264 | libsvtav1 | hevc | auto ...). Default h264: see docstring")
+    ap.add_argument("--crf", type=float, default=None,
+                    help="quality (lower = better/larger). Default: 23 for h264, else lerobot's "
+                         "(30). Not comparable across codecs -- measured on 320x240 sim data, "
+                         "h264 crf30 is 4.3 dB below AV1 crf30 at 44%% of the size, h264 crf23 "
+                         "is within 1 dB at the same size (HISTORY.md 45)")
+    ap.add_argument("--fast-decode", type=int, default=0,
+                    help="codec-specific fast-decode tuning (h264: tune=fastdecode). 0 = off")
     # Idle-frame thinning. The state machine stops between phases (planning,
     # gripper open/close, settling) and those stops are recorded at full rate:
     # measured 65.8% of frames with per-step motion < 1e-4 rad, median motion
@@ -150,6 +173,22 @@ def main():
         print("Run this in the ML environment (deps/.venv-ml), NOT in ROS. See the docstring.")
         print("If it complains about `datasets`, install the extra:  pip install 'lerobot[dataset]'")
         return 3
+    # Encoder config class lives in lerobot.configs from 0.6. On an older
+    # lerobot the flag cannot be honoured, so refuse rather than silently encode
+    # with whatever that version defaults to.
+    try:
+        from lerobot.configs import RGBEncoderConfig
+    except ImportError:
+        RGBEncoderConfig = None
+    if RGBEncoderConfig is None:
+        print("\nthis lerobot has no RGBEncoderConfig; --vcodec cannot be applied (need lerobot >= 0.6)")
+        return 3
+    enc_kwargs = {"vcodec": args.vcodec, "fast_decode": args.fast_decode}
+    crf = args.crf if args.crf is not None else (23 if args.vcodec == "h264" else None)
+    if crf is not None:
+        enc_kwargs["crf"] = crf
+    rgb_encoder = RGBEncoderConfig(**enc_kwargs)   # raises on an unknown/unavailable codec
+    print(f"video encoder: {rgb_encoder.vcodec}  options={rgb_encoder.get_codec_options()}")
 
     meta0 = eps[0][1]
     fps = args.fps or int(round(meta0.get("rate_hz", 30)))
@@ -171,7 +210,7 @@ def main():
 
     ds = LeRobotDataset.create(repo_id=args.repo_id, fps=fps, root=args.root,
                                robot_type=args.robot_type, features=features,
-                               use_videos=True)
+                               use_videos=True, rgb_encoder=rgb_encoder)
 
     kept_tot = seen_tot = 0
     for d, meta, frames in eps:
@@ -201,7 +240,7 @@ def main():
         print(f"\nidle thinning: kept {kept_tot}/{seen_tot} frames "
               f"({100.0 * kept_tot / seen_tot:.1f}%), max_idle_run={args.max_idle_run}, "
               f"idle_eps={args.idle_eps}")
-    print(f"\ndone -> {args.repo_id}")
+    print(f"\ndone -> {args.repo_id}  (video: {rgb_encoder.vcodec})")
     return 0
 
 

@@ -1,0 +1,10 @@
+# GR00T N1.7 (VLA) extra on top of requirements-ml.txt. Installed by `setup.sh groot`
+# into the SAME workspace-local venv (deps/.venv-ml). Not part of the default stages:
+# ACT-only users do not need it (19 packages: transformers, diffusers, peft, timm,
+# decord, dm-tree, ...; measured 2026-09-10: all new, 0 existing packages changed).
+#
+# Same pin as requirements-ml.txt -- the extra must resolve to the SAME lerobot, or pip
+# would replace it. setup.sh refuses the install if the resolver wants to change ANY
+# already-installed package (torch above all: a PyPI torch has no sm_120 kernels).
+# Exact versions that were verified end-to-end are in requirements-ml.lock.
+lerobot[groot]==0.6.1

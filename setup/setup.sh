@@ -26,7 +26,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/lib.sh"
 
 # Every valid stage name...
-STAGES=(preflight pin repos base cumotion sources build leader ml verify udev)
+STAGES=(preflight pin repos base cumotion sources build leader ml groot verify udev)
 # ...and what a bare `./setup.sh` runs. `udev` is EXCLUDED on purpose: it is the
 # only stage that writes outside the workspace (/etc/udev) and it is meaningless
 # without a U2D2 attached. Ask for it explicitly on the real machine.
@@ -42,6 +42,7 @@ declare -A STAGE_DESC=(
   [leader]="OMY-L100 teleop leader stack (gravity-compensated ros2_control, 7 pkgs)"
   [udev]="U2D2 udev rule for the OMY-L100 leader (REAL HW only, writes /etc/udev)"
   [ml]="ML venv for the IL/VLA track (torch with sm_120 + lerobot), workspace-local"
+  [groot]="GR00T N1.7: lerobot[groot] extra into the ML venv + workspace-local HF cache (not default)"
   [verify]="run check_env.sh"
 )
 
@@ -385,6 +386,67 @@ stage_ml() {
 
   ok "ML venv ready: $py"
   echo "  use it with:  $py -m ...   (never 'source' it into a ROS shell)"
+}
+
+# ---------------------------------------------------------------------------
+# GR00T N1.7 (VLA) on top of the ML venv. Not in DEFAULT_STAGES: ACT-only users do
+# not need transformers/diffusers/peft (19 packages). Two halves:
+#   1. `lerobot[groot]` extra of the SAME pinned lerobot -- refused outright if the
+#      resolver wants to change ANY installed package (a replaced torch = sm_120 gone).
+#   2. deps/hf_cache: the model files. Either `hf download` (needs the gated-repo
+#      token, SETUP.md 2-C-2) or COPIED IN BY HAND from another PC -- check_hf_cache.sh
+#      verifies the hand-placed layout offline, which is how training runs anyway
+#      (ml_env.sh sets HF_HUB_OFFLINE=1).
+stage_groot() {
+  step "groot — lerobot[groot] extra + HF cache (deps/hf_cache)"
+  local venv="$WS/deps/.venv-ml"
+  local py="$venv/bin/python"
+  local hf="$WS/deps/hf_cache"
+  [ -x "$py" ] || { err "ML venv missing -- run: $0 ml"; return 1; }
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  [dry-run] would pip install -r $HERE/requirements-groot.txt into $venv"
+    echo "            (refusing if any already-installed package would change)"
+    echo "  [dry-run] would mkdir $hf and run check_hf_cache.sh"
+    return 0
+  fi
+  local rep; rep="$(mktemp /tmp/groot-plan-XXXX.json)"
+  "$py" -m pip install -q --dry-run --report "$rep" -r "$HERE/requirements-groot.txt" || {
+    rm -f "$rep"; err "pip could not resolve requirements-groot.txt"; return 1; }
+  local changed
+  changed="$("$py" - "$rep" <<'PLAN'
+import json, sys, importlib.metadata as md
+norm = lambda n: n.lower().replace("_", "-")
+have = {norm(d.metadata["Name"]): d.version for d in md.distributions()}
+for p in json.load(open(sys.argv[1])).get("install", []):
+    n, v = norm(p["metadata"]["name"]), p["metadata"]["version"]
+    if n in have and have[n] != v:
+        print(f"{n} {have[n]} -> {v}")
+PLAN
+)"
+  rm -f "$rep"
+  if [ -n "$changed" ]; then
+    err "lerobot[groot] would CHANGE already-installed packages -- refusing (isolation rule):"
+    echo "$changed" | sed 's/^/    /'
+    err "  a replaced torch loses sm_120 (SETUP.md 2-C). Resolve by hand, then re-run."
+    return 1
+  fi
+  echo "  installing $HERE/requirements-groot.txt (transformers, diffusers, peft, ... ~1 GB) ..."
+  "$py" -m pip install -q -r "$HERE/requirements-groot.txt" || { err "install failed"; return 1; }
+  _verify_torch_arch "$py" || return 1
+  "$py" -c "import transformers, lerobot.policies.groot.modeling_groot" 2>/dev/null || {
+    err "lerobot groot policy not importable after install"; return 1; }
+  ok "lerobot[groot] ready (transformers $("$py" -c 'import transformers;print(transformers.__version__)'))"
+  mkdir -p "$hf" && chmod 700 "$hf"
+  ok "HF cache: $hf  — every GR00T command needs:  source src/setup/ml_env.sh"
+  if "$HERE/check_hf_cache.sh"; then ok "model files in place (offline OK)"
+  else
+    warn "model files NOT in place yet. Either:"
+    echo "    a) copy deps/hf_cache/hub/models--nvidia--{GR00T-N1.7-3B,Cosmos-Reason2-2B} from a PC that has them"
+    echo "       (layout + required files: SETUP.md 2-C-2, then re-run: src/setup/check_hf_cache.sh)"
+    echo "    b) download (needs the gated-repo token, SETUP.md 2-C-2 gate steps):"
+    echo "       source src/setup/ml_env.sh; HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/GR00T-N1.7-3B"
+    echo "       HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/Cosmos-Reason2-2B --include 'config.json' 'tokenizer*' 'vocab.json' 'merges.txt' '*preprocessor_config.json'"
+  fi
 }
 
 # The Isaac Sim container ships /dev/shm at Docker's 64 MiB default. PyTorch's

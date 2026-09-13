@@ -53,7 +53,7 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src        # ★ repo = src/ �
 
 **워크스페이스 안에만 있는 것** (지우면 완전히 되돌아감 — 확인 불필요):
 `$WS/install`(colcon 오버레이, `/opt/ros` 에 안 씀) · `$WS/src`(vcs 소스) ·
-`$WS/deps/.venv-ml`(torch·lerobot) · `$WS/deps/hf_cache`(GR00T 6.5 GB)
+`$WS/deps/.venv-ml`(torch·lerobot) · `$WS/deps/hf_cache`(GR00T 6.5 GB + Cosmos 토크나이저 11 MB — 직접 받아 넣으려면 [`SETUP.md`](SETUP.md) §2-C-2 "수동 배치" 레이아웃, 검증 `src/setup/check_hf_cache.sh`)
 
 **컨테이너 전역에 쓰는 것 — 4가지 전부 확인할 것**:
 
@@ -320,8 +320,17 @@ ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
   ```
   카메라가 1대뿐이면 `-p cameras.exterior:=none`
 - ☐ 변환: `deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py --raw <경로> --repo-id <id> --root <출력>`
-- ☐ 학습: `deps/.venv-ml/bin/lerobot-train --policy.type=act --policy.push_to_hub=false ...`
-- ☐ 추론: [`launch/common/policy_inference.launch.py`](ur_bringup/launch/common/policy_inference.launch.py) 참고
+- ☐ 학습 (ACT): `deps/.venv-ml/bin/lerobot-train --policy.type=act --policy.push_to_hub=false ...`
+- ☐ GR00T 준비: `src/setup/setup.sh groot`(lerobot[groot] + `deps/hf_cache`) → 모델 파일 배치(다운로드 또는 복사,
+  [`SETUP.md`](SETUP.md) §2-C-2) → `src/setup/check_hf_cache.sh` 가 전부 `ok`
+- ☐ 모든 ML 명령 앞에 `source src/setup/ml_env.sh`(HF 캐시 경로·오프라인·`OMP_NUM_THREADS=8`·shm 픽스)
+- ☐ 수집→변환→학습→롤아웃 **자동화 스크립트는 `src/ur_bringup/scripts/harness/`**(README 에 목록·인터프리터·로그 위치).
+  로그는 `outputs/harness_logs/`(`HARNESS_LOG=` 로 변경), 워크스페이스 경로는 위치에서 자동 유추(`UR_WS=` 로 덮어쓰기)
+- ☐ 학습 (GR00T N1.7): [`PIPELINE.md`](PIPELINE.md) §3-B 의 명령 **그대로** — `base_model_path` 는 로컬 경로,
+  `fp32=false`, `--steps` 와 `--policy.max_steps` 를 같이. 예상 ≈1.8 h / 10k 스텝 (RTX 5090; `OMP_NUM_THREADS` 기본값이면 3.7 h, §45.4)
+- ☐ 추론: [`launch/common/policy_inference.launch.py`](ur_bringup/launch/common/policy_inference.launch.py) **반드시** 먼저
+  (스트리밍 컨트롤러 spawn) → `switch_control_mode.py streaming` → `list_controllers` 에서 `active` 확인
+- ☐ GR00T 추론은 `--policy_device=cuda`, `--actions_per_chunk=40`, 카메라 2대(기본값) — [`PIPELINE.md`](PIPELINE.md) §4-3
 
 > **ACT 는 지시문을 읽지 않는다.** 태스크 1종당 데이터셋 1개, 체크포인트 1개.
 > 여러 태스크를 섞은 데이터셋은 VLA(GR00T/π) 단계용이다 — [`HISTORY.md`](HISTORY.md) §30.

@@ -63,6 +63,7 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh             # 실행
 ```
 `preflight → pin → repos → base → cumotion → sources → build → leader → ml → verify` 를 순서대로 돈다.
+(`groot` 는 기본에서 제외 — GR00T 단계에 들어갈 때 `./setup.sh groot`, §2-C-2.)
 
 | 옵션 | 용도 |
 |---|---|
@@ -108,7 +109,7 @@ cd <ws>/src/setup
 ./setup.sh --list        # 단계 목록
 ./setup.sh --dry-run     # 아무것도 바꾸지 않고 "무엇을 할지"만 출력  ← 먼저 이걸로 확인
 ./setup.sh               # 전체 실행 (preflight → pin → repos → base → cumotion → sources
-                         #            → build → leader → ml → verify).  udev 는 제외됨(실물 전용)
+                         #            → build → leader → ml → verify).  udev·groot 는 제외됨(실물 전용 / VLA 단계)
 ./setup.sh base build    # 특정 단계만
 ./check_env.sh           # 언제든 환경 점검 (읽기 전용)
 ```
@@ -297,8 +298,14 @@ colcon build --symlink-install --packages-select nvblox_ros \
 cd <ws>/src/setup
 ./setup.sh ml                                     # deps/.venv-ml 생성 + torch + lerobot
 TORCH_INDEX=https://download.pytorch.org/whl/cu130 ./setup.sh ml   # CUDA 인덱스 교체
-./check_env.sh                                    # sm_120 및 격리 검증
+./setup.sh groot                                  # GR00T 단계에서만: lerobot[groot] + HF 캐시 (§2-C-2)
+./check_env.sh                                    # sm_120 및 격리 검증 (+ GR00T 캐시 오프라인 검사)
 ```
+
+**ML 명령은 전부 `source src/setup/ml_env.sh` 뒤에** 실행한다(변환·학습·서버·클라이언트). 이 파일이
+`HF_HOME`(워크스페이스 안), `HF_HUB_OFFLINE=1`, `OMP_NUM_THREADS=8`, `UR_WS_TORCH_SHM_FIX=1`,
+`WANDB_DISABLED` 를 한곳에서 정한다 — 명령마다 환경변수를 손으로 붙이다 하나 빠뜨리면 조용히 느려지거나(§45.4)
+네트워크로 나간다. 실제로 깔린 버전 전체는 `setup/requirements-ml.lock`(참고용, `pip freeze | diff - requirements-ml.lock`).
 
 ### ★ 격리 — 반드시 워크스페이스 로컬 venv
 ```
@@ -437,13 +444,16 @@ ACT 만 할 거면 필요 없다. GR00T 단계에 들어갈 때만. 설계 정�
 분리하고 런타임에 `require_package(..., extra="groot")` 로 막는다:
 
 ```bash
-# 1) 반드시 dry-run 으로 기존 패키지 변경 여부 확인 (§0-A 와 같은 습관)
-deps/.venv-ml/bin/pip install --dry-run --report /tmp/plan.json 'lerobot[groot]'
-# 2) 순수 추가면 설치
-deps/.venv-ml/bin/pip install 'lerobot[groot]'
-# 3) ★ sm_120 이 살아있는지 즉시 확인
-deps/.venv-ml/bin/python -c "import torch;print(torch.__version__, torch.cuda.get_device_capability(0))"
-#    -> 2.11.0+cu128 (12, 0)
+cd <ws>/src/setup && ./setup.sh groot        # = 아래 1~3 을 자동으로 (setup/requirements-groot.txt)
+```
+`setup.sh groot` 가 하는 일: ① `pip --dry-run --report` 로 계획을 받아 **이미 깔린 패키지가 하나라도
+바뀌면 거부**(torch 교체 = sm_120 상실), ② 설치, ③ sm_120 재확인 + `lerobot.policies.groot` import,
+④ `deps/hf_cache` 생성 후 `check_hf_cache.sh` 로 모델 파일 오프라인 검사(없으면 아래 배치/다운로드 안내).
+손으로 하면:
+```bash
+deps/.venv-ml/bin/pip install --dry-run --report /tmp/plan.json 'lerobot[groot]==0.6.1'   # 기존 변경 0 확인
+deps/.venv-ml/bin/pip install 'lerobot[groot]==0.6.1'
+deps/.venv-ml/bin/python -c "import torch;print(torch.__version__, torch.cuda.get_device_capability(0))"  # 2.11.0+cu128 (12, 0)
 ```
 
 2026-09-10 실측: **19개 전부 신규, 기존 패키지 변경 0**. `transformers 5.5.4` · `diffusers 0.39.0` ·
@@ -458,30 +468,40 @@ deps/.venv-ml/bin/python -c "import torch;print(torch.__version__, torch.cuda.ge
 **HF 캐시 격리** — 공유 `~/.cache/huggingface` 를 오염시키지 않는다:
 
 ```bash
-export HF_HOME=/isaac-sim/volume/ur_ws/deps/hf_cache   # GR00T 6.5 GB 가 여기로
-export WANDB_DISABLED=true                              # GrootConfig.report_to 기본값이 wandb
-export TOKENIZERS_PARALLELISM=false
+source src/setup/ml_env.sh     # HF_HOME=deps/hf_cache, HF_HUB_OFFLINE=1, OMP_NUM_THREADS=8, WANDB_DISABLED, ...
 ```
+(내용은 파일 주석 참조. `HF_HUB_OFFLINE=1` 이 기본이라 **다운로드할 때만** `HF_HUB_OFFLINE=0` 을 앞에 붙인다.)
 
-**★ 게이트 — 사용자 계정 조치가 필요하다.** `nvidia/GR00T-N1.7-3B` 는 gated 가 아니지만,
-백본 **토크나이저**가 gated `nvidia/Cosmos-Reason2-2B` 에 있어 학습 시작 시 401 로 죽는다.
+**★ 게이트 — 사용자 계정 조치가 필요하다 (✅ 2026-09-13 해제, 절차 확정).** `nvidia/GR00T-N1.7-3B` 는
+gated 가 아니지만, 백본 **토크나이저**가 gated `nvidia/Cosmos-Reason2-2B` 에 있어 학습 시작 시 401 로 죽는다.
 (백본 *가중치* 494 텐서와 아키텍처 설정은 로컬에 다 있다 — 몇 MB 짜리 토크나이저 때문에 막힌다.)
 
-1. https://huggingface.co/nvidia/Cosmos-Reason2-2B 라이선스 동의
-2. https://huggingface.co/settings/tokens read 토큰 발급 → `export HF_TOKEN=hf_...`
+1. https://huggingface.co/nvidia/Cosmos-Reason2-2B 라이선스 동의 — **`gated=auto`** 라 동의 즉시 열린다(수동 검토 없음)
+2. https://huggingface.co/settings/tokens read 토큰 발급. Fine-grained 면
+   **"Read access to contents of all public gated repos you can access"** 스코프 필수 — 없으면 동의해도 401
+3. 토큰을 **워크스페이스 안에** 저장(공유 `~/.cache/huggingface` 오염 금지, git repo 밖):
+   ```bash
+   export HF_HOME=/isaac-sim/volume/ur_ws/deps/hf_cache
+   deps/.venv-ml/bin/hf auth login          # → deps/hf_cache/token (600)
+   ```
+4. 확인: `HF_HOME=... deps/.venv-ml/bin/python -c "from huggingface_hub import hf_hub_download as d; d('nvidia/Cosmos-Reason2-2B','tokenizer_config.json')"`
 
 다른 Qwen3-VL 토크나이저로 대체하는 우회는 **하지 않는다** — vocab 이 어긋나면 조용히 틀린 학습이 된다.
 
-**★ 학습 명령 — 두 인자가 기본값이면 안 된다**:
+**★ 학습 명령 — 세 인자가 기본값이면 안 된다** (검증된 전체 명령은 [`PIPELINE.md`](PIPELINE.md) §3-B):
 
 ```bash
 BASE=$(deps/.venv-ml/bin/python -c \
   "from huggingface_hub import snapshot_download; print(snapshot_download('nvidia/GR00T-N1.7-3B'))")
 
+# ★ 네 가지가 기본값이면 안 된다 — 이유는 아래 글머리: OMP_NUM_THREADS=8(ml_env.sh 가 줌) /
+#   base_model_path 는 로컬 경로 / model_params_fp32=false / --steps 와 --policy.max_steps 를 같이
 deps/.venv-ml/bin/lerobot-train \
   --policy.type=groot --policy.push_to_hub=false --wandb.enable=false \
-  --policy.base_model_path="$BASE" \          # ★ repo id 금지 (아래)
-  --policy.model_params_fp32=false \          # ★ 기본 fp32 는 32 GB 초과 (아래)
+  --policy.base_model_path="$BASE" \
+  --policy.model_params_fp32=false \
+  --steps=10000 --policy.max_steps=10000 \
+  --batch_size=32 --num_workers=2 \
   --dataset.repo_id=<...> --dataset.root=<...>
 ```
 
@@ -492,7 +512,59 @@ deps/.venv-ml/bin/lerobot-train \
 - **기본 `model_params_fp32=true` 는 32 GB 에 안 들어간다.** LoRA 가 아니라 동결 방식이고
   (`lora_*` 는 never-wired), action head **1,621 M** 이 동결 백본(1,524 M)보다 크다:
   `params 11.7 + grads 6.0 + AdamW 12.1 = 29.8 GiB / 31.8 GiB` → **배치 크기와 무관하게** 실패.
-  `false` 로 두면 ≈17.8 GiB.
+  `false` 로 두면 ≈17.8 GiB (실측 batch 32 에서 27.3 GB — 배치를 8→48 로 올려도 +4 GB 뿐, 바닥이 모델+AdamW 다).
+- **`OMP_NUM_THREADS=8`.** lerobot 의 `data_s` 는 DataLoader 대기가 아니라 **메인 프로세스에서 도는
+  전처리기**(`preprocessor(batch)`) 시간이다(로그 구간 최댓값). torch 기본 스레드 수(=코어 수, 이 머신 20)에서
+  작은 텐서 연산(`contiguous`/`stack`)이 스레드 과다할당으로 7배 느려져 `data_s 0.85 s` 가 됐다.
+  8 스레드에서 0.125 s, 처리량 23→51 샘플/s(1/4/8/12/20 = 0.31/0.15/0.125/0.12/0.85 s, `HISTORY.md` §45.4).
+  코덱(AV1/h264)·워커 수는 무관(워커 대기 0.000 s). ACT 는 전처리가 가벼워 효과 없음(`data_s 0.007`).
+- **`--policy.max_steps` 는 `--steps` 와 같은 값으로.** `configuration_groot.py` 의 `max_steps=10000` 은
+  "unused" 주석이 달린 deprecated 블록에 있지만 **warmup 스텝 수가 여기서** 나온다
+  (`ceil(max_steps × 0.05)`). `--steps` 만 바꾸면 warmup 비율이 조용히 틀어진다(실측 §43.4).
+- **상대 액션(`use_relative_actions=true`)은 쓰지 않는다.** 학습은 되지만 `async_inference` 서버가
+  서비스하지 못한다(스텝당 후처리 vs 청크 단위 디코드, `NotImplementedError`). 절대 액션이 정본.
+  만약 쓴다면 `relative_exclude_joints` 는 **부분 문자열 매칭**이라 정확히 `["gripper"]` 만 —
+  `["joint"]` 은 6축 전부 절대/그리퍼만 상대로 **뒤집힌다**(경고 없음).
+- **롤아웃은 `--policy_device=cuda` 필수.** 기본값 `cpu` 에서 bf16 체크포인트가 `mixed dtype` 으로 죽는데,
+  서버가 예외를 삼키고 관측을 계속 받아 **"아무것도 안 하는 정책"으로 보인다**(§43.6).
+- **캐시 재현 — 두 가지 길.** (a) 게이트 절차 1~4 후 `HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download ...`
+  (`setup.sh groot` 가 정확한 명령을 출력), (b) **파일을 손으로 옮기기** — 아래.
+
+**★ HF 캐시 수동 배치 (다른 PC 에서 직접 다운로드/복사할 때, 2026-09-13 검증)**
+
+lerobot 은 토크나이저를 **repo id 로** 연다(`AutoTokenizer.from_pretrained("nvidia/Cosmos-Reason2-2B")`,
+`processor_groot.py`). 그래서 파일을 아무 폴더에 두고 경로를 줄 수 없고, **huggingface_hub 캐시 레이아웃**
+그대로 두고 `HF_HUB_OFFLINE=1`(= `ml_env.sh` 기본) 로 돌려야 한다. `blobs/` 와 심볼릭링크는 **필요 없다** —
+`snapshots/<해시>/` 안에 실제 파일이 있으면 된다. 필요한 파일만 두면 아래 크기다:
+
+```
+deps/hf_cache/hub/
+├── models--nvidia--GR00T-N1.7-3B/
+│   ├── refs/main                      ← 내용: 2fc962b973bccdd5d8ce4f67cc63b264d6886495  (개행 없이)
+│   └── snapshots/2fc962b973bccdd5d8ce4f67cc63b264d6886495/
+│       ├── config.json  processor_config.json  statistics.json  embodiment_id.json
+│       ├── model.safetensors.index.json
+│       ├── model-00001-of-00002.safetensors   (4.7 GB)
+│       └── model-00002-of-00002.safetensors   (1.8 GB)
+└── models--nvidia--Cosmos-Reason2-2B/         (gated — 라이선스 동의한 계정으로 받는다)
+    ├── refs/main                      ← 내용: 9ce19a195e423419c349abfc86fd07178b230561
+    └── snapshots/9ce19a195e423419c349abfc86fd07178b230561/
+        ├── config.json  tokenizer.json (6.8 MB)  tokenizer_config.json  vocab.json  merges.txt
+        └── preprocessor_config.json  video_preprocessor_config.json      (합계 11 MB)
+```
+
+- 해시는 HF 웹의 "Files and versions" 에서 보이는 커밋(`main` 의 최신). 다른 커밋을 받았으면 `refs/main` 과
+  폴더명을 그 해시로 맞춘다(둘이 일치하기만 하면 된다). 이 워크스페이스가 검증한 커밋은 위 두 개.
+- GR00T 스냅샷의 나머지(`experiment_cfg/`, `trainer_state.json`, `zero_to_fp32.py`, png, md …)는 lerobot 이
+  읽지 않는다(코드가 여는 파일: `config.json`·`processor_config.json`·`statistics.json`·`embodiment_id.json`
+  + safetensors). 통째로 복사해도 무방(6.5 GB).
+- Cosmos 의 **가중치는 필요 없다**(백본 가중치는 GR00T safetensors 안에 있고, 설정은 lerobot 에 하드코딩) —
+  토크나이저·전처리기 설정 7개 파일뿐.
+- 이미 받은 PC 에서 옮길 때: `cp -rL deps/hf_cache/hub/models--nvidia--* <대상>/deps/hf_cache/hub/`
+  (`-L` 로 심볼릭링크를 실제 파일로 풀어서 복사. `blobs/` 는 빠져도 된다.)
+- 검증: `src/setup/check_hf_cache.sh` — 레이아웃·필수 파일·오프라인 해석·토크나이저 로드(vocab 151669)까지.
+  실측: 위 최소 파일 집합만 둔 임시 `HF_HOME` 에서 `lerobot-train --policy.type=groot` 3 스텝 정상(rc 0, 401 없음).
+- 토큰(`deps/hf_cache/token`)은 **다운로드에만** 필요하다. 오프라인 학습·추론은 토큰 없이 된다.
 
 ---
 

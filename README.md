@@ -305,32 +305,38 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 | 변환 (LeRobot v3.0) | ✅ 43,222 프레임 @30 Hz, 320×240 ×2 cam, 후처리 불필요 |
 | 학습 (ACT 60k) | ✅ 1 h 08 m, loss 0.029 |
 | **롤아웃** | ✅ **9/10**, 성공 시 평균 오차 **7.6 mm** (최소 1 mm) |
+| **손목 카메라 1대 ACT** (2026-09-13) | ✅ 49 ep, 60k 스텝 **40 m**, 롤아웃 **8/9**(1 SKIP = 관측 정체, 채점 제외), 평균 오차 17 mm — 정적 카메라 없이 서비스됨 ([`HISTORY.md`](HISTORY.md) §45.7) |
+| 변환 코덱 | 기본 **h264 crf23**(`--vcodec`). AV1 과 같은 크기·1 dB 이내. 기존 AV1 데이터셋은 그대로 사용 (§45.2) |
 
-정책 체크포인트 `outputs/act_red_left_100`, 데이터셋 `outputs/lerobot_ds_red_left_100`.
+정책 체크포인트 `outputs/act_red_left_100`(2 cam) · `outputs/act_wrist_only`(손목 1 cam), 데이터셋 `outputs/lerobot_ds_red_left_100` · `lerobot_ds_wrist_only`.
+수집·변환·학습·롤아웃 자동화 스크립트는 [`ur_bringup/scripts/harness/`](ur_bringup/scripts/harness/README.md)(ACT `pipeline_*.sh`, GR00T `groot_train_abs.sh`→`groot_v8.sh`).
 여기까지 오는 데 고친 것들(그리퍼 규약·대기시간·그립 기하·데이터량)은 [`HISTORY.md`](HISTORY.md)
 §28~§38. **특히 §35.4 — "측정했다"와 "맞는 것을 측정했다"는 다르다.**
 
 **★ ACT 는 지시문을 읽지 않는다**(§30). 태스크 1종당 데이터셋 1개·체크포인트 1개.
 여러 태스크를 섞은 `outputs/lerobot_ds_240_v2` 는 VLA(GR00T/π) 단계용이다.
 
-### VLA 트랙 (GR00T N1.7, 카메라 2대) — 2026-09-10
+### VLA 트랙 (GR00T N1.7, 카메라 2대) — sim 파이프라인 검증 완료 2026-09-13
 
 설계 정본 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
 **모델·데이터 경로에 새로 짤 코드가 0** — ACT → GR00T 는 전부 설정 변경이다.
 
 | 항목 | 상태 |
 |---|---|
-| 재사용 경계 확정 | ✅ 데이터셋 스키마·수집/변환·`async_inference`·`UR16eROS` 전부 그대로 |
+| 재사용 경계 확정 | ✅ 데이터셋 스키마·수집/변환·`async_inference`·`UR16eROS` 전부 그대로 — **끝까지 신규 코드 0** |
 | 의존성 `lerobot[groot]` | ✅ 19개 신규, 기존 변경 0, torch 2.11.0+cu128/sm_120 유지 |
-| 베이스 가중치 6.5 GB | ✅ `deps/hf_cache`(워크스페이스 로컬, 공유 캐시 미오염) |
-| **카메라 2대 인식** | ✅ rename 없이 `exterior`→`wrist` (upstream 함수 직접 호출로 확인) |
-| 상대 액션 경로 | ✅ 빌드 확인 (`relative_exclude_joints=["gripper"]`) |
-| **VRAM** | ⚠️ 기본 fp32 는 **배치 무관 초과**(29.8/31.8 GiB) → `model_params_fp32=false` (≈17.8 GiB) |
-| **학습 (step/s·6h 게이트)** | ❌ **`nvidia/Cosmos-Reason2-2B` gated repo 에 막힘** — 라이선스 동의 + `HF_TOKEN` 필요 |
-| 추론 지연 / 롤아웃 | ⏳ 학습 이후 |
+| 베이스 가중치 6.5 GB + HF 게이트 | ✅ `deps/hf_cache`(토큰도 여기, git 밖). `Cosmos-Reason2-2B` 는 `gated=auto` — 동의 즉시 열림 |
+| **카메라 2대** | ✅ rename 없이. 전처리 출력 실측: 2대 → `image_grid_thw (2,3)`, 픽셀·토큰 정확히 2배 |
+| **VRAM / 처리량** | ✅ `fp32=false` + **batch 32** = 27.3 GB. **`OMP_NUM_THREADS=8`** 로 23→51 샘플/s(2배, §45.4 — `data_s` 는 디코딩이 아니라 메인 프로세스 전처리기의 스레드 과다할당이었다). 워커 8개는 shm 사망 |
+| **학습 (6h 게이트)** | ✅ **10k 스텝 3h 45m**, loss 0.995→0.014 (lerobot 기본 100k 는 39h — 안 쓴다) |
+| 상대 액션 | ⚠️ 학습은 되지만 **`async_inference` 서버가 서비스 못 함**(스텝당 후처리 vs 청크 디코드) → **절대 액션 채택** |
+| **추론 지연 (V7)** | ✅ 청크 40액션 **80.8 ms** (예산 1,333 ms, 16.5배 여유) |
+| **롤아웃 (V8)** | ✅ **3/8** — 3태스크 교대, `WRONG_OBJECT` 0 (어떤 물체 8/8). 루프 닫힘 확인 |
+| 성능 비교 | ⏳ 태스크당 **7 ep** 라 ACT(100 ep) 9/10 과 비교 불가 → 20~30 ep 재수집 필요 |
 
-함정 3가지(`base_model_path` 로컬경로 필수 / gated 백본 토크나이저 / LoRA 아닌 동결·dtype)는
-[`HISTORY.md`](HISTORY.md) §40.
+체크포인트 `outputs/groot_240_v2_abs`(절대, 서비스 가능) · `outputs/groot_240_v2_rel`(상대, 학습만).
+함정은 [`HISTORY.md`](HISTORY.md) §40(설계 3개)·§43(학습 4개)·§44(서비스 2개). **특히 §43.6·§43.7·§44.2 —
+셋 다 "정책이 아무것도 안 함"으로 보이는 조용한 하네스 실패**였고, 이제 하네스가 전제를 검사한다.
 
 ### 텔레옵 랑데부 + sync/패드 — 2026-09-10
 
