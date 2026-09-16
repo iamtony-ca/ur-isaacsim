@@ -206,8 +206,8 @@ deps/.venv-ml/bin/lerobot-train \
 **롤아웃(§4)은 네 인자가 바뀐다**: `--policy_type=groot`, `--pretrained_name_or_path=<체크포인트>`,
 `--actions_per_chunk=40`(ACT 는 50), **`--policy_device=cuda`**(기본 `cpu` 에서 bf16 이 조용히 죽는다 —
 §43.6). 3태스크 판정은 `judge_rollout.py`(red→left 하드코딩)가 아니라 **`judge_task.py`** 로.
-추론 지연 **80.8 ms**/청크(예산 1,333 ms). 첫 롤아웃 **3/8**, `WRONG_OBJECT` 0 — 파이프라인 검증이지
-성능 비교가 아니다(태스크당 7 ep vs ACT 100 ep). 설계·합격 기준·실측은
+추론 지연 **80.8 ms**/청크(예산 1,333 ms). 롤아웃 7 ep/태스크 **3/8** → 30 ep/태스크 **14/29**(§46), `WRONG_OBJECT` 0 —
+실패는 사전파지 높이에서 정지(§46.3). 설계·합격 기준·실측은
 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md) §4·§8.
 
 ---
@@ -289,7 +289,8 @@ deps/.venv-ml/bin/python -m lerobot.async_inference.robot_client \
 
 서버는 `source src/setup/ml_env.sh` 한 쉘에서 띄운다(토크나이저를 `HF_HOME` 캐시에서 오프라인으로 연다 — 토큰 불필요). 3태스크
 채점은 `ur_bringup/scripts/harness/judge_task.py --object blue --place left` — `WRONG_OBJECT`/`WRONG_PLACE`/`FAIL` 을
-구분한다. 자동화된 9회 하네스: `scratchpad/groot_v8.sh 3 90 <체크포인트>`.
+구분한다. 자동화 하네스: `ur_bringup/scripts/harness/groot_v8.sh <태스크당 N> 90 <체크포인트>`(`RADIUS`/`SEED` 는 수집과 같게),
+수집부터 롤아웃까지 한 번에: `harness/groot_pipeline.sh 30`(§46.4).
 
 ### 4-4. 판정 — GT 로
 

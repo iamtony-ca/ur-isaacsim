@@ -27,16 +27,11 @@
 #                     return None and silently swaps the checkpoint's albumentations /
 #                     state dropout / percentile / crop settings for lerobot defaults.
 #                     Training still runs, just not the way N1.7 was pretrained.
-#   use_relative_actions=true + exclude ["gripper"]
-#                     N1.7 was PRETRAINED on relative action chunks (checkpoint
-#                     processor_kwargs has use_relative_action: True) while the
-#                     lerobot default is False -- plan_groot_n17.md 3 picks relative.
-#                     Gripper stays absolute so grasp/release, a discrete event,
-#                     does not dissolve into accumulated delta error.
-#                     *** Pass exactly ["gripper"]. Matching is substring-based, so
-#                     ["joint"] would invert the intent -- all 6 arm joints absolute
-#                     and the gripper relative, with no warning. Verified by calling
-#                     _infer_n1_7_action_groups directly.
+#   NO use_relative_actions   N1.7 was pretrained on relative chunks and groot_train.sh
+#                     used them, but the async_inference server cannot serve relative
+#                     actions (GrootN17ActionDecodeStep raises NotImplementedError per
+#                     step, HISTORY.md 43.7). Absolute is the only servable path, so
+#                     the two relative flags are simply absent here (44.1).
 #   save_freq=5000    default 20000 > our 10000, so only the final checkpoint would
 #                     exist. 5000 buys one mid-run resume point.
 #   push_to_hub=false / wandb.enable=false   [training] extra turns on hub validation;
@@ -48,9 +43,11 @@ S="$(cd "$(dirname "$0")" && pwd)"
 cd "$WS"
 source "$WS/src/setup/ml_env.sh"
 
-DS="$WS/outputs/lerobot_ds_240_v2"
-REPO=tony/ur16e_pick_place_240_v2
-OUT="$WS/outputs/groot_240_v2_abs"
+# Overrides (v3 recollection, HISTORY.md 46): DS= REPO= OUT= TAG=.
+DS="${DS:-$WS/outputs/lerobot_ds_240_v2}"
+REPO="${REPO:-tony/ur16e_pick_place_240_v2}"
+OUT="${OUT:-$WS/outputs/groot_240_v2_abs}"
+TAG="${TAG:-groot_train_abs}"
 
 [ -f "$DS/meta/info.json" ] || { echo "FAIL: no dataset at $DS"; exit 1; }
 
@@ -70,7 +67,7 @@ echo "== start:   GPU $(nvidia-smi --query-gpu=memory.used --format=csv,noheader
     printf '%s %s\n' "$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits | tr -d ' ')" \
                      "$(df -k /dev/shm | tail -1 | awk '{print $3}')"
     sleep 30
-  done ) > "$LOG/groot_train_abs_res.txt" &
+  done ) > "$LOG/${TAG}_res.txt" &
 RESPID=$!
 trap 'kill $RESPID 2>/dev/null' EXIT
 
@@ -88,7 +85,7 @@ OMP_NUM_THREADS=8 deps/.venv-ml/bin/lerobot-train \
 rc=$?
 
 echo "== rc=$rc"
-echo "== peak VRAM $(awk -F, '{print $1}' "$LOG/groot_train_abs_res.txt" | sort -n | tail -1) MiB"
-echo "== peak shm  $(awk '{print $2}' "$LOG/groot_train_abs_res.txt" | sort -n | tail -1) KiB"
+echo "== peak VRAM $(awk -F, '{print $1}' "$LOG/${TAG}_res.txt" | sort -n | tail -1) MiB"
+echo "== peak shm  $(awk '{print $2}' "$LOG/${TAG}_res.txt" | sort -n | tail -1) KiB"
 ls -la "$OUT/checkpoints" 2>/dev/null
 exit $rc

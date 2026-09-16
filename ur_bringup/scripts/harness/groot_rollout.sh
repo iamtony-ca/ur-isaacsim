@@ -45,6 +45,7 @@ S="$(cd "$(dirname "$0")" && pwd)"
 PER=${1:-3}                    # trials per task
 RUN_S=${2:-90}
 CKPT="${3:-$WS/outputs/groot_240_v2_rel/checkpoints/last/pretrained_model}"
+T="${ROLL_TAG:-gr}"           # log-file prefix (two rollouts in one pipeline must not overwrite each other)
 ME=$$
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
 export ROS_DOMAIN_ID=0
@@ -80,11 +81,11 @@ sleep 3
 # guard against a stale checkpoint; here the path is fixed for the whole run, so
 # the risk it was guarding against does not exist.
 nohup "$WS/deps/.venv-ml/bin/python" -m lerobot.async_inference.policy_server \
-  --host=127.0.0.1 --port=8080 > "$LOG/gr_server.log" 2>&1 &
-for _ in $(seq 1 90); do grep -qi "started on" "$LOG/gr_server.log" && break; sleep 2; done
-if ! grep -qi "started on" "$LOG/gr_server.log"; then
+  --host=127.0.0.1 --port=8080 > "$LOG/${T}_server.log" 2>&1 &
+for _ in $(seq 1 90); do grep -qi "started on" "$LOG/${T}_server.log" && break; sleep 2; done
+if ! grep -qi "started on" "$LOG/${T}_server.log"; then
   echo "FAIL: policy server did not start"
-  grep -iE "401|gated|Traceback|Error" "$LOG/gr_server.log" | head -5
+  grep -iE "401|gated|Traceback|Error" "$LOG/${T}_server.log" | head -5
   exit 1
 fi
 trap 'kill_servers' EXIT
@@ -100,8 +101,8 @@ for i in $(seq 1 "$PER"); do
     # (transient list_controllers timeout), reset_pose got "goal REJECTED by
     # controller" three times and the trial was SKIPped -- correctly, but wasted.
     for a in 1 2 3; do
-      python3 "$WS/src/ur_bringup/isaac/common/switch_control_mode.py" trajectory > "$LOG/gr_switch_traj_$t.log" 2>&1 && break
-      echo "     trajectory switch attempt $a: $(tail -1 "$LOG/gr_switch_traj_$t.log")"; sleep 3
+      python3 "$WS/src/ur_bringup/isaac/common/switch_control_mode.py" trajectory > "$LOG/${T}_switch_traj_$t.log" 2>&1 && break
+      echo "     trajectory switch attempt $a: $(tail -1 "$LOG/${T}_switch_traj_$t.log")"; sleep 3
     done
     sleep 2
     ros2 service call /scene/reset_episode std_srvs/srv/Trigger > /dev/null 2>&1
@@ -128,13 +129,13 @@ for i in $(seq 1 "$PER"); do
     # after three tries, and print the last output so the two stay distinguishable.
     switched=0
     for a in 1 2 3; do
-      if python3 "$WS/src/ur_bringup/isaac/common/switch_control_mode.py" streaming > "$LOG/gr_switch_$t.log" 2>&1; then
+      if python3 "$WS/src/ur_bringup/isaac/common/switch_control_mode.py" streaming > "$LOG/${T}_switch_$t.log" 2>&1; then
         switched=1; break
       fi
-      echo "     switch attempt $a: $(tail -1 "$LOG/gr_switch_$t.log")"; sleep 3
+      echo "     switch attempt $a: $(tail -1 "$LOG/${T}_switch_$t.log")"; sleep 3
     done
     if [ "$switched" != 1 ]; then
-      echo "FAIL: could not switch to streaming control:"; sed 's/^/       /' "$LOG/gr_switch_$t.log"; exit 1
+      echo "FAIL: could not switch to streaming control:"; sed 's/^/       /' "$LOG/${T}_switch_$t.log"; exit 1
     fi
     # awk on the state column: a plain grep for "active" also matches "inactive".
     if ! timeout 10 ros2 control list_controllers 2>/dev/null | awk '$1=="forward_position_controller"{print $NF}' | grep -qx "active"; then
@@ -155,7 +156,7 @@ for i in $(seq 1 "$PER"); do
       --policy_type=groot --pretrained_name_or_path="$CKPT" \
       --policy_device=cuda \
       --actions_per_chunk=40 --task="$text" \
-      --server_address=127.0.0.1:8080 > "$LOG/gr_client_$t.log" 2>&1
+      --server_address=127.0.0.1:8080 > "$LOG/${T}_client_$t.log" 2>&1
 
     # Did a chunk actually reach the robot? Count "Observation N | Total time",
     # which the server logs only AFTER postprocessing succeeds.
@@ -166,13 +167,13 @@ for i in $(seq 1 "$PER"); do
     # NotImplementedError, so the count was non-zero while ZERO actions were
     # delivered -- the trial would have been scored as a policy failure again,
     # by the very check meant to prevent that. Count the last step, not the first.
-    chunks=$(grep -c "| Total time:" "$LOG/gr_server.log" 2>/dev/null || echo 0)
+    chunks=$(grep -c "| Total time:" "$LOG/${T}_server.log" 2>/dev/null || echo 0)
     got=$(( chunks - ${SEEN:-0} ))
     SEEN=$chunks
     if [ "$got" -le 0 ]; then
       echo "     SKIP: 0 action chunks delivered this trial -- harness fault, not a policy result"
-      grep -oE "Error in StreamActions: .*" "$LOG/gr_server.log" 2>/dev/null | sort -u | head -1 | cut -c1-160 | sed 's/^/            /'
-      grep -oE "Error in observation sender: .*" "$LOG/gr_client_$t.log" 2>/dev/null | sort -u | head -1 | sed 's/^/            /'
+      grep -oE "Error in StreamActions: .*" "$LOG/${T}_server.log" 2>/dev/null | sort -u | head -1 | cut -c1-160 | sed 's/^/            /'
+      grep -oE "Error in observation sender: .*" "$LOG/${T}_client_$t.log" 2>/dev/null | sort -u | head -1 | sed 's/^/            /'
       continue
     fi
 

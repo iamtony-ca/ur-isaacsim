@@ -27,7 +27,8 @@
 | 롤아웃 (Isaac 재기동 + `bringup.sh` + `policy_inference.launch.py` + N회 채점) | `rollout_gui_then_n.sh [N] [초] [ckpt]` → `rollout_n.sh` | `rollout_gui_then_n_w1.sh [N] [초] [ckpt]` → `rollout_wrist1.sh` |
 | 전체 | `pipeline_100.sh` | `pipeline_wrist1.sh` |
 
-채점 `judge_rollout.py`(GT 로 물체–마커 거리 + 그리퍼 개방). 3태스크 씬 수집은 `collect240.sh`/`convert240.sh`.
+채점 `judge_rollout.py`(GT 로 물체–마커 거리 + 그리퍼 개방). 3태스크 씬 수집은 `collect240.sh [N]`/`convert240.sh`
+(환경변수 `RAW OUT REPO RADIUS SEED TAG` 로 재사용 — 기본값은 `240_v2` 재현).
 
 ## GR00T N1.7
 
@@ -35,10 +36,11 @@
 |---|---|
 | V1~V5 스모크 (빌드·VRAM·step/s·shm·상대액션 빌드) | `groot_smoke.sh [batch] [steps] [workers]` |
 | 배치/워커 스윕 | `groot_sweep.sh` |
-| 학습 (절대 액션, 10k, `OMP_NUM_THREADS=8`) | `groot_train_abs.sh` (+ `train_watchdog.sh <log> <steps>`) |
+| 학습 (절대 액션, 10k, `OMP_NUM_THREADS=8`) | `groot_train_abs.sh` (`DS OUT REPO TAG` 덮어쓰기 가능; + `train_watchdog.sh <log> <steps>`) |
 | 서비스 가능성 40 s 프로브 | `probe_serve.sh <ckpt>` |
 | V7 지연 (서버와 같은 호출 경로) | `groot_latency.py` |
-| V8 롤아웃 (3태스크 교대, 사전검사·청크검사·`judge_task.py`) | `groot_v8.sh [태스크당 N] [초] [ckpt]` → `groot_rollout.sh` |
+| V8 롤아웃 (3태스크 교대, 사전검사·청크검사·`judge_task.py`) | `groot_v8.sh [태스크당 N] [초] [ckpt]` → `groot_rollout.sh` (`RADIUS SEED` 는 수집과 같아야 함; `TAG`/`ROLL_TAG` 로그 접두) |
+| **v3 전체** (30 ep/태스크 수집 → h264 변환 → 학습 → 롤아웃 A(0.06)·B(0.025)) | `groot_pipeline.sh [N]` — 6 h 게이트 내장 |
 | 파라미터/전처리 확인 | `groot_mem.py` `groot_probe.py [dataset_root]` |
 
 ## 벤치 (§45)

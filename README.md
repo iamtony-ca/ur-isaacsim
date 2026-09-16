@@ -309,14 +309,14 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 | 변환 코덱 | 기본 **h264 crf23**(`--vcodec`). AV1 과 같은 크기·1 dB 이내. 기존 AV1 데이터셋은 그대로 사용 (§45.2) |
 
 정책 체크포인트 `outputs/act_red_left_100`(2 cam) · `outputs/act_wrist_only`(손목 1 cam), 데이터셋 `outputs/lerobot_ds_red_left_100` · `lerobot_ds_wrist_only`.
-수집·변환·학습·롤아웃 자동화 스크립트는 [`ur_bringup/scripts/harness/`](ur_bringup/scripts/harness/README.md)(ACT `pipeline_*.sh`, GR00T `groot_train_abs.sh`→`groot_v8.sh`).
+수집·변환·학습·롤아웃 자동화 스크립트는 [`ur_bringup/scripts/harness/`](ur_bringup/scripts/harness/README.md)(ACT `pipeline_*.sh`, GR00T `groot_pipeline.sh` = 수집→변환→학습→롤아웃 무인).
 여기까지 오는 데 고친 것들(그리퍼 규약·대기시간·그립 기하·데이터량)은 [`HISTORY.md`](HISTORY.md)
 §28~§38. **특히 §35.4 — "측정했다"와 "맞는 것을 측정했다"는 다르다.**
 
 **★ ACT 는 지시문을 읽지 않는다**(§30). 태스크 1종당 데이터셋 1개·체크포인트 1개.
-여러 태스크를 섞은 `outputs/lerobot_ds_240_v2` 는 VLA(GR00T/π) 단계용이다.
+여러 태스크를 섞은 `outputs/lerobot_ds_3task_v3`(30 ep/태스크, 현재 정본) · `lerobot_ds_240_v2`(7 ep/태스크) 는 VLA(GR00T/π) 단계용이다.
 
-### VLA 트랙 (GR00T N1.7, 카메라 2대) — sim 파이프라인 검증 완료 2026-09-13
+### VLA 트랙 (GR00T N1.7, 카메라 2대) — sim 파이프라인 검증 완료 2026-09-13, 30 ep/태스크 재판정 2026-09-15
 
 설계 정본 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
 **모델·데이터 경로에 새로 짤 코드가 0** — ACT → GR00T 는 전부 설정 변경이다.
@@ -328,13 +328,13 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 | 베이스 가중치 6.5 GB + HF 게이트 | ✅ `deps/hf_cache`(토큰도 여기, git 밖). `Cosmos-Reason2-2B` 는 `gated=auto` — 동의 즉시 열림 |
 | **카메라 2대** | ✅ rename 없이. 전처리 출력 실측: 2대 → `image_grid_thw (2,3)`, 픽셀·토큰 정확히 2배 |
 | **VRAM / 처리량** | ✅ `fp32=false` + **batch 32** = 27.3 GB. **`OMP_NUM_THREADS=8`** 로 23→51 샘플/s(2배, §45.4 — `data_s` 는 디코딩이 아니라 메인 프로세스 전처리기의 스레드 과다할당이었다). 워커 8개는 shm 사망 |
-| **학습 (6h 게이트)** | ✅ **10k 스텝 3h 45m**, loss 0.995→0.014 (lerobot 기본 100k 는 39h — 안 쓴다) |
+| **학습 (6h 게이트)** | ✅ 10k 스텝 **1h 48m**(`OMP_NUM_THREADS=8`, §46.1; 이전 3h 45m), loss →0.014 (lerobot 기본 100k 는 안 쓴다) |
 | 상대 액션 | ⚠️ 학습은 되지만 **`async_inference` 서버가 서비스 못 함**(스텝당 후처리 vs 청크 디코드) → **절대 액션 채택** |
 | **추론 지연 (V7)** | ✅ 청크 40액션 **80.8 ms** (예산 1,333 ms, 16.5배 여유) |
-| **롤아웃 (V8)** | ✅ **3/8** — 3태스크 교대, `WRONG_OBJECT` 0 (어떤 물체 8/8). 루프 닫힘 확인 |
-| 성능 비교 | ⏳ 태스크당 **7 ep** 라 ACT(100 ep) 9/10 과 비교 불가 → 20~30 ep 재수집 필요 |
+| **롤아웃 (V8)** | ✅ 루프 닫힘 — 7 ep/태스크 **3/8**(§44.3) → **30 ep/태스크 14/29**(ACT 씬 반경 0.06, §46.2), `WRONG_OBJECT`·`WRONG_PLACE` 0 |
+| 성능 비교 | ⚠️ **ACT 9/10 에 못 미친다(48 %)** — 데이터 부족이 아니라 **실패 모드**: 사전파지 높이까지 정확히 가서 멈춤(14/15 건, 시작 자세 무관). 성공 배치 오차 22.8 mm(ACT 7.6). `num_inference_timesteps` 4→16 은 **효과 없음**(9/27, §46.7). 갈림길 §46.6 |
 
-체크포인트 `outputs/groot_240_v2_abs`(절대, 서비스 가능) · `outputs/groot_240_v2_rel`(상대, 학습만).
+체크포인트 `outputs/groot_3task_v3_abs`(현재 정본, 절대) · `outputs/groot_240_v2_abs`(7 ep 판) · `outputs/groot_240_v2_rel`(상대, 학습만).
 함정은 [`HISTORY.md`](HISTORY.md) §40(설계 3개)·§43(학습 4개)·§44(서비스 2개). **특히 §43.6·§43.7·§44.2 —
 셋 다 "정책이 아무것도 안 함"으로 보이는 조용한 하네스 실패**였고, 이제 하네스가 전제를 검사한다.
 
