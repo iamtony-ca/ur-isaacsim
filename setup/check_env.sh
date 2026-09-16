@@ -22,8 +22,15 @@ if command -v nvidia-smi >/dev/null; then
   nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | sed 's/^/  GPU: /'
 else warn "nvidia-smi not found"; fi
 if [ -x /isaac-sim/python.sh ]; then
-  echo "  Isaac Sim: $(cat /isaac-sim/VERSION 2>/dev/null || echo '?')"
+  iv="$(cat /isaac-sim/VERSION 2>/dev/null | cut -d+ -f1)"
+  case "$iv" in
+    6.0.1*|6.1.0*) ok "Isaac Sim $iv (verified: 6.0.1, 6.1.0-rc.26)" ;;
+    *) warn "Isaac Sim ${iv:-?} is not a verified version (6.0.1 / 6.1.0) -- run the SETUP.md 5 smoke first" ;;
+  esac
 else warn "Isaac Sim not at /isaac-sim (sim stages will not run)"; fi
+# Fresh-container trap: the ROS stack is unusable until `apt-get update` has run once,
+# and python3 itself only arrives with ros-dev-tools. Both are cheap to report.
+command -v python3 >/dev/null 2>&1; req $? "python3 present (the Isaac base image ships none; the ros stage installs it)"
 
 step "isolation (shared machine)"
 [ -f /etc/apt/preferences.d/99-nvidia-isolate.pref ]; req $? "NVIDIA apt pin present"
@@ -136,9 +143,15 @@ except Exception as e:
   # real training run (HISTORY.md 24). Check the training half separately.
   "$mlpy" -c "import accelerate" 2>/dev/null
   opt $? "accelerate importable (lerobot[training] extra -- needed by lerobot-train)"
+  # The robot adapter must be pip-installed INTO the venv (lerobot scans installed
+  # `lerobot_robot_*` distributions); without it every rollout dies with
+  # "--robot.type: invalid choice: 'ur16e_ros'" (HISTORY.md 48.8).
+  "$mlpy" -c "import importlib.metadata as m; assert any(d.metadata['Name'].startswith('lerobot_robot_ur16e_ros') for d in m.distributions())" 2>/dev/null
+  req $? "LeRobot robot plugin lerobot_robot_ur16e_ros installed in the venv (rollouts need --robot.type=ur16e_ros)"
 
-  # /dev/shm is 64 MiB in this container and cannot be enlarged on a shared machine.
-  # Without the sitecustomize workaround, any num_workers>0 kills the DataLoader.
+  # A container started without --shm-size has a 64 MiB /dev/shm, which cannot be
+  # enlarged on a shared machine (a dedicated one: recreate with --shm-size=8g+).
+  # Without the .pth workaround, any num_workers>0 then kills the DataLoader.
   # Test the real thing rather than the file's presence: the first attempt at this
   # workaround (a venv sitecustomize.py) LOOKED installed but was shadowed by
   # /usr/lib/python3.12/sitecustomize.py and never ran (HISTORY.md 24).
@@ -172,7 +185,10 @@ else
 fi
 
 step "GR00T N1.7 (VLA — optional, setup/setup.sh groot)"
-if [ -x "$mlpy" ] && "$mlpy" -c "import lerobot.policies.groot.modeling_groot" 2>/dev/null; then
+# `import lerobot.policies.groot.modeling_groot` alone passes on a venv WITHOUT the groot
+# extra (its heavy imports are lazy) -- seen 2026-09-16 when verify ran before `groot`.
+# transformers is only installed by the extra, so require it explicitly.
+if [ -x "$mlpy" ] && "$mlpy" -c "import transformers, lerobot.policies.groot.modeling_groot" 2>/dev/null; then
   ok "lerobot[groot] extra importable (transformers $("$mlpy" -c 'import transformers;print(transformers.__version__)' 2>/dev/null))"
   # Offline check of the workspace-local HF cache -- the models are usually copied in by
   # hand on a reproduced PC, and training runs with HF_HUB_OFFLINE=1 (setup/ml_env.sh).

@@ -171,7 +171,7 @@ for i in $(seq 1 "$PER"); do
     # NotImplementedError, so the count was non-zero while ZERO actions were
     # delivered -- the trial would have been scored as a policy failure again,
     # by the very check meant to prevent that. Count the last step, not the first.
-    chunks=$(grep -c "| Total time:" "$LOG/${T}_server.log" 2>/dev/null || echo 0)
+    chunks=$(grep -c "| Total time:" "$LOG/${T}_server.log" 2>/dev/null); chunks=${chunks:-0}   # not `|| echo 0` (grep -c prints 0 and exits 1 -> "0\n0")
     got=$(( chunks - ${SEEN:-0} ))
     SEEN=$chunks
     if [ "$got" -le 0 ]; then

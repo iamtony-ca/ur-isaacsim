@@ -14,14 +14,16 @@
 
 | | 항목 | 확인 방법 | 없으면 |
 |---|---|---|---|
-| ☐ | Isaac Sim **6.0.1** 컨테이너 | `/isaac-sim/python.sh` 존재 | 컨테이너부터. 이 워크스페이스는 컨테이너 밖에서 돌지 않는다 |
-| ☐ | ROS 2 **Jazzy** | `/opt/ros/jazzy` 존재 | **스크립트가 설치하지 않는다.** 베이스 이미지를 바꿔야 한다 |
+| ☐ | Isaac Sim **6.0.1 또는 6.1.0** 컨테이너 | `/isaac-sim/python.sh` 존재, `cat /isaac-sim/VERSION` | 컨테이너부터. 이 워크스페이스는 컨테이너 밖에서 돌지 않는다. 다른 버전이면 `preflight` 경고 → [`SETUP.md`](SETUP.md) §5 스모크 먼저 |
+| ☐ | ROS 2 **Jazzy** | `/opt/ros/jazzy` 존재 | **없어도 된다** — `bootstrap.sh` 의 `ros` 단계가 공식 절차로 설치한다(Isaac 기본 이미지엔 ROS 도 `python3` 도 없다). 새 컨테이너는 `--fresh` 필요([`SETUP.md`](SETUP.md) §0-B 1-B) |
 | ☐ | NVIDIA GPU + 드라이버 | `nvidia-smi` | — |
-| ☐ | 디스크 **30 GiB** 이상 | `df -h` | ML venv 만 약 8 GB |
-| ☐ | `git` `curl` `sudo` | — | — |
+| ☐ | 디스크 **30 GiB** 이상 | `df -h` | 실측 apt 7 GB + ML venv 7.7 GB (+ GR00T 모델 6.5 GB) |
+| ☐ | `/dev/shm` **1 GiB 이상** | `df -h /dev/shm` | 64 MiB 면 학습 워커가 죽는다 — 컨테이너를 `--shm-size=8g` 로 다시 만들거나 [`SETUP.md`](SETUP.md) §2-C 우회책 |
+| ☐ | `git` `curl` `sudo`(NOPASSWD) | — | Isaac 기본 이미지에 셋 다 있다 |
 
-컨테이너에 필요한 것은 셋뿐: **GPU 전달**(`--gpus all`), **볼륨**(`/isaac-sim/volume`),
-**GUI 를 볼 거면 X 소켓**(`-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix`).
+컨테이너에 필요한 것: **GPU 전달**(`--gpus all`), **볼륨**(`/isaac-sim/volume`), **공유 메모리**(`--shm-size=8g`),
+**GUI 를 볼 거면 X 소켓**(`-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix`). 2026-09-16 에 Isaac 6.1.0 기본 이미지로
+새 컨테이너를 만들어 A~C 를 처음부터 실제로 통과시켰다([`HISTORY.md`](HISTORY.md) §48).
 
 ---
 
@@ -35,17 +37,21 @@ mkdir -p /isaac-sim/volume/ur_ws
 git clone <이 저장소> /isaac-sim/volume/ur_ws/src        # ★ repo = src/ 다
 
 /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --dry-run  # ☐ 먼저 계획만 본다
-/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh            # ☐ 실행
+/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --fresh    # ☐ 실행 — 이 워크스페이스 전용 새 컨테이너
+/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh            # ☐ 실행 — 다른 프로젝트와 공유하는 컨테이너
 ```
 
 > ★ **컨테이너를 다른 프로젝트와 공유한다면 `--dry-run` 출력을 그냥 넘기지 말고
-> 아래 `B-0. 공유 컨테이너 격리 확인` 을 먼저 볼 것.**
+> 아래 `B-0. 공유 컨테이너 격리 확인` 을 먼저 볼 것.** 새 컨테이너의 `--dry-run` 에서
+> `ros`·`base`·`cumotion`·`sources`·`verify` 가 "could not be simulated" 로 뜨는 건 정상이다(apt 목록이 아직 없다).
 
-- ☐ 옵션: `--no-ml`(torch/lerobot 8 GB 생략, sim+teleop 만 할 때) /
+- ☐ 옵션: `--fresh`(**새 컨테이너 필수** — Ubuntu 공식 출처의 기반 라이브러리 업그레이드 18개를 받아들인다, 그게 없으면 `ros` 단계가 가드에서 멈춘다) /
+  `--no-ml`(torch/lerobot 8 GB 생략, sim+teleop 만 할 때) / `--with-groot`(GR00T extra 까지; 모델은 B-2) /
   `--with-udev`(실물 OMY-L100 이 있을 때만)
 
-돌아가는 순서: `preflight → pin → repos → base → cumotion → sources → build → leader → ml → verify`
-(`pin` 이 `repos` 보다 먼저인 이유는 [`SETUP.md`](SETUP.md) §0-B — NVIDIA 레포가 ROS 패키지를 덮어쓴다.)
+돌아가는 순서: `preflight → ros → pin → repos → base → cumotion → sources → build → leader → ml → verify`
+(`ros` 는 `/opt/ros/jazzy` 없을 때만. `pin` 이 `repos` 보다 먼저인 이유는 [`SETUP.md`](SETUP.md) §0-B — NVIDIA 레포가 ROS 패키지를 덮어쓴다.)
+실측 소요(2026-09-16, 새 컨테이너): 전체 약 40 분(네트워크 좌우). 끝나면 `check_env.sh` 가 `environment OK` 여야 한다.
 
 - ☐ 언제든 재점검: `src/setup/check_env.sh` (읽기 전용)
 
@@ -79,6 +85,8 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src        # ★ repo = src/ �
 
 - ☐ **`ALLOW_UPGRADES=1` 을 반사적으로 붙이지 않는다.** 이 플래그는 가드를 끄는 것이지
       안전하게 만드는 게 아니다. 목록을 읽고 "이 패키지가 바뀌어도 되는가"를 판단한 뒤에만 쓴다.
+      중간 단계 **`ALLOW_UPGRADES=ubuntu`**(= `--fresh`)는 출력의 출처가 전부 `Ubuntu:24.04/noble-updates`·`-security` 일 때만
+      통과시킨다 — 새 컨테이너의 낡은 기반 라이브러리(`util-linux`·`libsystemd0`·`ncurses` …)가 바로 그 경우다.
 - ☐ 새 컨테이너면 오히려 거부가 뜰 수 있다 — 가드는 *"이미 깔린 게 바뀌는가"* 를 보므로,
       다른 버전이 선점돼 있으면 여기서 순수 추가였던 게 거기선 업그레이드가 된다. **버전 차이지 오류가 아니다.**
 
@@ -88,10 +96,38 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src        # ★ repo = src/ �
       `undefined symbol: diagnostic_updater::Updater` 로 죽는다 → **ros2_control 스택 4.45.2 동반 업그레이드**가
       필요하다. `setup.sh` 는 이걸 **자동화하지 않고 가드에 걸려 멈춘다**(사람이 결정하라는 설계).
       배경은 [`CLAUDE.md`](../CLAUDE.md) cuMotion 함정 ① / [`HARDWARE.md`](HARDWARE.md) §4.
+      **새 컨테이너에는 해당 없음** — 처음부터 깔면 ros2_control 4.48.0 과 diagnostic_updater 4.2.7 이 같은 빌드로 들어온다(2026-09-16 실측).
 
 > **가장 확실한 답: 가능하면 전용 컨테이너를 쓴다.** 다른 프로젝트가 없으면 위 4가지가 충돌할
 > 대상 자체가 없다. 공유가 불가피할 때 이 스크립트가 하는 일은 *"안전하게 만드는 것"* 이 아니라
 > **"위험한 순간에 멈추고 사람에게 묻는 것"** 이다.
+
+### B-2. GR00T N1.7 — 스크립트가 못 하는, **사용자 계정이 필요한** 부분
+
+`bootstrap.sh` 는 ACT 까지 완결한다(ML venv, sm_120 torch, lerobot). GR00T 는 **모델 파일이 HF 게이트**라
+사용자가 아래를 직접 해야 한다. 상세·함정은 [`SETUP.md`](SETUP.md) §2-C-2, 학습 명령은 [`PIPELINE.md`](PIPELINE.md) §3-B.
+
+- ☐ **B-2-1 extra 설치** — `src/setup/setup.sh groot` (또는 처음부터 `bootstrap.sh --fresh --with-groot`).
+      기존 패키지 변경 0 이어야 통과한다(torch 교체 = sm_120 상실 방지). 끝에 "model files NOT in place yet" 경고가 뜨는 게 정상.
+- ☐ **B-2-2 라이선스 동의(브라우저)** — <https://huggingface.co/nvidia/Cosmos-Reason2-2B> (gated=auto, 동의 즉시 열림).
+      `nvidia/GR00T-N1.7-3B` 자체는 게이트가 아니지만 **백본 토크나이저**가 Cosmos 쪽에 있어 이게 없으면 학습 시작 시 401.
+- ☐ **B-2-3 read 토큰** — <https://huggingface.co/settings/tokens>. Fine-grained 면 **"Read access to contents of all public gated repos you can access"** 스코프 필수.
+- ☐ **B-2-4 토큰을 워크스페이스 안에** (공유 `~/.cache/huggingface` 오염 금지):
+  ```bash
+  cd /isaac-sim/volume/ur_ws && source src/setup/ml_env.sh      # HF_HOME=deps/hf_cache
+  deps/.venv-ml/bin/hf auth login                                # → deps/hf_cache/token
+  ```
+- ☐ **B-2-5 다운로드** (총 6.5 GB + 11 MB; `HF_HUB_OFFLINE=0` 은 다운로드 때만):
+  ```bash
+  HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/GR00T-N1.7-3B
+  HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/Cosmos-Reason2-2B \
+      --include 'config.json' 'tokenizer*' 'vocab.json' 'merges.txt' '*preprocessor_config.json'
+  ```
+  다른 PC 에 이미 있으면 `cp -rL <그 PC>/deps/hf_cache/hub/models--nvidia--* deps/hf_cache/hub/` 로 복사해도 된다(레이아웃은 SETUP §2-C-2).
+- ☐ **B-2-6 검증** — `src/setup/check_hf_cache.sh` 가 `OFFLINE_OK`(토크나이저 vocab 151669)까지 찍고 rc 0.
+      이후 학습·추론은 토큰 없이 오프라인으로 돈다(`ml_env.sh` 가 `HF_HUB_OFFLINE=1`).
+- ☐ **B-2-7 학습 스모크** — [`PIPELINE.md`](PIPELINE.md) §3-B 명령에 `--steps=20 --policy.max_steps=20` 으로 rc 0 확인
+      (`base_model_path` 는 로컬 경로, `model_params_fp32=false`, `OMP_NUM_THREADS=8` — 셋 다 기본값이면 안 된다).
 
 ---
 

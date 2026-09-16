@@ -25,5 +25,6 @@ export TOKENIZERS_PARALLELISM=false   # tokenizer forks + DataLoader workers = d
 # 8 threads: data_s 0.85 -> 0.125 s (HISTORY.md 45.4). Harmless for ACT.
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 
-# /dev/shm is 64 MiB in this container: file_system sharing for DataLoader workers.
+# A container started without --shm-size has a 64 MiB /dev/shm: file_system sharing for
+# DataLoader workers (SETUP.md 2-C). Harmless when /dev/shm is large (check_env.sh says).
 export UR_WS_TORCH_SHM_FIX=1

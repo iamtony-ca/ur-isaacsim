@@ -26,11 +26,22 @@ export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project m
 # controller_manager keeps ~/.ros/locks/ros2-control-controller-spawner.lock and every
 # later spawner then dies with "Failed to acquire lock" (HISTORY.md 47).
 echo "== stopping control stack + MoveIt (Isaac untouched)"
-ps -eo pid,args --no-headers \
-  | grep -E "ros2_control_node|robot_state_publisher|moveit_ros_move_group/move_group|lib/rviz2/rviz2|rclcpp_components/component_container|controller_manager/spawner" \
-  | grep -v grep | awk '{print $1}' \
-  | while read -r p; do kill "$p" 2>/dev/null && echo "   TERM $p"; done
-sleep 6
+# `ros2 launch ur_bringup` parents are in the list too: killing only the children
+# leaves the launch process to tear down at its own pace. And the wait is a LOOP,
+# not a fixed sleep: a ros2_control_node with active controllers can outlive
+# `kill` by more than 6 s, and the next stack's spawners then attach to the OLD
+# controller_manager ("A controller named ... was already loaded", "can not be
+# configured from 'active' state") -- seen 2026-09-16 (HISTORY.md 48.8).
+STOP_PAT="ros2 launch ur_bringup|ros2_control_node|robot_state_publisher|moveit_ros_move_group/move_group|lib/rviz2/rviz2|rclcpp_components/component_container|controller_manager/spawner"
+ME=$$
+_stack_pids() { ps -eo pid,args --no-headers | grep -E "$STOP_PAT" | grep -v grep | awk -v me="$ME" -v pp="$PPID" '$1!=me && $1!=pp {print $1}'; }
+_stack_pids | while read -r p; do kill "$p" 2>/dev/null && echo "   TERM $p"; done
+for _ in $(seq 1 15); do [ -z "$(_stack_pids)" ] && break; sleep 2; done
+if [ -n "$(_stack_pids)" ]; then
+  echo "   still alive after 30 s -> KILL"; _stack_pids | while read -r p; do kill -9 "$p" 2>/dev/null; done; sleep 3
+fi
+rm -f ~/.ros/locks/ros2-control-controller-spawner.lock   # orphaned-spawner lock (HISTORY.md 47.4)
+sleep 2
 
 echo "== starting control stack"
 nohup ros2 launch ur_bringup ur16e_2f85_d405.launch.py use_sim:=true > "$LOG/control.log" 2>&1 &
@@ -55,11 +66,16 @@ echo "== starting MoveIt (cuMotion)"
 # which is exactly what pick_place_demo.py is.
 nohup ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
   use_sim:=true ur_only:=false > "$LOG/moveit.log" 2>&1 &
+# "Ready to take commands for planning group" is printed by RViz's MoveGroupInterface,
+# NOT by move_group -- so on a headless container (no X socket, RViz dies) it never
+# appears. move_group's own line is "You can start planning now!". Accept either; the
+# action-list check below is the real readiness gate (2026-09-16, HISTORY.md 48).
+MG_READY="Ready to take commands for planning group|You can start planning now"
 for _ in $(seq 1 60); do
-  grep -q "Ready to take commands for planning group" "$LOG/moveit.log" && break
+  grep -qE "$MG_READY" "$LOG/moveit.log" && break
   sleep 2
 done
-grep -q "Ready to take commands for planning group" "$LOG/moveit.log" \
+grep -qE "$MG_READY" "$LOG/moveit.log" \
   || { echo "   FAIL: move_group not ready"; tail -5 "$LOG/moveit.log"; exit 1; }
 echo "   move_group ready"
 

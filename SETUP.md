@@ -1,4 +1,4 @@
-# SETUP — UR16e (ROS 2 Jazzy + Isaac Sim 6.0.1) 재현 매뉴얼
+# SETUP — UR16e (ROS 2 Jazzy + Isaac Sim 6.0.1 / 6.1.0) 재현 매뉴얼
 
 깨끗한 환경에서 이 워크스페이스(sim+real UR16e 제어 스택)를 **그대로 재현**하는 절차.
 아키텍처/배경은 상위 [`README.md`](README.md) 참고.
@@ -10,18 +10,35 @@
 | 항목 | 버전 |
 |---|---|
 | OS | Ubuntu 24.04 (noble) |
-| ROS 2 | **Jazzy** (`/opt/ros/jazzy`) |
-| Isaac Sim | **6.0.1** (`/isaac-sim`, `isaacsim.ros2.bridge` 확장) — 5.1.0 에서 이식, 스크립트 무수정 |
+| ROS 2 | **Jazzy** (`/opt/ros/jazzy`) — 없으면 `bootstrap.sh` 의 `ros` 단계가 설치(§0-B 1-B) |
+| Isaac Sim | **6.0.1** 과 **6.1.0-rc.26** (`/isaac-sim`, `isaacsim.ros2.bridge` 확장) — 5.1.0→6.0.1→6.1.0 전부 스크립트 무수정. 6.1.0 은 2026-09-16 **새 컨테이너에서 처음부터 재현**해 검증(`HISTORY.md` §48) |
 | GPU | NVIDIA **RTX 5090 (sm_120 / Blackwell)**, 드라이버 580.x |
 | 워크스페이스 | `/isaac-sim/volume/ur_ws` (colcon), git repo = `src/` |
+
+2026-09-16 새 컨테이너(Isaac 6.1.0-rc.26)에서 `bootstrap.sh` 가 실제로 깐 버전 — 재현 시 "이게 맞나" 의 기준:
+
+| 구성요소 | 버전 | 출처 |
+|---|---|---|
+| `ros2-apt-source` / `ros-jazzy-desktop` / `ros-dev-tools` | 1.3.0 / 0.11.0 / 1.0.3 | packages.ros.org (`ros` 단계, 1446 debs) |
+| `ros-jazzy-ur` / `moveit` / `ros2-control` | 3.8.0 / 2.12.4 / **4.48.0** (`diagnostic-updater` 4.2.7 과 같은 빌드라 ABI 함정 없음) | ROS apt |
+| `robotiq-description` | 0.0.1 (핀이 먹어 NVIDIA 9.0.1 아님) | ROS apt |
+| `realsense2-camera` / `librealsense2` | 4.58.4 / 2.58.4 | ROS apt |
+| cuMotion / nvblox (`isaac-ros-*`, `nvblox-*`) | 4.6.0 | NVIDIA Isaac ROS release-4 |
+| CUDA toolkit / VPI | **13.2.2** (`/usr/local/cuda-13.2`) / `libnvvpi4` 4.0.0 | NVIDIA |
+| 소스(`ur16e.repos`) | topic_based `007cff1`(0.2.1) · robotiq `3b6cf8f` · serial `d8d1606` · nvblox `dadbe96` · open_manipulator `1b741c0` · dynamixel_hw `3375b3d` · robotis_interfaces `9231cb1` | vcs |
+| ML venv | torch 2.11.0+cu128 · lerobot 0.6.1 · transformers 5.5.4 (전체는 `setup/requirements-ml.lock`) | PyPI / PyTorch cu128 |
 
 > 다른 경로를 쓰면 아래 절대경로(`/isaac-sim/volume/ur_ws`, `/isaac-sim/python.sh`)를 본인 환경에 맞게 치환.
 > 문서 곳곳에 남아 있는 `/isaac-sim/volume/ur_ws` 는 같은 워크스페이스의 옛 경로 표기다.
 
-> **Isaac Sim 5.1.0 → 6.0.1 이식**: `ur_bringup` 의 Isaac 스크립트/USD 에셋은 **수정 없이 그대로 동작**한다
+> **Isaac Sim 5.1.0 → 6.0.1 → 6.1.0 이식**: `ur_bringup` 의 Isaac 스크립트/USD 에셋은 **수정 없이 그대로 동작**한다
 > (`isaacsim.core.api`·`isaacsim.core.nodes`·`isaacsim.ros2.bridge` OmniGraph 노드 이름 전부 유지).
 > 6.0.1 에서 새로 뜨는 경고 `[ROS2 Publish Joint State] Reading from targetPrim is deprecated` 는
 > **동작에 영향 없음**(권고사항). 자세한 이식 검증 로그는 [`HISTORY.md`](HISTORY.md) §14.
+> **6.1.0-rc.26**(2026-09-16, §48): `isaacsim.core.api`·`isaacsim.core.prims`·`isaacsim.core.utils` 가
+> `/isaac-sim/extsDeprecated/` 로 옮겨졌지만 `isaacsim.core.deprecation_manager` 가 그대로 import 시켜 준다 →
+> 세트2 plan+execute, 세트3(카메라 2대 + cuMotion) `pick_place_demo` 1/1 SUCCESS. **다음 메이저에서 없어질 수
+> 있는 API** 이므로 `preflight` 는 6.0.1/6.1.0 외 버전이면 경고한다.
 
 > **GPU 아키텍처 주의 (RTX 50 시리즈)**: apt 로 받는 NVIDIA 바이너리 중 **`nvblox_node` 는 sm_75(Turing)
 > 전용으로만 컴파일**되어 있고 PTX 폴백도 없어, sm_120 인 RTX 5090 에서는 실행 즉시
@@ -32,32 +49,45 @@
 
 ## 0-B. ★ 다른 PC 에서 처음부터 — 전체 순서
 
-**한 줄 요약: 컨테이너 띄우고 → clone → `bootstrap.sh --dry-run` → `bootstrap.sh`.**
+**한 줄 요약: 컨테이너 띄우고 → clone → `bootstrap.sh --dry-run` → `bootstrap.sh --fresh`.**
 아래 §0-A 는 단계별 세부, §1~§4 는 손으로 하는 법이다. 처음이면 이 절만 따라가면 된다.
+이 절차는 **2026-09-16 에 Isaac Sim 6.1.0 기본 이미지(ROS 없음·python3 없음)로 새 컨테이너를 만들어 처음부터 끝까지
+실제로 돌려 검증**했다(`HISTORY.md` §48) — 그때 발견된 스크립트 결함 4건은 전부 고쳐져 있다.
 
 ### 전제 (스크립트의 `preflight` 가 자동 확인한다)
 | 항목 | 필요값 | 없으면 |
 |---|---|---|
-| Isaac Sim 컨테이너 | **6.0.1**(검증), `/isaac-sim/python.sh` 존재 | 컨테이너 밖이면 즉시 중단. **6.1.0 등 다른 버전은 미검증** — `preflight` 가 경고한다. 스크립트가 쓰는 `isaacsim.core.api`·`isaacsim.core.prims`·`isaacsim.ros2.bridge` 가 마이너 릴리스에서 옮겨질 수 있으니 §5 스모크를 먼저 돌리고 결과를 `HISTORY.md` 에 적는다 |
-| ROS 2 | **Jazzy** (`/opt/ros/jazzy`) | **스크립트가 설치하지 않는다** — 베이스 이미지 선택 문제이고, 남의 머신에 ROS 배포판을 몰래 까는 건 이 워크스페이스의 격리 원칙 위반 |
+| Isaac Sim 컨테이너 | **6.0.1 또는 6.1.0**(둘 다 검증), `/isaac-sim/python.sh` 존재 | 컨테이너 밖이면 즉시 중단. 다른 버전은 `preflight` 가 경고 — 스크립트가 쓰는 `isaacsim.core.api`·`isaacsim.core.prims`·`isaacsim.core.utils` 는 6.1.0 에서 이미 `extsDeprecated` 라 다음 릴리스에서 없어질 수 있다. §5 스모크를 먼저 돌리고 결과를 `HISTORY.md` 에 적는다 |
+| ROS 2 | **Jazzy** (`/opt/ros/jazzy`) | **`ros` 단계가 공식 절차로 설치한다**(§1-B). Isaac Sim 기본 이미지에는 ROS 도 **`python3` 도** 없다 — 둘 다 이 단계가 가져온다 |
 | GPU | NVIDIA + 드라이버 | sm_89/120(RTX 40/50)이면 **nvblox 소스빌드로 자동 전환** |
-| 디스크 | ≥ 30 GiB | ML venv 만 약 8 GB |
-| 기타 | `git` `curl` `sudo` | — |
+| 디스크 | ≥ 30 GiB | 실측(2026-09-16): apt 약 7 GB + ML venv 7.7 GB + GR00T 모델 6.5 GB |
+| 기타 | `git` `curl` `sudo` | Isaac 기본 이미지에 셋 다 있다(`wget`·`python3` 은 없다) |
+| `/dev/shm` | **≥ 1 GiB 권장**(`--shm-size`) | 64 MiB(Docker 기본)면 학습 DataLoader 워커가 죽는다 → §2-C 의 우회책. `check_env.sh` 가 어느 쪽인지 알려준다 |
 
 ### 1) 컨테이너
-지금 이 머신과 **같은 방식으로** Isaac Sim 6.0.1 컨테이너를 띄운다. 필요한 것은 세 가지뿐:
+지금 이 머신과 **같은 방식으로** Isaac Sim 6.0.1/6.1.0 컨테이너를 띄운다. 필요한 것:
 **GPU 전달**(`--gpus all`), **워크스페이스 볼륨**(`/isaac-sim/volume` 에 마운트),
+**공유 메모리**(`--shm-size=8g` — 안 주면 64 MiB 라 학습 시 §2-C 함정),
 **GUI 를 볼 거면 X 소켓**(`-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix`).
-GUI 없이 `--headless` 로만 쓸 거면 X 는 생략해도 된다.
+GUI 없이 `--headless` 로만 쓸 거면 X 는 생략해도 된다(2026-09-16 검증은 전부 headless).
+컨테이너 안 사용자에게 **NOPASSWD sudo** 가 있어야 한다(apt 설치용; 스크립트는 비대화 모드로 돌린다).
 
 ### 1-B) ROS 2 Jazzy 가 없는 이미지라면 (Isaac Sim 기본 이미지가 그렇다) — `bootstrap.sh` 의 `ros` 단계가 설치한다
-`/opt/ros/jazzy` 가 **없을 때만** 동작하고, 있으면 아무것도 하지 않는다(2026-09-16, `HISTORY.md` §47.6). 내용은 ROS 2 공식
+`/opt/ros/jazzy` 가 **없을 때만** 동작하고, 있으면 아무것도 하지 않는다(2026-09-16, `HISTORY.md` §47.6·§48). 내용은 ROS 2 공식
 문서의 데비안 설치 절차(<https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html>) 그대로다:
-locale → universe → `ros2-apt-source` .deb(`ros2.sources` + 키) → `apt update` → **`ros-jazzy-desktop` + `ros-dev-tools`**
-(`colcon`·`vcstool`·`rosdep` 포함). 이 컨테이너에서 검증된 조합: Ubuntu 24.04, `ros2-apt-source` 1.2.0~noble,
-`ros-jazzy-desktop` 0.11.0, `ros-dev-tools` 1.0.1. 다른 apt 단계와 같은 안전장치를 쓴다 — 시뮬레이션에서 기존 패키지
-업그레이드가 나오면 거부하므로, **이 워크스페이스 전용으로 만든 새 컨테이너**에서 그런 경우 `ALLOW_UPGRADES=1 bootstrap.sh`
-로 받아들인다(공유 컨테이너면 받아들이지 말 것). 단독 실행: `setup/setup.sh ros`. 확인: `ls /opt/ros/jazzy/setup.bash`.
+**`apt update`(새 컨테이너는 목록이 비어 있어 이게 없으면 시뮬레이션조차 안 된다)** → locale → universe(이미 켜져 있으면
+`software-properties-common` 을 **깔지 않는다** — packagekit 경유로 systemd 계열 11개 업그레이드를 끌고 온다) →
+`ros2-apt-source` .deb(`ros2.sources` + 키) → `apt update` → **`ros-jazzy-desktop` + `ros-dev-tools`**
+(`colcon`·`vcstool`·`rosdep`·**`python3`** 포함). 새 컨테이너에서 검증된 조합(2026-09-16): Ubuntu 24.04.3, `ros2-apt-source`
+**1.3.0**~noble, `ros-jazzy-desktop` 0.11.0, `ros-dev-tools` **1.0.3**(1446 debs).
+
+**★ 새 이미지는 기본 라이브러리가 낡아 있다.** `ros-jazzy-desktop` 이 Ubuntu `noble-updates` 의 포인트 릴리스 **14개**
+(`util-linux`·`dpkg`·`zlib1g`·`libsystemd0`·`libudev1`·`liblzma5`·`libbz2` …)를, 이어서 `base` 단계의 `moveit` 이 **4개**
+(`ncurses`·`libtinfo6`)를 요구한다. 가드는 이걸 "기존 패키지 업그레이드" 로 보고 **설계대로 멈춘다.** 답은
+**`bootstrap.sh --fresh`** (= `ALLOW_UPGRADES=ubuntu`): **출처가 Ubuntu 공식 레포(`Ubuntu:24.04/noble-updates`·`-security`)인
+업그레이드만** 받아들이고, NVIDIA 출처 업그레이드나 삭제는 여전히 거부한다. `ALLOW_UPGRADES=1`(전부 수락)은 공유
+컨테이너의 마지막 수단이지 새 컨테이너의 정답이 아니다. 단독 실행: `ALLOW_UPGRADES=ubuntu setup/setup.sh ros`.
+확인: `ls /opt/ros/jazzy/setup.bash`.
 
 ### 2) 클론
 ```bash
@@ -68,17 +98,25 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 
 ### 3) 설치 — 두 줄
 ```bash
-/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --dry-run   # ★ 먼저 계획만 본다
-/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh             # 실행
+/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --dry-run          # ★ 먼저 계획만 본다
+/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --fresh            # 이 워크스페이스 전용 새 컨테이너
+/isaac-sim/volume/ur_ws/src/setup/bootstrap.sh                    # 다른 프로젝트와 공유하는 컨테이너
 ```
 `preflight → ros → pin → repos → base → cumotion → sources → build → leader → ml → verify` 를 순서대로 돈다
-(`ros` 는 `/opt/ros/jazzy` 가 없을 때만 설치, §1-B).
-(`groot` 는 기본에서 제외 — GR00T 단계에 들어갈 때 `./setup.sh groot`, §2-C-2.)
+(`ros` 는 `/opt/ros/jazzy` 가 없을 때만 설치, §1-B). 새 컨테이너 실측 소요: `ros` 약 10 분, `base`~`build` 약 15 분
+(nvblox 소스빌드 2.5 분 포함), `ml` 약 10 분(네트워크에 좌우).
+(`groot` 는 기본에서 제외 — `--with-groot` 또는 나중에 `./setup.sh groot`, §2-C-2. 모델 파일은 HF 게이트라 별도.)
+
+> `--dry-run` 을 새 컨테이너에서 돌리면 `ros`·`base`·`cumotion`·`sources`·`verify` 가 **"could not be simulated"** 로 뜬다.
+> 정상이다 — apt 목록이 비어 있고 ROS 레포도 없어서 시뮬레이션 자체가 불가능하며, 스크립트가 그렇게 설명한다.
+> 실제 실행에서 `ros` 단계가 `apt update` 부터 한다.
 
 | 옵션 | 용도 |
 |---|---|
 | `--dry-run` | 아무것도 바꾸지 않고 계획만. **처음엔 반드시 이것부터** |
+| `--fresh` | **이 워크스페이스 전용으로 만든 컨테이너.** Ubuntu 공식 출처의 기존 패키지 업그레이드만 허용(§1-B). 공유 컨테이너에선 쓰지 않는다 |
 | `--no-ml` | torch/lerobot venv(약 8 GB) 생략. sim + teleop 만 할 거면 불필요 |
+| `--with-groot` | `groot` 단계까지(lerobot[groot] 약 1 GB). 모델 파일은 §2-C-2 대로 따로 |
 | `--with-udev` | U2D2 udev 규칙까지 설치. **실물 OMY-L100 이 있을 때만** (유일하게 `/etc/udev` 에 쓴다) |
 
 > **★ `pin` 이 `repos` 보다 먼저인 이유**: NVIDIA 레포는 ROS 패키지의 상위 버전을 갖고 있어서
@@ -127,7 +165,8 @@ cd <ws>/src/setup
 
 | 단계 | 하는 일 |
 |---|---|
-| `preflight` | **읽기 전용 사전점검** — Isaac/ROS/GPU/디스크/도구. 아무것도 깔기 전에 먼저 걸러낸다 |
+| `preflight` | **읽기 전용 사전점검** — Isaac(6.0.1/6.1.0)/ROS/GPU/디스크/도구. 아무것도 깔기 전에 먼저 걸러낸다 |
+| `ros` | `/opt/ros/jazzy` 가 **없을 때만** ROS 2 Jazzy desktop + dev-tools 를 공식 절차로 설치(§0-B 1-B). 새 컨테이너는 `ALLOW_UPGRADES=ubuntu` 필요 |
 | `pin` | **NVIDIA 레포 격리 핀을 먼저** 넣는다 (§2-B-1) |
 | `repos` | Isaac ROS / CUDA / VPI 레포 + 키 추가, **핀이 실제로 먹는지 검증** |
 | `base` | UR·MoveIt·ros2_control·robotiq_description·moveit_servo·joy 등 |
@@ -136,13 +175,19 @@ cd <ws>/src/setup
 | `build` | colcon 빌드. **GPU arch 를 감지해 nvblox 소스빌드 필요 여부를 자동 판단** |
 | `leader` | **OMY-L100 teleop 리더 스택** (apt 2개·업그레이드 0, 7패키지 빌드, 나머지 COLCON_IGNORE) |
 | `ml` | IL/VLA용 격리 venv (torch sm_120 + lerobot). 약 8 GB |
+| `groot` | `lerobot[groot]` extra + `deps/hf_cache` 준비(§2-C-2). **기본 제외** — `--with-groot` 또는 따로 |
 | `verify` | `check_env.sh` |
 | `udev` | **U2D2 udev 규칙 — 실물 리더 전용.** 유일하게 `/etc/udev` 에 쓰므로 **기본 실행에서 제외**되어 있고 명시해야 돈다 |
 
 **★ 공유 머신 안전장치 (스크립트에 내장)**
-- 모든 apt 설치를 **먼저 시뮬레이션**하고 영향도를 출력한다.
-- **기존 패키지를 업그레이드/삭제하게 되면 거부한다**(`ALLOW_UPGRADES=1` 로만 강제 가능).
+- 모든 apt 설치를 **먼저 시뮬레이션**하고 영향도를 **출처와 함께** 출력한다
+  (`dpkg [1.22.6ubuntu6.5] (1.22.6ubuntu6.7 Ubuntu:24.04/noble-updates)` 처럼).
+- **기존 패키지를 업그레이드/삭제하게 되면 거부한다.** 강제는 두 단계:
+  `ALLOW_UPGRADES=ubuntu`(= `bootstrap.sh --fresh`, **Ubuntu 공식 출처 업그레이드만** 수락 — 새 컨테이너용) /
+  `ALLOW_UPGRADES=1`(전부 수락 — 마지막 수단).
   실측: `ros-jazzy-isaac-ros-nvblox` 를 넣으려 하면 python3.12 7개 업그레이드를 감지해 **거부**한다.
+- apt 는 `sudo env DEBIAN_FRONTEND=noninteractive` 로 돈다 — `sudo` 가 환경을 버리므로 이렇게 안 넘기면 새 이미지에서
+  debconf 프롬프트(tzdata 등)에 걸려 무한 대기할 수 있다.
 - 소스빌드 산출물은 전부 워크스페이스 `install/` 오버레이 → 워크스페이스를 지우면 원상복구된다.
 
 `check_env.sh` 가 잡아주는 것: apt 핀 무력화, **GPU arch ↔ nvblox 바이너리 불일치**,
@@ -369,8 +414,14 @@ LeRobot 은 mp4 인코딩에 ffmpeg 이 필요한데 시스템에 없다. apt �
 `[dataset]` 만 있어도 **데이터 변환은 멀쩡히 되기 때문에**, 이 누락은 첫 실제 학습을 돌릴 때까지
 드러나지 않는다(실제로 그랬다 — `HISTORY.md` §24). `check_env.sh` 가 이제 `accelerate` 를 따로 검사한다.
 
-### ★★ `/dev/shm` 이 64 MiB — DataLoader 워커가 간헐적으로 죽는다
-이 컨테이너의 `/dev/shm` 은 Docker 기본값 **64 MiB** 다. PyTorch 기본 공유전략
+### ★★ `/dev/shm` 이 64 MiB 인 컨테이너 — DataLoader 워커가 간헐적으로 죽는다
+> **컨테이너 생성 옵션의 문제다.** `docker run` 에 `--shm-size` 를 안 주면 Docker 기본값 64 MiB 가 된다(첫 머신의
+> 컨테이너가 그랬고 아래 실측은 전부 그 조건). 2026-09-16 새 컨테이너는 **32 GiB** 라 이 절 전체가 해당 없음 —
+> `check_env.sh` 가 `/dev/shm is 31960M (large enough ...)` 로 알려준다. 새 컨테이너를 만들 땐 `--shm-size=8g`
+> 이상을 주는 게 정답이고, 우회책은 컨테이너를 다시 만들 수 없을 때(공유)만 필요하다. `setup.sh ml` 은 우회책을
+> 항상 설치하지만 `UR_WS_TORCH_SHM_FIX=1` 없이는 아무 일도 하지 않는다.
+
+첫 머신 컨테이너의 `/dev/shm` 은 Docker 기본값 **64 MiB** 였다. PyTorch 기본 공유전략
 (`file_descriptor`)은 DataLoader 워커→학습루프 배치 전달에 `/dev/shm` 을 쓰는데,
 **ACT 배치 하나가 8 × 카메라2 × 3×480×640 float32 ≈ 59 MiB** 라 한 배치도 겨우 들어간다.
 
@@ -439,6 +490,16 @@ deps/.venv-ml/lib/python3.12/site-packages/ur_ws_shm_fix.py    ← 실제 전략
 ```
 `check_env.sh` 는 **파일 존재가 아니라 실제 전략값**을 확인한다 — 위 함정 2 때문에
 "설치된 것처럼 보이지만 안 도는" 상태가 실제로 있었다.
+
+### ★ LeRobot 로봇 플러그인은 venv 에 `pip install -e` 돼 있어야 한다 (2026-09-16 발견, §48.8)
+롤아웃의 `robot_client --robot.type=ur16e_ros` 는 우리 어댑터 `ur_bringup/lerobot_robot_ur16e_ros` 다. lerobot 은
+**설치된 `lerobot_robot_*` 배포판을 스캔**해 로봇을 등록하므로 PYTHONPATH 나 ROS overlay 로는 안 보이고, venv 에
+설치돼 있지 않으면 `argument --robot.type: invalid choice: 'ur16e_ros'` 로 모든 롤아웃이 죽는다. `setup.sh ml` 이
+editable 로 설치하고 `check_env.sh` 가 검사한다. 손으로는:
+```bash
+deps/.venv-ml/bin/python -m pip install -e src/ur_bringup/lerobot_robot_ur16e_ros
+deps/.venv-ml/bin/python -m lerobot.async_inference.robot_client --help | grep -o "ur16e_ros"   # 보여야 정상
+```
 
 ### 사용법
 ROS 쉘에 **source 하지 말 것**(ROS 파이썬 환경을 오염시킨다). 인터프리터를 직접 지정한다:
@@ -947,6 +1008,13 @@ pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib
 
 | 증상 | 원인/조치 |
 |---|---|
+| (새 컨테이너) `setup.sh` 가 `E: Unable to locate package software-properties-common` / `ros-jazzy-ur` 로 즉사 | `apt-get update` 가 한 번도 안 된 이미지(목록 비어 있음). `ros` 단계가 이제 먼저 갱신한다(`apt_lists_refresh`). `--dry-run` 에선 "could not be simulated" 로 뜨는 게 정상 |
+| (새 컨테이너) `refusing: this would change packages ...` 에 `util-linux`·`libsystemd0`·`ncurses` 등 Ubuntu 출처 목록 | 새 이미지의 낡은 기반 라이브러리 vs `ros-jazzy-desktop`/`moveit` 의존. 전용 컨테이너면 `bootstrap.sh --fresh`(`ALLOW_UPGRADES=ubuntu`). 목록에 `Ubuntu:` 아닌 출처가 섞이면 그건 다른 문제 — 핀 확인 |
+| (롤아웃) `robot_client.py: error: argument --robot.type: invalid choice: 'ur16e_ros'` | LeRobot 로봇 플러그인이 ML venv 에 미설치 → `setup.sh ml`(또는 §2-C 의 `pip install -e`). `check_env.sh` 가 REQUIRED 로 잡는다 |
+| (하네스) 재기동 시 `A controller named ... was already loaded` / `can not be configured from 'active' state` | 이전 스택의 `ros2_control_node` 가 아직 종료 중인데 새 spawner 가 붙음. `bringup.sh` 가 이제 0개까지 대기(§48.8). 손으로는 `ps` 로 `ros2_control_node` 가 사라진 걸 확인한 뒤 재기동 |
+| (새 컨테이너) `python3: command not found` | Isaac 기본 이미지엔 python3 이 없다. `ros` 단계(`ros-dev-tools`)가 가져온다 — `ml` 단계만 따로 돌리지 말 것 |
+| Isaac 6.1.0 에서 `isaacsim.core.api` 등 import 경고 | `extsDeprecated` 로 이동했지만 동작함(§0). 6.1.0 초과 버전에서 ImportError 가 나면 `ur16e_isaac_ros2.py` 의 import 를 새 API 로 옮겨야 한다 |
+| (하네스) `bringup.sh` 가 `FAIL: move_group not ready` 인데 로그엔 `You can start planning now!` | 옛 대기 문자열 `Ready to take commands for planning group` 은 **RViz** 가 찍는 것 → 디스플레이 없는 컨테이너에선 절대 안 나옴. 2026-09-16 부터 두 문자열 모두 허용 |
 | `/joint_states` 가 전부 NaN | topic_based 가 0.2.1 아님 → §3 재확인 후 재빌드 |
 | `Switch controller timed out` | Isaac `/clock` 없음/느림 → Isaac 먼저 띄우거나 `use_sim_time:=false` |
 | `controller_manager` 가 `no 'ros2_control' tag found in the URDF` 로 즉사, move_group `Link 'tool0' … not known` | 같은 호스트의 **다른 컨테이너**가 도메인 0 에 `/robot_description` 을 발행(`ros2 node list` 에 모르는 노드). Isaac 부터 `export ROS_DOMAIN_ID=42` 로 기동 — 하네스는 환경의 `ROS_DOMAIN_ID` 를 따른다(§47.4) |

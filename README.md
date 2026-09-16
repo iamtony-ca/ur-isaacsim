@@ -1,11 +1,12 @@
-# UR16e — ROS 2 Jazzy + Isaac Sim 6.0.1 (sim & real 공용 제어 스택)
+# UR16e — ROS 2 Jazzy + Isaac Sim 6.0.1 / 6.1.0 (sim & real 공용 제어 스택)
 
 **UR16e 로봇팔을 하나의 ROS 2 (Jazzy) 소프트웨어로 Isaac Sim 시뮬레이션과 실물에서 모두** 구동하는
 워크스페이스. UR 공식 스택(`ur_robot_driver` + `ros2_control` + MoveIt2) 기반이며, 자체 코드는
 `ur_bringup` 한 패키지에 모여 있다.
 
 - 워크스페이스: `/isaac-sim/volume/ur_ws` (colcon), git repo = `src/`
-- 환경: Docker, ROS 2 **Jazzy**, **Isaac Sim 6.0.1**(`/isaac-sim`), GPU
+- 환경: Docker, ROS 2 **Jazzy**, **Isaac Sim 6.0.1 / 6.1.0**(`/isaac-sim`), GPU(RTX 5090 sm_120).
+  새 컨테이너 재현은 `src/setup/bootstrap.sh --fresh` 한 줄 — 2026-09-16 Isaac 6.1.0 기본 이미지에서 처음부터 검증([`HISTORY.md`](HISTORY.md) §48).
 - 이 문서는 **현재 상태** 기준 정리. 변경 이력·검증 로그·디버깅 교훈은 [`HISTORY.md`](HISTORY.md),
   실물 HW 연결 후 절차는 [`HARDWARE.md`](HARDWARE.md), 재현 매뉴얼은 [`SETUP.md`](SETUP.md),
   개념 Q&A 는 [`qna.md`](qna.md).
@@ -294,8 +295,10 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 | **cuMotion (GPU 플래너)** | ✅ MoveIt 파이프라인 plan+execute (오차 0.0003 rad) | ✅ 동일 launch, `use_sim_time:=false` | ⏳ 로봇 연결 시 (실행 경로 동일) |
 | **실시간 장애물 회피 (nvblox)** | ✅ 정적카메라→segmenter→nvblox ESDF→cuMotion; A/B 회피 검증 `PASS`(`nvblox_obstacle_demo.py`). **`nvblox_ros` 는 GPU arch 맞춰 소스 빌드**(SETUP.md §2-B-4) | ⏳ 정적 depth 카메라(D455 등) 추가 시 (토픽만 교체) | ⏳ 카메라 연결 시 |
 
-위 sim 항목은 **Isaac Sim 6.0.1 / RTX 5090 에서 2026-09-06 전수 재검증**됨.
-자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피, §14 Isaac Sim 6.0.1 이식).
+위 sim 항목은 **Isaac Sim 6.0.1 / RTX 5090 에서 2026-09-06 전수 재검증**됨. **Isaac Sim 6.1.0-rc.26** 에서는
+2026-09-16 새 컨테이너에서 세트1 mock, 세트2 plan+execute, 세트3 카메라 2대 + cuMotion `pick_place_demo` 1/1 SUCCESS
+를 확인(§48; nvblox A/B 회피 데모는 미재실행).
+자세한 검증 로그/날짜/근거는 [`HISTORY.md`](HISTORY.md) (§12 nvblox 실시간 회피, §14 Isaac Sim 6.0.1 이식, §48 6.1.0 재현).
 
 ### IL 트랙 (ACT) — 2026-09-09
 

@@ -80,7 +80,7 @@ for i in $(seq 1 "$N"); do
     --server_address=127.0.0.1:8080 > "$LOG/rn_client_$i.log" 2>&1
   # Count chunks that made it PAST postprocessing ("| Total time:"), as in
   # groot_rollout.sh. Zero means a harness fault, not a policy result.
-  total=$(grep -c "| Total time:" "$LOG/rn_server.log" 2>/dev/null || echo 0)
+  total=$(grep -c "| Total time:" "$LOG/rn_server.log" 2>/dev/null); total=${total:-0}   # NOT `|| echo 0`: grep -c prints "0" AND exits 1 on no match -> "0\n0" -> arithmetic error (HISTORY.md 48.8)
   chunks=$(( total - ${SEEN:-0} )); SEEN=$total     # one server for all trials: delta per trial
   if [ "$chunks" -le 0 ]; then
     echo "     SKIP: 0 action chunks delivered this trial -- harness fault, not a policy result"

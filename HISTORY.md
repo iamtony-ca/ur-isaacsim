@@ -4005,3 +4005,139 @@ openpi·GR00T 원본 파일명이라 정상.
 `isaacsim.core.utils`·`isaacsim.storage.native`·`isaacsim.ros2.bridge`(OmniGraph) 를 쓴다. `preflight` 가 6.0.1 이 아니면
 경고하도록 바꿨다(이전엔 6.x 면 조용히 통과). 6.1.0 에서는 §5 스모크(Isaac 기동 → `/joint_states` → MoveIt plan) 결과를
 먼저 여기에 적고 나서 나머지를 진행한다.
+
+---
+
+## 48. 새 컨테이너(Isaac Sim 6.1.0-rc.26, ROS 없음)에서 `bootstrap.sh` 로 처음부터 재현 — 스크립트 결함 4건 수정 (2026-09-16)
+
+요청: *"새로 컨테이너를 만들어서 CLAUDE.md 만 가져오고 git clone 만 한거야 … setup 폴더를 참고해서 개발환경 셋업을 진행해줄래.
+그리고 정확한 개발환경 셋업 가이드와 스크립트를 완벽히 업데이트해줘."* / *"나중에 다른 PC 에서도 새로운 컨테이너에서 셋업을
+진행할거야."* / *"groot n1.7 은 모델을 받을 때 나의 hf 권한이 필요하니깐, ACT 까지만 셋업하고 검증해줘도 돼."*
+
+§47.6 은 "실제 설치는 새 컨테이너에서 처음 검증된다" 로 끝났다. 이번이 그 검증이다.
+
+### 48.1 출발 상태 — Isaac Sim 기본 이미지의 실체
+
+| 항목 | 값 |
+|---|---|
+| 이미지 | Isaac Sim **6.1.0-rc.26**+release.49347 (검증본 6.0.1 아님), Ubuntu 24.04.3 |
+| 사용자 | `isaac-sim`(uid 1234), **NOPASSWD sudo** |
+| 없는 것 | `/opt/ros`, **`python3`**, `vcs`, `colcon`, `wget`, `nvcc`, `cuobjdump` |
+| apt | `ubuntu.sources` 만(universe 포함), **`apt-get update` 이력 0**(`/var/lib/apt/lists` 비어 있음) |
+| GPU / 디스크 / shm | RTX 5090 sm_120, 드라이버 580.173 / 2.0 TB 여유 / **`/dev/shm` 32 GiB**(첫 머신은 64 MiB) |
+| 워크스페이스 | `CLAUDE.md` + `git clone` → `src/` 만 |
+
+### 48.2 실행 순서와 걸린 곳 — 스크립트가 fresh 머신에서 실제로 깨진 지점
+
+`bootstrap.sh --dry-run` 은 rc 0 이었지만 계획의 절반이 "could not be simulated" 였고, 실제 실행은 아래에서 멈췄다.
+전부 고쳐서 **같은 컨테이너에서 각 단계를 재실행해 통과**시켰다.
+
+| # | 증상 | 원인 | 수정 |
+|---|---|---|---|
+| ① | `ros` 단계 즉사: `E: Unable to locate package software-properties-common` | apt 목록이 한 번도 갱신된 적 없는 이미지 → `apt-get install -s` 조차 해석 불가 | `lib.sh` `apt_lists_refresh`(목록 비면 `apt-get update`), `ros` 단계 맨 앞에서 호출. dry-run 은 예고만 |
+| ② | `software-properties-common` 이 **11개 업그레이드**(util-linux·libsystemd0 …) 요구 → 가드 거부 | packagekit 의존. 그런데 universe 는 이미 켜져 있어 이 패키지 자체가 불필요 | universe 가 꺼져 있을 때만 설치 → 이 단계는 `locales curl` 만 (0 upgraded) |
+| ③ | `ros-jazzy-desktop` 이 **14개**, 이어 `base` 의 moveit 이 **4개**(ncurses) Ubuntu 포인트 릴리스 업그레이드 요구 → 거부 | 새 이미지의 낡은 기반 라이브러리. 정당한 업그레이드지만 가드는 출처를 안 봤다 | `ALLOW_UPGRADES=ubuntu` 신설: `Inst` 줄의 출처를 파싱해 **`Ubuntu:24.04/noble-updates`·`-security` 만** 허용, 다른 출처·삭제는 여전히 거부. `bootstrap.sh --fresh` 가 이걸 켠다. 첫 파서는 apt 가 줄 끝에 붙이는 ` []`·`[amd64]` 를 못 걷어내 한 줄을 "foreign" 으로 오판 → 정규화 보강 |
+| ④ | `base` 단계가 첫 `apt_guarded_install` 실패를 **성공으로 보고** | `\|\| return 1` 누락, 뒤의 realsense 줄(`\|\| warn`)이 rc 를 덮음 | `\|\| return 1` 추가 |
+
+그 외 손본 것: `sudo env DEBIAN_FRONTEND=noninteractive apt-get`(`sudo` 가 환경을 버려 debconf 프롬프트 위험),
+ros-apt-source 다운로드 `curl -sS`(진행바 소음), `preflight`/`check_env` 가 6.1.0 을 검증본으로 인정, `check_env` 에
+`python3` 존재 검사, GR00T 검사가 `transformers` 를 명시 요구(§48.5), shm 우회책 메시지가 `/dev/shm` 크기를 보고 "필요 없음"
+을 구분, `bootstrap.sh --with-groot`, `--help` 가 코드까지 출력하던 sed 범위 → awk.
+
+### 48.3 설치 결과 (전부 새로 깔림)
+
+`ros`(1446 debs, ros2-apt-source **1.3.0**, ros-dev-tools **1.0.3**) → `pin` → `repos`(핀 검증: robotiq_description 후보 0.0.1)
+→ `base`(159 debs; ros2_control **4.48.0** + diagnostic_updater 4.2.7 같은 빌드 — §HARDWARE 의 ABI 함정은 업그레이드 경로
+에서만 생긴다) → `cumotion`(4.6.0, **CUDA 13.2.2**, VPI 4.0.0) → `sources`(7 repo, 핀 SHA 전부 일치, nvblox_core 서브모듈)
+→ `build`(ur_bringup·topic_based 0.2.1·robotiq_driver·serial, **nvblox_ros sm_120 소스빌드 2 m 19 s**; apt nvblox_node 는
+sm_75 만, libcumotion 은 sm_75/86/89/120) → `leader`(dynamixel 2개 0 upgraded, 7 패키지) → `ml`(venv 7.7 GB, torch
+2.11.0+cu128 archs sm_75~120, lerobot 0.6.1) → `groot`(19개 신규, transformers 5.5.4) → `verify` **environment OK**.
+`requirements-ml.lock` 을 `env -i` 로 다시 뜸(옛 잠금엔 ROS site-packages 46개가 섞여 있었다; 실제 차이는 accelerate/peft/
+grpcio 등 패치 버전뿐).
+
+### 48.4 ★ Isaac Sim 6.1.0-rc.26 — 무수정 통과
+
+`isaacsim.core.api`·`.prims`·`.utils` 가 `/isaac-sim/exts` 에서 **`/isaac-sim/extsDeprecated`** 로 옮겨졌다.
+`isaacsim.core.deprecation_manager` 가 그대로 import 시켜 주므로(SimulationApp 안에서 9개 모듈 전부 import OK) 스크립트는
+그대로 돈다. 다음 메이저에서 없어질 수 있는 API 라 `preflight` 는 6.0.1/6.1.0 외에는 경고한다.
+
+| 검증 | 결과 |
+|---|---|
+| 세트1 mock (`use_mock_hardware`) | 15 컨트롤러 로드, JTC·JSB active, `/joint_states` 유효 |
+| 세트2 headless: `/isaac_joint_states`·`/clock` → `ur16e_2f85.launch.py` → `reset_pose.py ready` → `ur16e_2f85_moveit` plan+execute | error_code 0 / **SUCCESS**, 도달 오차 0.0100 rad |
+| 세트3 headless(하네스 씬, 카메라 2대 320×240) → `harness/bringup.sh`(cuMotion) → `pick_place_demo.launch.py cycles:=1` | 카메라 58 Hz, `/move_action`·gripper 액션 ok, **1/1 cycles succeeded**(part 0.001 m from marker) |
+| 6.1.0 새 경고 | `pxr.Semantics is deprecated` 1건뿐. 6.0.1 의 `targetPrim is deprecated` 그대로 |
+
+**하네스 함정(⑤)**: `bringup.sh` 의 move_group 대기 문자열 `Ready to take commands for planning group` 은 **RViz** 의
+MoveGroupInterface 가 찍는다 — 이 컨테이너는 `DISPLAY=:0` 이 붙어 있어 RViz 가 떠서 우연히 통과했지만, X 없는 컨테이너면
+영원히 `FAIL: move_group not ready` 다. move_group 자체의 `You can start planning now!` 도 허용하도록 수정.
+
+### 48.5 GR00T — 스크립트 경계
+
+`setup.sh groot` 는 통과(extra 설치·sm_120 유지·import). 모델 파일은 `nvidia/Cosmos-Reason2-2B` 게이트라 **사용자 토큰
+없이는 못 받는다** → 여기서 멈추는 것이 맞다. 사용자가 할 일 7단계를 `CHECKLIST.md` **B-2** 로 정리(라이선스 동의 → read
+토큰 → `hf auth login`(HF_HOME=deps/hf_cache) → 다운로드 2건 → `check_hf_cache.sh` → 20 스텝 스모크).
+부수 발견: `check_env.sh` 의 GR00T 검사 `import lerobot.policies.groot.modeling_groot` 는 **extra 없이도 통과**한다
+(무거운 import 가 lazy) — `verify` 가 `groot` 보다 먼저 돈 순간 "(transformers )" 로 빈 버전이 찍혔다. `transformers` 를
+같이 import 하도록 고쳤다.
+
+### 48.6 ACT 파이프라인 스모크 — 이 컨테이너에서 수집→변환→학습까지 실제 통과
+
+사용자 지시대로 검증 경계는 ACT. 하네스 스크립트를 **그대로**(`collect_wrist1.sh 3` → `convert_wrist1.sh` → `lerobot-train`)
+썼다. 도메인 42, Isaac headless.
+
+| 단계 | 결과 |
+|---|---|
+| 수집 `collect_wrist1.sh 3` (Isaac 6.1.0 + `bringup.sh` + `pick_place_demo` + `il_recorder`) | 3 에피소드, 18 MB, grasp 프레임 9, rc 0 |
+| 변환 `convert_wrist1.sh` (`raw_to_lerobot.py`, ML venv) | 3 ep / 1356 프레임 / 30 fps, `observation.images.wrist` (240,320,3) video, 2.5 MB |
+| 학습 `lerobot-train --policy.type=act --steps=100 --batch_size=32 --num_workers=2` (Isaac 내린 뒤, `ml_env.sh`) | rc 0, `checkpoints/000100/pretrained_model/` 생성(config·safetensors·pre/postprocessor), shm 오류 0, GPU 1.6 GB |
+
+`/dev/shm` 32 GiB 라 워커 2 로 그냥 돈다(§24 의 우회책 불필요). 100 스텝은 `log_freq` 기본 200 보다 짧아 loss 줄은 안 찍혔다 —
+스모크 판정은 rc 와 체크포인트 산출물로 했다. 스모크 산출물(`outputs/act_smoke`·`il_raw_wrist_only`·`lerobot_ds_wrist_only`,
+합계 0.6 GB)은 **지웠다** — 하네스의 정본 이름을 3 에피소드짜리로 선점하면 나중 `collect_wrist1.sh 50` 이 47개만 더 모은다.
+
+### 48.6-B 가짜 리더 teleop — 6.1.0 통과 (사용자 요청으로 추가 실행)
+
+세트2 headless → `ur16e_2f85.launch.py use_sim:=true` → `reset_pose.py ready` → `teleop_omy.launch.py use_sim_time:=true
+virtual_leader:=true` → `switch_control_mode.py streaming` → `/omy_bridge/enable`. 가상 리더가 팔로워 `/joint_states` 를
+역매핑해 `[0,−90,152,−62,90,0]°` 에서 출발(랑데부 일치) → `engaged` → 리더 J1 ±17°·J3 ±25° 사인 동작 25 s 동안
+**추종 오차 최대 0.256°, 평균 0.199°**(3671 샘플; 기대값 §22 ≈0.24°). `disable` → trajectory 복귀 정상.
+측정 함정: `/leader/joint_states` 는 **best-effort** QoS 라 기본(reliable) 구독으로는 한 샘플도 안 온다 — 측정 노드는
+QoS 를 맞춰야 한다.
+
+### 48.8 ★ ACT 롤아웃까지 닫기 — 셋업 결함 1건(로봇 플러그인 미설치) + 하네스 결함 2건 (2026-09-16, 사용자 요청)
+
+사용자: *"ACT 도 스모크 학습하고 롤아웃까지 완료한건가?"* → §48.6 은 학습까지였다. *"롤아웃의 성공률을 보려는 목적은 아니고,
+전체 파이프라인이 정상인지 보려는거야."* → 3 ep / 100 스텝 체크포인트로 `rollout_gui_then_n_w1.sh 1 60` 을 돌렸다.
+
+| # | 증상 | 원인 | 수정 |
+|---|---|---|---|
+| ⑥ | `robot_client.py: error: argument --robot.type: invalid choice: 'ur16e_ros'` | **우리 LeRobot 로봇 어댑터(`ur_bringup/lerobot_robot_ur16e_ros`)가 ML venv 에 설치돼 있지 않았다.** lerobot 은 설치된 `lerobot_robot_*` 배포판을 스캔해 로봇을 등록하므로 `pip install -e` 가 필수인데, 첫 머신에서 손으로 한 뒤 **어느 문서에도 없었다**(`.gitignore` 주석뿐) | `setup.sh ml` 에 `_install_robot_plugin`(editable 설치 + 배포판 존재 검증), `check_env.sh` REQUIRED 검사 추가. 재실행으로 검증 |
+| ⑦ | `rollout_wrist1.sh: line 84: 0\n0: syntax error in expression` → 트라이얼이 통째로 SKIP | `total=$(grep -c … \|\| echo 0)` — `grep -c` 는 매치 0 이면 **"0" 을 찍고 exit 1** 이라 `echo 0` 이 한 번 더 붙는다 | `total=$(grep -c …); total=${total:-0}` (`groot_rollout.sh` 의 같은 줄도) |
+| ⑧ | 하네스 재기동 시 `A controller named 'scaled_joint_trajectory_controller' was already loaded` / `can not be configured from 'active' state` → `controllers never activated` | `bringup.sh` 가 패턴 kill 후 **고정 6 s** 만 기다림. 활성 컨트롤러를 가진 `ros2_control_node` 는 TERM 후 그보다 오래 살고, 새 스택의 spawner 가 **옛 controller_manager** 에 붙는다(teleop 스택 직후 수집 하네스를 띄우면 재현) | kill 대상에 `ros2 launch ur_bringup` 부모 추가, **0개가 될 때까지 최대 30 s 대기 후 KILL**, spawner 락 파일 제거 |
+
+부수: 패턴 kill 은 **호출 셸 자신을 죽인다** — heredoc 으로 넘긴 긴 명령의 `bash -c` argv 에 패턴 문자열이 들어 있어 첫 시도가
+rc 144 로 죽었다(§47.4 의 "긴 명령은 파일로" 그대로). 정리 루프는 `$$`·`$PPID` 를 제외해야 한다.
+
+**결과(플러그인 설치 후 재실행, Isaac 6.1.0 headless, 도메인 42)** — 파이프라인 전 구간 정상:
+
+| 구간 | 결과 |
+|---|---|
+| 수집 `collect_wrist1.sh 3` → 변환 → `lerobot-train` 100 스텝 | rc 0, loss 0.340, `checkpoints/last` |
+| `policy_inference.launch.py` → 정책 서버 기동 → `reset_pose ready` → streaming 전환 → `obs_ready.py` | joints 41 Hz · wrist 48 Hz **fresh** |
+| `robot_client --robot.type=ur16e_ros` 60 s | 서버 **68 청크** 서비스, 팔 구동(관절이 ready 에서 1.3 rad 이상 이동) |
+| `judge_rollout.py` | `FAIL d=273mm grip=0.13 (too far)` — 3 ep·100 스텝 정책의 **기대된** 결과. 판정 경로 자체는 동작 |
+| 클라이언트 로그 | `publisher's context is invalid` traceback 은 60 s `timeout` 종료 순간(시작 +57 s) 한 번 — SIGTERM 으로 rclpy 컨텍스트가 먼저 닫히는 종료 아티팩트 |
+
+스모크 산출물(`act_wrist_only`·`il_raw_wrist_only`·`lerobot_ds_wrist_only`)은 다시 지웠다.
+
+### 48.7 남은 것 / 이 컨테이너 기준 상태
+
+- **GR00T**: `CHECKLIST.md` B-2(사용자 HF 계정 절차) 후 `check_hf_cache.sh` → §3-B 20 스텝 스모크. `check_env.sh` 의
+  `deps/hf_cache ... refs/main missing` 두 줄은 그때까지 정상(REQUIRED 실패 아님, rc 0).
+- **미재실행**: nvblox A/B 회피 데모(`nvblox_obstacle_demo.py`, §12), teleop 가짜 리더(§22), 실물 HW 전부. nvblox_ros 는
+  sm_120 로 빌드됐고 `check_env` 통과 — 데모는 다음 사용 시.
+- 문서/스크립트 반영: `SETUP.md` §0(버전표 신설)·§2-C(로봇 플러그인)·§0-B(전제·`--fresh`·1-B 재작성·소요시간)·§0-A(단계표·안전장치)·§2-C(shm 은
+  `--shm-size` 문제)·§9(새 컨테이너 5행), `CHECKLIST.md` A/B/B-0/**B-2 신설**, `README.md`, `CLAUDE.md`, harness `README.md`,
+  `bootstrap.sh`(`--fresh`·`--with-groot`·`--help`), `setup.sh`, `lib.sh`, `check_env.sh`, `ml_env.sh`, `requirements-ml.lock`,
+  `harness/bringup.sh`. 커밋은 하지 않았다(사용자 검토용 working tree).

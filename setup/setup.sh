@@ -8,12 +8,18 @@
 #
 # Env overrides:
 #   WS=/path/to/ur_ws          workspace root       (default /isaac-sim/volume/ur_ws)
-#   ALLOW_UPGRADES=1           permit apt to upgrade existing packages (see below)
+#   ALLOW_UPGRADES=ubuntu      accept upgrades of already-installed packages ONLY when
+#                              they come from Ubuntu's own repos (noble-updates/-security).
+#                              A FRESH Isaac Sim container needs this: its base libs are
+#                              stale and ros-jazzy-desktop / moveit require the point
+#                              releases (measured 2026-09-16: 14 + 4 packages). This is
+#                              what `bootstrap.sh --fresh` sets.
+#   ALLOW_UPGRADES=1           accept EVERY upgrade/removal apt proposes (last resort)
 #
 # ---------------------------------------------------------------------------
 # DESIGN RULE: this machine is shared with other workspaces.
 #   * Every apt install is SIMULATED first; if it would upgrade or remove an
-#     already-installed package the script REFUSES (ALLOW_UPGRADES=1 overrides).
+#     already-installed package the script REFUSES (ALLOW_UPGRADES overrides, above).
 #   * NVIDIA apt repos are PINNED BEFORE they are added, so they can only supply
 #     packages nobody else provides -- they never shadow ROS/Ubuntu packages.
 #   * Everything we build lands in the workspace overlay ($WS/install), never in
@@ -57,18 +63,20 @@ stage_preflight() {
   step "preflight — can this machine host the workspace? (read-only)"
   local fail=0
 
-  # Isaac Sim. Verified on 6.0.1 only (5.1.0 -> 6.0.1 needed no code change). Any
-  # other version -- 6.1.0 included -- is unverified: the sim script imports
-  # isaacsim.core.api / isaacsim.core.prims / isaacsim.ros2.bridge, and those are
-  # where minor releases move things. Say so loudly instead of silently passing 6.x.
+  # Isaac Sim. Verified on 6.0.1 (5.1.0 -> 6.0.1 needed no code change) and on
+  # 6.1.0-rc.26 (fresh container, 2026-09-16, HISTORY.md 48: headless Isaac ->
+  # /isaac_joint_states + /clock -> controllers -> reset_pose ready -> MoveIt plan+execute
+  # SUCCESS, no code change). In 6.1.0 isaacsim.core.api / .prims / .utils moved to
+  # /isaac-sim/extsDeprecated and still import (via isaacsim.core.deprecation_manager),
+  # so a LATER release may drop them -- that is why any other version warns loudly.
   if [ -x /isaac-sim/python.sh ]; then
     local iv; iv="$(cat /isaac-sim/VERSION 2>/dev/null | cut -d+ -f1)"
     ok "Isaac Sim present (${iv:-version unknown})"
     case "$iv" in
-      6.0.1*) ok "Isaac $iv = the verified version" ;;
+      6.0.1*|6.1.0*) ok "Isaac $iv = a verified version (6.0.1, 6.1.0-rc.26)" ;;
       "") warn "cannot read /isaac-sim/VERSION" ;;
-      *) warn "Isaac $iv is NOT the verified 6.0.1. Expect possible API drift in ur_bringup/isaac/common/ur16e_isaac_ros2.py"
-         warn "(isaacsim.core.*, isaacsim.ros2.bridge). Run SETUP.md 5 'smoke' first and record the result in HISTORY.md." ;;
+      *) warn "Isaac $iv is NOT a verified version (6.0.1 / 6.1.0). Expect possible API drift in ur_bringup/isaac/common/ur16e_isaac_ros2.py"
+         warn "(isaacsim.core.api/.prims/.utils are already in extsDeprecated on 6.1.0). Run SETUP.md 5 'smoke' first and record the result in HISTORY.md." ;;
     esac
   else
     err "/isaac-sim/python.sh missing. Run inside the Isaac Sim container."; fail=1
@@ -123,12 +131,16 @@ PIN_STAGED=0
 # docs.ros.org, in code, gated on /opt/ros/<distro> being ABSENT:
 #   locale -> universe -> ros2-apt-source .deb (adds ros2.sources + keyring)
 #   -> apt update -> ros-<distro>-desktop + ros-dev-tools (colcon, vcstool, rosdep)
-# Verified combination on this machine: Ubuntu 24.04, ros2-apt-source 1.2.0~noble,
-# ros-jazzy-desktop 0.11.0, ros-dev-tools 1.0.1. Runs BEFORE `pin`/`repos`: the NVIDIA
-# pin only stops NVIDIA repos from shadowing ROS packages; it does not create the
-# ROS repo. On a fresh Ubuntu image the desktop metapackage may want to upgrade a
-# few base libs; the usual guard applies (ALLOW_UPGRADES=1 to accept -- fine on a
-# container created for this workspace, not on a shared one).
+# Verified on a FRESH Isaac Sim 6.1.0 container 2026-09-16 (HISTORY.md 48): Ubuntu 24.04.3,
+# ros2-apt-source 1.3.0~noble, ros-jazzy-desktop 0.11.0, ros-dev-tools 1.0.3 (1446 new
+# packages; the image ships no python3 at all -- this stage is what brings it).
+# Runs BEFORE `pin`/`repos`: the NVIDIA pin only stops NVIDIA repos from shadowing ROS
+# packages; it does not create the ROS repo.
+# A fresh image has stale base libs, and ros-jazzy-desktop needs their noble-updates
+# point releases (measured: 14 packages -- util-linux, dpkg, zlib1g, libsystemd0, ...).
+# The guard refuses that by default; ALLOW_UPGRADES=ubuntu (bootstrap.sh --fresh) accepts
+# Ubuntu-origin upgrades only, which is the right call on a container made for this
+# workspace and the wrong one on a shared container.
 # ---------------------------------------------------------------------------
 stage_ros() {
   step "ros — ROS 2 $ROS_DISTRO from packages.ros.org (only when missing)"
@@ -139,11 +151,23 @@ stage_ros() {
     *) err "this stage knows ROS 2 jazzy on Ubuntu noble (24.04) only; got ROS_DISTRO=$ROS_DISTRO on '$codename'"; return 1 ;;
   esac
   need_cmd curl || return 1
-  apt_guarded_install locales curl software-properties-common || return 1
+  # A fresh container has NEVER run `apt-get update` (/var/lib/apt/lists is empty), so
+  # even `apt-get install -s` fails with "Unable to locate package" on stock Ubuntu
+  # packages. Refresh the lists once before the first guarded install. Measured on a
+  # fresh Isaac Sim 6.1.0 container 2026-09-16 (HISTORY.md 48).
+  apt_lists_refresh
+  apt_guarded_install locales curl || return 1
   if locale -a 2>/dev/null | grep -qi "en_US.utf8"; then ok "locale en_US.UTF-8 present"
   else run "sudo locale-gen en_US en_US.UTF-8 && sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8"; fi
-  if apt-cache policy 2>/dev/null | grep -q "noble/universe"; then ok "universe component enabled"
-  else run "sudo add-apt-repository -y universe"; fi
+  # `software-properties-common` exists ONLY to provide `add-apt-repository universe`.
+  # It depends on packagekit, which on a fresh noble image drags 11 base-lib upgrades
+  # (util-linux, libsystemd0, ...) and trips the guard. Ubuntu's official docker/Isaac
+  # images already ship `universe` in ubuntu.sources, so install it only when needed.
+  if apt-cache policy 2>/dev/null | grep -q "${codename}/universe"; then ok "universe component enabled"
+  else
+    apt_guarded_install software-properties-common || return 1
+    run "sudo add-apt-repository -y universe"
+  fi
   if [ -f /etc/apt/sources.list.d/ros2.sources ] || apt_installed ros2-apt-source; then
     ok "ros2-apt-source already installed"
   elif [ "$DRY_RUN" = 1 ]; then
@@ -154,8 +178,8 @@ stage_ros() {
     ver="$(curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F '"tag_name"' | awk -F'"' '{print $4}')"
     [ -n "$ver" ] || { err "could not resolve the latest ros-apt-source release (network? GitHub API?)"; return 1; }
     deb="/tmp/ros2-apt-source_${ver}.${codename}_all.deb"
-    curl -fL -o "$deb" "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ver}/ros2-apt-source_${ver}.${codename}_all.deb" || { err "download failed: $deb"; return 1; }
-    sudo dpkg -i "$deb" && ok "ros2-apt-source $ver installed (ros2.sources + keyring)"
+    curl -fsSL -o "$deb" "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ver}/ros2-apt-source_${ver}.${codename}_all.deb" || { err "download failed: $deb"; return 1; }
+    sudo dpkg -i "$deb" >/dev/null && ok "ros2-apt-source $ver installed (ros2.sources + keyring)"
   fi
   if [ "$DRY_RUN" = 1 ]; then
     echo "  [dry-run] would: sudo apt-get update && install ros-$ROS_DISTRO-desktop ros-dev-tools (guarded)"
@@ -242,7 +266,10 @@ stage_base() {
     "ros-$ROS_DISTRO-moveit-ros-perception" \
     "ros-$ROS_DISTRO-moveit-servo" \
     "ros-$ROS_DISTRO-joy" \
-    python3-vcstool python3-colcon-common-extensions
+    python3-vcstool python3-colcon-common-extensions || return 1
+  # (Without `|| return 1` a refused/failed install here was silently masked by the
+  # optional realsense line below and the stage reported success -- found on the
+  # 2026-09-16 fresh-container run.)
   echo "  (optional, real D405 camera only)"
   apt_guarded_install "ros-$ROS_DISTRO-realsense2-camera" "ros-$ROS_DISTRO-librealsense2" || \
     warn "realsense install skipped/failed — only needed for the real camera"
@@ -444,6 +471,7 @@ stage_ml() {
     err "torch was replaced by something without sm_120 -- reinstall it from $torch_index"; return 1; }
 
   _install_shm_workaround "$venv" || return 1
+  _install_robot_plugin "$py" || return 1
 
   ok "ML venv ready: $py"
   echo "  use it with:  $py -m ...   (never 'source' it into a ROS shell)"
@@ -510,13 +538,17 @@ PLAN
   fi
 }
 
-# The Isaac Sim container ships /dev/shm at Docker's 64 MiB default. PyTorch's
-# default 'file_descriptor' sharing strategy hands batches between DataLoader
-# workers through /dev/shm, so ANY num_workers>0 dies partway into training:
+# A container started without --shm-size gets Docker's 64 MiB /dev/shm (the first
+# machine's Isaac container did). PyTorch's default 'file_descriptor' sharing
+# strategy hands batches between DataLoader workers through /dev/shm, so ANY
+# num_workers>0 dies partway into training:
 #     RuntimeError: unable to allocate shared memory (shm) for file <...> (11)
 #     RuntimeError: DataLoader worker (pid ...) exited unexpectedly
-# Raising /dev/shm needs the container recreated, which we cannot do -- this
-# container is shared with other projects (HISTORY.md 24).
+# Raising /dev/shm needs the container recreated, which a shared container does
+# not allow (HISTORY.md 24). A container made for this workspace should simply be
+# started with `--shm-size=8g` or more (the 2026-09-16 container has 32 GiB and
+# needs none of this; check_env.sh reports which case you are in). The workaround
+# is installed regardless -- it is inert unless UR_WS_TORCH_SHM_FIX=1 is set.
 #
 # One ACT batch (8 x 2 cameras x 3x480x640 float32) is ~59 MiB, so /dev/shm holds
 # barely one in-flight batch. Measured: 1 of 3 identical unfixed runs died, peak
@@ -551,8 +583,8 @@ _install_shm_workaround() {
   cat > "$sp/ur_ws_shm_fix.py" <<'EOF'
 """Installed by ur_ws setup/setup.sh (stage `ml`) -- see SETUP.md 2-C.
 
-/dev/shm is 64 MiB in this container (Docker default) and cannot be enlarged --
-that needs the container recreated, and this one is shared with other projects.
+A container started without --shm-size has a 64 MiB /dev/shm (Docker default) and
+it cannot be enlarged without recreating the container (impossible when shared).
 PyTorch's default 'file_descriptor' sharing strategy moves DataLoader batches
 through /dev/shm; one ACT batch is ~59 MiB, so workers intermittently die with
 "unable to allocate shared memory". 'file_system' uses the temp dir instead.
@@ -583,8 +615,31 @@ EOF
     err "shm workaround did not take effect (strategy=$got) -- train with --num_workers=0"
     return 1
   fi
-  ok "shm workaround active (/dev/shm is only $(df -h /dev/shm 2>/dev/null | awk 'NR==2{print $2}'):"
-  echo "       run training with  UR_WS_TORCH_SHM_FIX=1  (see SETUP.md 2-C)"
+  local shm_mb; shm_mb="$(df -m /dev/shm 2>/dev/null | awk 'NR==2{print $2}')"
+  if [ -n "$shm_mb" ] && [ "$shm_mb" -lt 1024 ]; then
+    ok "shm workaround active (/dev/shm is only ${shm_mb} MiB):"
+    echo "       run training with  UR_WS_TORCH_SHM_FIX=1  (ml_env.sh sets it; see SETUP.md 2-C)"
+  else
+    ok "shm workaround installed but not needed here (/dev/shm = ${shm_mb:-?} MiB; the 64 MiB trap is a --shm-size issue)"
+  fi
+}
+
+# Our LeRobot robot adapter (ur_bringup/lerobot_robot_ur16e_ros, --robot.type=ur16e_ros).
+# lerobot discovers third-party robots by scanning installed distributions named
+# `lerobot_robot_*`, so the package must be pip-installed into THIS venv; nothing
+# else (PYTHONPATH, sourcing ROS) registers it. Editable, so edits to robot.py are
+# live. Found missing on the 2026-09-16 fresh container: every rollout died with
+# "argument --robot.type: invalid choice: 'ur16e_ros'" (HISTORY.md 48.8) -- the
+# first machine had it installed by hand and no document said so.
+_install_robot_plugin() {
+  local py="$1" src="$WS/src/ur_bringup/lerobot_robot_ur16e_ros"
+  [ -f "$src/pyproject.toml" ] || { err "robot plugin source missing: $src"; return 1; }
+  "$py" -m pip install -q -e "$src" || { err "robot plugin install failed"; return 1; }
+  "$py" - <<'EOF' || { err "lerobot does not see robot type ur16e_ros after install"; return 1; }
+import importlib.metadata as md
+assert any(d.metadata["Name"].startswith("lerobot_robot_ur16e_ros") for d in md.distributions()), "dist not installed"
+EOF
+  ok "LeRobot robot plugin installed (editable): lerobot_robot_ur16e_ros -> --robot.type=ur16e_ros"
 }
 
 _verify_torch_arch() {

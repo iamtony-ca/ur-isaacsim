@@ -49,3 +49,10 @@
 `bench_decode.py`(격리 디코딩 — **1 스레드로 잴 것**), `bench_quality.py`(PSNR vs 원본 JPEG), `bench_data_s.py`
 (`data_s` 분해: loader 대기 / to_float / 전처리기), `groot_threads_smoke.sh`(`THREADS="1 4 8"`), `groot_codec_smoke.sh`,
 `convert_h264.sh`(코덱 비교 변환).
+
+## 디스플레이 없는 컨테이너 (2026-09-16, `HISTORY.md` §48)
+
+`bringup.sh` 의 move_group 대기 문자열 `Ready to take commands for planning group` 은 **RViz 의 MoveGroupInterface** 가
+찍는 것이라, X 소켓 없는 컨테이너(RViz 즉사)에서는 영원히 안 나와 `FAIL: move_group not ready` 가 됐다. 이제 move_group
+자체의 `You can start planning now!` 도 허용한다 — 실제 준비 판정은 그 뒤의 `ros2 action list` 검사다.
+하네스 전체는 Isaac `--headless` 로 돌므로 디스플레이는 롤아웃 GUI 확인(`rollout_gui_then_*`)에만 필요하다.
