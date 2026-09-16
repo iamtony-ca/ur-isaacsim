@@ -6,7 +6,7 @@ WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # wor
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 ME=$$
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 cd "$WS"
 ps -eo pid,args --no-headers | grep "[u]r16e_isaac_ros2.py" \
   | awk -v me="$ME" '$1!=me{print $1}' | while read -r p; do kill "$p" 2>/dev/null; done

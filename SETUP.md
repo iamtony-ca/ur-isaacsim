@@ -38,7 +38,7 @@
 ### 전제 (스크립트의 `preflight` 가 자동 확인한다)
 | 항목 | 필요값 | 없으면 |
 |---|---|---|
-| Isaac Sim 컨테이너 | **6.0.1**, `/isaac-sim/python.sh` 존재 | 컨테이너 밖이면 즉시 중단 |
+| Isaac Sim 컨테이너 | **6.0.1**(검증), `/isaac-sim/python.sh` 존재 | 컨테이너 밖이면 즉시 중단. **6.1.0 등 다른 버전은 미검증** — `preflight` 가 경고한다. 스크립트가 쓰는 `isaacsim.core.api`·`isaacsim.core.prims`·`isaacsim.ros2.bridge` 가 마이너 릴리스에서 옮겨질 수 있으니 §5 스모크를 먼저 돌리고 결과를 `HISTORY.md` 에 적는다 |
 | ROS 2 | **Jazzy** (`/opt/ros/jazzy`) | **스크립트가 설치하지 않는다** — 베이스 이미지 선택 문제이고, 남의 머신에 ROS 배포판을 몰래 까는 건 이 워크스페이스의 격리 원칙 위반 |
 | GPU | NVIDIA + 드라이버 | sm_89/120(RTX 40/50)이면 **nvblox 소스빌드로 자동 전환** |
 | 디스크 | ≥ 30 GiB | ML venv 만 약 8 GB |
@@ -49,6 +49,15 @@
 **GPU 전달**(`--gpus all`), **워크스페이스 볼륨**(`/isaac-sim/volume` 에 마운트),
 **GUI 를 볼 거면 X 소켓**(`-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix`).
 GUI 없이 `--headless` 로만 쓸 거면 X 는 생략해도 된다.
+
+### 1-B) ROS 2 Jazzy 가 없는 이미지라면 (Isaac Sim 기본 이미지가 그렇다) — `bootstrap.sh` 의 `ros` 단계가 설치한다
+`/opt/ros/jazzy` 가 **없을 때만** 동작하고, 있으면 아무것도 하지 않는다(2026-09-16, `HISTORY.md` §47.6). 내용은 ROS 2 공식
+문서의 데비안 설치 절차(<https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html>) 그대로다:
+locale → universe → `ros2-apt-source` .deb(`ros2.sources` + 키) → `apt update` → **`ros-jazzy-desktop` + `ros-dev-tools`**
+(`colcon`·`vcstool`·`rosdep` 포함). 이 컨테이너에서 검증된 조합: Ubuntu 24.04, `ros2-apt-source` 1.2.0~noble,
+`ros-jazzy-desktop` 0.11.0, `ros-dev-tools` 1.0.1. 다른 apt 단계와 같은 안전장치를 쓴다 — 시뮬레이션에서 기존 패키지
+업그레이드가 나오면 거부하므로, **이 워크스페이스 전용으로 만든 새 컨테이너**에서 그런 경우 `ALLOW_UPGRADES=1 bootstrap.sh`
+로 받아들인다(공유 컨테이너면 받아들이지 말 것). 단독 실행: `setup/setup.sh ros`. 확인: `ls /opt/ros/jazzy/setup.bash`.
 
 ### 2) 클론
 ```bash
@@ -62,7 +71,8 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh --dry-run   # ★ 먼저 계획만 본다
 /isaac-sim/volume/ur_ws/src/setup/bootstrap.sh             # 실행
 ```
-`preflight → pin → repos → base → cumotion → sources → build → leader → ml → verify` 를 순서대로 돈다.
+`preflight → ros → pin → repos → base → cumotion → sources → build → leader → ml → verify` 를 순서대로 돈다
+(`ros` 는 `/opt/ros/jazzy` 가 없을 때만 설치, §1-B).
 (`groot` 는 기본에서 제외 — GR00T 단계에 들어갈 때 `./setup.sh groot`, §2-C-2.)
 
 | 옵션 | 용도 |
@@ -79,6 +89,7 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 설치가 끝나면 `bootstrap.sh` 가 아래 순서를 화면에 다시 찍어준다.
 ```bash
 source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0
+#   ★ 같은 호스트에 다른 ROS 2 컨테이너가 떠 있으면(ros2 node list 에 모르는 노드) 모든 터미널에서 42 등 다른 값으로 — §9
 # 터미널 1  Isaac  (디스플레이 없으면 --headless)
 /isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
     --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
@@ -660,12 +671,15 @@ ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
 `port_name:=/dev/ttyUSB0`(U2D2), 4 Mbps. udev 규칙은 `open_manipulator_bringup/open-manipulator-cdc.rules`.
 남은 캘리브레이션(손목 J4/J6 오프셋, 엔코더 영점)은 `plan_il_vla.md` §3.5 표 참조.
 
-**★ 시작 자세는 랑데부에서 맞춘다 (2026-09-10)** — 임의 자세에서 engage 하지 않는다.
-ROBOTIS OMY SRDF 의 `home`(손 떼도 서 있는 자세)이 우리 매핑을 통과하면 정확히 `ready` 가 된다:
+**★ 시작 자세는 랑데부에서 맞춘다 (2026-09-10, 자세 재정의 2026-09-16 `HISTORY.md` §47)** — 임의 자세에서
+engage 하지 않는다. ROBOTIS 브링업이 OMY 팔로워를 보내는 `ready`(= 리더가 놓이는 자세)가 우리 매핑
+(`offset=[0,−90°,0,−90°,0,0]`)을 통과하면 정확히 `ready` 가 된다:
 
 ```
-leader [0, 0, +90°, −90°, +90°, 0]  →  UR16e [0, −90°, +90°, −90°, −90°, 0] = reset_pose.py ready
+leader [0, −90°, +152°, −62°, +90°, 0]  →  UR16e [0, −180°, +152°, −152°, −90°, 0] = reset_pose.py ready
 ```
+(2026-09-16 이전의 `ready` = SRDF `home` 매핑 [0, −90°, +90°, −90°, −90°, 0] 은 `ready_v1` 로 남아 있다 —
+그 전에 모은 데이터셋의 시작 자세.)
 
 리더는 **자동으로 그 자세에 가지 않는다** — 리더 런치는 중력보상 컨트롤러만 스폰하고
 `init_position`/`arm_controller` 가 없다(그건 팔로워 런치에만 붙는다). 사람이 내려놓는다.
@@ -935,6 +949,8 @@ pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib
 |---|---|
 | `/joint_states` 가 전부 NaN | topic_based 가 0.2.1 아님 → §3 재확인 후 재빌드 |
 | `Switch controller timed out` | Isaac `/clock` 없음/느림 → Isaac 먼저 띄우거나 `use_sim_time:=false` |
+| `controller_manager` 가 `no 'ros2_control' tag found in the URDF` 로 즉사, move_group `Link 'tool0' … not known` | 같은 호스트의 **다른 컨테이너**가 도메인 0 에 `/robot_description` 을 발행(`ros2 node list` 에 모르는 노드). Isaac 부터 `export ROS_DOMAIN_ID=42` 로 기동 — 하네스는 환경의 `ROS_DOMAIN_ID` 를 따른다(§47.4) |
+| spawner `Failed to acquire lock in 20 seconds` ×5 → `No controllers are currently loaded!` | 죽은 controller_manager 의 고아 spawner 가 `~/.ros/locks/` 락 보유 → `pgrep -f controller_manager/spawner` 종료(`harness/bringup.sh` 가 자동) |
 | RViz 가 떴다 바로 꺼짐(SIGSEGV) | NaN TF 렌더링 → 위 NaN 원인 해결 / 기동 순서 |
 | Isaac 창이 검정 | `--no-env` 로 조명 없음 → 환경 포함으로 재기동 |
 | MoveIt plan `error_code -4` | move_group 이 과도기 NaN 캐싱 → move_group/RViz 재시작 |

@@ -25,12 +25,18 @@ with an offset wrist. That is the GELLO premise, so a per-joint affine map suffi
                  straight UP; the UR16e points HORIZONTALLY FORWARD. -90 deg on
                  shoulder_lift reconciles them.
 
+  offset[3] = -pi/2
+                 J4: same story as J2 -- the wrist pitch zero differs by 90 deg.
+                 Verified with FK on both URDFs (HISTORY.md 47.2): with this offset
+                 the tool direction agrees for OMY `home`, `ready` and `init`; with
+                 0 the UR tool points DOWN beside the base when the leader rests.
+
 *** AND THE LIMIT OF THIS MODEL ***
 The L100 is the leader for the OMY-F3M, NOT a scaled UR16e. Its lateral (wrist)
 offset accumulates to -46 mm where the UR16e's is +290.7 mm -- different magnitude
-AND different sign. So J4/J6 have no *derivable* offset; they are tuning knobs for
-operator comfort, which is why every sign/offset below is a ROS parameter. Retune
-them on hardware, do not hard-code new ones here.
+AND different sign. That is a POSITION mismatch (the tool sits elsewhere), not a
+pitch one, so it does not touch J2/J4. J6 (tool roll) alone has no derivable offset
+and stays a comfort knob, which is why every sign/offset below is a ROS parameter.
 This mismatch does NOT affect the IL data: what gets recorded is the UR16e's own
 state/action (plan_il_vla.md 2.6). The leader is an input device, nothing more.
 
@@ -41,13 +47,16 @@ gate (below) refuses -- correctly, but unhelpfully, because matching six joints 
 eye is not practical. The fix is NOT to chase each other's arbitrary pose but to
 meet at a defined one:
 
-    leader  [0, 0, +90, -90, +90, 0] deg   <- ROBOTIS OMY SRDF `home`; the pose the
-                                              L100 holds when you let go of it
+    leader  [0, -90, +152, -62, +90, 0] deg <- ROBOTIS bring-up `ready` for the
+                                               OMY-F3M follower (open_manipulator_bringup
+                                               config/omy_f3m_follower_ai/initial_positions.yaml);
+                                               the L100 rests in the same shape
       maps to
-    UR16e   [0, -90, +90, -90, -90, 0] deg <- reset_pose.py `ready`
+    UR16e   [0, -180, +152, -152, -90, 0] deg <- reset_pose.py `ready` (HISTORY.md 47)
 
-That is not a coincidence: both were chosen as "elbow bent 90, wrist tidy" -- ours to
-avoid the elbow/wrist singularities, ROBOTIS' so the arm stands up on its own. So the
+Until 2026-09-16 this used ROBOTIS' SRDF `home` [0,0,+90,-90,+90,0] (upper arm
+vertical), which is NOT where the leader rests -- the operator had to lift the leader
+into it and the first motion was a jump (HISTORY.md 41 was wrong about that). So the
 operator PUTS THE LEADER DOWN and calls `/omy_bridge/sync`, which drives the UR16e to
 `ready` THROUGH MOVEIT (collision-checked -- the arm may be sitting next to a fixture
 from its previous job, and reset_pose.py's straight joint interpolation is not safe
@@ -141,7 +150,7 @@ UR_LIMITS = [2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * ma
 # reset_pose.py's `ready`. Kept in step with that file ON PURPOSE: teleop must start
 # where the recorded demonstrations start, or a policy trained on them sees an
 # initial state it never saw in training (HISTORY.md 36).
-READY = [0.0, -math.pi / 2, math.pi / 2, -math.pi / 2, -math.pi / 2, 0.0]
+READY = [0.0, -math.pi, 2.6529, -2.6529, -math.pi / 2, 0.0]   # = reset_pose.py `ready` (HISTORY.md 47)
 
 # Parameters that CAN be changed at run time (only while disabled -- see _on_set_params).
 # These two exist because calibrating J4/J6 on real hardware is measure -> apply -> feel
@@ -158,7 +167,7 @@ class OmyToUr16e(Node):
 
         # --- the affine map (see module docstring before changing any of these) --
         p("sign", [1.0, 1.0, 1.0, 1.0, -1.0, 1.0])
-        p("offset", [0.0, -math.pi / 2, 0.0, 0.0, 0.0, 0.0])
+        p("offset", [0.0, -math.pi / 2, 0.0, -math.pi / 2, 0.0, 0.0])
 
         # --- safety -----------------------------------------------------------
         p("limit_margin", 0.95)        # fraction of the UR16e joint limits

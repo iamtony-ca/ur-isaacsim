@@ -98,21 +98,22 @@ def generate_launch_description():
                         "The elbow needs this: UR16e and L100 both allow +-pi, so "
                         "the leader can drive it to the limit with zero margin."),
         DeclareLaunchArgument(
-            "rendezvous", default_value="[0.0, -1.5707, 1.5707, -1.5707, -1.5707, 0.0]",
+            "rendezvous", default_value="[0.0, -3.1416, 2.6529, -2.6529, -1.5707, 0.0]",
             description="UR16e joint target for /omy_bridge/sync. Default = "
-                        "reset_pose.py `ready`, which is what the L100's own rest "
-                        "pose maps to (HISTORY.md 41). Change it only together with "
-                        "the episode reset pose -- teleop must start where the "
-                        "recorded demonstrations start."),
+                        "reset_pose.py `ready` = the OMY follower's bring-up ready pose "
+                        "mapped onto the UR16e, i.e. where the L100 rests (HISTORY.md 47). "
+                        "Change it only together with the episode reset pose -- teleop "
+                        "must start where the recorded demonstrations start."),
         # Exposed as launch args because the bridge reads its parameters ONCE, in the
         # constructor: `ros2 param set /omy_to_ur16e offset ...` returns success and
         # does nothing (HISTORY.md 42.3-C). Calibration therefore re-launches with the
         # measured values -- omy_leader_calib.py --mode match prints this exact line.
         DeclareLaunchArgument(
-            "offset", default_value="[0.0, -1.5707963267948966, 0.0, 0.0, 0.0, 0.0]",
+            "offset", default_value="[0.0, -1.5707963267948966, 0.0, -1.5707963267948966, 0.0, 0.0]",
             description="[rad] per-joint offset in q_ur[i] = sign[i]*q_leader[i] + offset[i]. "
-                        "J2 = -pi/2 reconciles the two zero poses; J4/J6 have no derivable "
-                        "value and come from omy_leader_calib.py on real hardware."),
+                        "J2 and J4 = -pi/2 reconcile the two arms' pitch zero poses "
+                        "(FK-verified, HISTORY.md 47.2); J6 has no derivable value and "
+                        "comes from omy_leader_calib.py on real hardware."),
         DeclareLaunchArgument(
             "sign", default_value="[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]",
             description="Per-joint sign. J5 = -1 because the L100 joint5 spins about "

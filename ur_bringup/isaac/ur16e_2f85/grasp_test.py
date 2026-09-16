@@ -61,7 +61,7 @@ ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
 TRAJ_ACTION = "/scaled_joint_trajectory_controller/follow_joint_trajectory"
 GRIP_ACTION = "/gripper_controller/gripper_cmd"
 
-READY = [0.0, -1.5707, 1.5707, -1.5707, -1.5707, 0.0]
+READY = [0.0, -1.5707, 1.5707, -1.5707, -1.5707, 0.0]   # = reset_pose.py `ready_v1`: this test needs a TOOL-DOWN pose (HISTORY.md 47)
 GROUP = "ur_manipulator"
 # The tool-down orientation is MEASURED from TF at the READY pose, not assumed.
 # Guessing a quaternion here is a trap: (1,0,0,0) "180 deg about X" leaves the

@@ -20,7 +20,7 @@ RADIUS="${RADIUS:-0.025}"
 SEED="${SEED:-0}"
 TAG="${TAG:-c240}"          # log-file prefix in $LOG
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 ps -eo pid,args --no-headers | grep "[u]r16e_isaac_ros2.py" \
   | awk -v me="$ME" '$1!=me{print $1}' | while read -r p; do kill "$p" 2>/dev/null; done
 sleep 10

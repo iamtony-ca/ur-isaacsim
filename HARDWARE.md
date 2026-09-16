@@ -291,6 +291,7 @@ ros2 launch ur_bringup ur16e_2f85_real.launch.py robot_ip:=<UR16e_IP>
 ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=false max_joint_speed:=0.3 pad:=true
 
 # 랑데부: 리더를 rest pose 로 내려놓고 → UR16e 를 MoveIt 으로 이동 (충돌 검사됨)
+#   UR16e 는 [0,-180,152,-152,-90,0]° (상완 뒤로 수평) — 베이스 뒤 0.55 m 비어 있어야 함 (HISTORY.md §47)
 ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger
 ros2 topic echo   /omy_bridge/status                     # sync:moving → synced
 ros2 topic echo   /omy_bridge/engage_error               # [rad] 관절별 오차, 보면서 리더를 맞춘다

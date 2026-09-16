@@ -27,6 +27,9 @@
 
 ## B. 소프트웨어 설치 (하드웨어 0개)
 
+- ☐ **ROS 2 Jazzy** — `ls /opt/ros/jazzy/setup.bash`. 없으면(Isaac Sim 기본 이미지) `bootstrap.sh` 의 `ros` 단계가
+      공식 절차로 `ros-jazzy-desktop` + `ros-dev-tools` 를 설치한다([`SETUP.md`](SETUP.md) §0-B 1-B). 있으면 건드리지 않는다.
+
 ```bash
 mkdir -p /isaac-sim/volume/ur_ws
 git clone <이 저장소> /isaac-sim/volume/ur_ws/src        # ★ repo = src/ 다
@@ -183,7 +186,9 @@ ros2 run ur_bringup omy_leader_calib.py --mode check
       관절별 표준편차 **< 0.01 rad**(`--mode check` 가 `★ 잡음 큼` 을 찍으면 배선/전원부터)
 - ☐ **② ★ 물리적 rest pose 의 실제값** — 리더를 **손 떼도 서 있는 자세**로 놓고 `--mode check`
       의 관절별 현재값을 읽어 적는다.
-      기대값 `[0°, 0°, +90°, −90°, +90°, 0°]` (ROBOTIS SRDF `home`, `omy_f3m.srdf`)
+      기대값 `[0°, −90°, +152°, −62°, +90°, 0°]` (ROBOTIS 브링업 `ready`,
+      `open_manipulator_bringup/config/omy_f3m_follower_ai/initial_positions.yaml` — 상완 뒤로 수평,
+      전완 앞·위로 접힘. SRDF `home` 이 **아니다**, `HISTORY.md` §47)
       → 이 값을 매핑에 넣으면 UR16e `ready` 가 나온다. **이게 랑데부 자세다**(E-3).
       기대값과 다르면 **읽은 값이 정본** — 그걸로 UR16e 쪽을 역산하고, 그 자세가 elbow≈0
       (특이점)이나 테이블 충돌에 걸리지 않는지 확인한다.
@@ -236,8 +241,12 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
 
 | | J1 | J2 | J3 | J4 | J5 | J6 |
 |---|---|---|---|---|---|---|
-| **OMY L100** (그냥 내려놓는 자세) | 0° | 0° | +90° | −90° | +90° | 0° |
-| **UR16e** `reset_pose.py ready` | 0° | −90° | +90° | −90° | −90° | 0° |
+| **OMY L100** (그냥 내려놓는 자세 = ROBOTIS 브링업 `ready`) | 0° | −90° | +152° | −62° | +90° | 0° |
+| **UR16e** `reset_pose.py ready` (2026-09-16, `HISTORY.md` §47) | 0° | −180° | +152° | −152° | −90° | 0° |
+
+- ☐ **★ 베이스 뒤 공간**: UR16e `ready` 는 상완이 **뒤로 수평**(팔꿈치가 베이스 뒤 0.48 m, 높이 0.18 m)이다.
+      베이스 뒤로 **0.55 m 가 어깨 높이에서 비어 있는지** 먼저 확인. 부족하면 J2 를 세우고(예 −150°) 브리지
+      `offset[1]` 도 같은 양만큼 바꾼다 — 자세와 오프셋은 항상 같이 움직인다.
 
 ```bash
 # 1) 팔 + 리더 런치는 위에서 이미 떠 있음.  pad:=true 면 게임패드로도 조작 가능
@@ -324,6 +333,8 @@ ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
 - ☐ GR00T 준비: `src/setup/setup.sh groot`(lerobot[groot] + `deps/hf_cache`) → 모델 파일 배치(다운로드 또는 복사,
   [`SETUP.md`](SETUP.md) §2-C-2) → `src/setup/check_hf_cache.sh` 가 전부 `ok`
 - ☐ 모든 ML 명령 앞에 `source src/setup/ml_env.sh`(HF 캐시 경로·오프라인·`OMP_NUM_THREADS=8`·shm 픽스)
+- ☐ 롤아웃 시작 자세: 2026-09-16 이후 수집한 데이터셋은 `START_POSE=ready`(기본값은 그 전 데이터셋용 `ready_v1`,
+      [`HISTORY.md`](HISTORY.md) §47.5). 정책은 시연이 시작한 자세에서만 동작한다.
 - ☐ 수집→변환→학습→롤아웃 **자동화 스크립트는 `src/ur_bringup/scripts/harness/`**(README 에 목록·인터프리터·로그 위치).
   로그는 `outputs/harness_logs/`(`HARNESS_LOG=` 로 변경), 워크스페이스 경로는 위치에서 자동 유추(`UR_WS=` 로 덮어쓰기)
 - ☐ 학습 (GR00T N1.7): [`PIPELINE.md`](PIPELINE.md) §3-B 의 명령 **그대로** — `base_model_path` 는 로컬 경로,
@@ -345,3 +356,5 @@ ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
 | 리더가 느리다 | udev 규칙 미적용 | `latency_timer` 가 1 인지 |
 | MoveIt 이 매번 SUCCESS 인데 안 움직인다 | cuMotion 런치에 `ur_only:=false` 누락 | 모르는 링크 제약을 "이미 만족"으로 처리한다 |
 | apt 가 ROS 패키지를 덮어썼다 | `pin` 을 `repos` 뒤에 했다 | `/etc/apt/preferences.d/99-nvidia-isolate.pref` |
+| `controller_manager` 가 `no 'ros2_control' tag found in the URDF` 로 죽는다 / move_group 이 `Link 'tool0' … not known` | **같은 호스트의 다른 컨테이너**가 도메인 0 에서 `/robot_description` 을 발행(예: gz sim 이동로봇) | `ros2 node list` 에 모르는 노드가 있으면 이것. Isaac 부터 `export ROS_DOMAIN_ID=42` 로 띄운다(하네스는 환경값을 따름, [`HISTORY.md`](HISTORY.md) §47.4) |
+| spawner 가 전부 `Failed to acquire lock in 20 seconds` ×5 로 죽고 `No controllers are currently loaded!` | 죽은 controller_manager 의 **고아 spawner** 가 `~/.ros/locks/` 파일 락을 쥠 | `pgrep -f controller_manager/spawner` 로 찾아 종료. `harness/bringup.sh` 는 자동 정리 |

@@ -24,15 +24,17 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$HERE/lib.sh"
+ROS_STAGED=0
 
 # Every valid stage name...
-STAGES=(preflight pin repos base cumotion sources build leader ml groot verify udev)
+STAGES=(preflight ros pin repos base cumotion sources build leader ml groot verify udev)
 # ...and what a bare `./setup.sh` runs. `udev` is EXCLUDED on purpose: it is the
 # only stage that writes outside the workspace (/etc/udev) and it is meaningless
 # without a U2D2 attached. Ask for it explicitly on the real machine.
-DEFAULT_STAGES=(preflight pin repos base cumotion sources build leader ml verify)
+DEFAULT_STAGES=(preflight ros pin repos base cumotion sources build leader ml verify)
 declare -A STAGE_DESC=(
   [preflight]="check the machine can host this workspace at all (read-only)"
+  [ros]="ROS 2 $ROS_DISTRO desktop + ros-dev-tools from packages.ros.org, ONLY if /opt/ros/$ROS_DISTRO is missing"
   [pin]="apt pin so NVIDIA repos cannot shadow ROS/Ubuntu packages (do this FIRST)"
   [repos]="add Isaac ROS / CUDA / VPI apt repos + keys"
   [base]="core ROS packages (UR, MoveIt, ros2_control, robotiq_description, teleop)"
@@ -55,22 +57,32 @@ stage_preflight() {
   step "preflight — can this machine host the workspace? (read-only)"
   local fail=0
 
-  # Isaac Sim. We target 6.0.1; 5.x needs no code change but was never re-verified.
+  # Isaac Sim. Verified on 6.0.1 only (5.1.0 -> 6.0.1 needed no code change). Any
+  # other version -- 6.1.0 included -- is unverified: the sim script imports
+  # isaacsim.core.api / isaacsim.core.prims / isaacsim.ros2.bridge, and those are
+  # where minor releases move things. Say so loudly instead of silently passing 6.x.
   if [ -x /isaac-sim/python.sh ]; then
     local iv; iv="$(cat /isaac-sim/VERSION 2>/dev/null | cut -d+ -f1)"
     ok "Isaac Sim present (${iv:-version unknown})"
-    case "$iv" in 6.*) : ;; "") warn "cannot read /isaac-sim/VERSION" ;;
-      *) warn "Isaac $iv — this workspace is verified on 6.0.1" ;; esac
+    case "$iv" in
+      6.0.1*) ok "Isaac $iv = the verified version" ;;
+      "") warn "cannot read /isaac-sim/VERSION" ;;
+      *) warn "Isaac $iv is NOT the verified 6.0.1. Expect possible API drift in ur_bringup/isaac/common/ur16e_isaac_ros2.py"
+         warn "(isaacsim.core.*, isaacsim.ros2.bridge). Run SETUP.md 5 'smoke' first and record the result in HISTORY.md." ;;
+    esac
   else
     err "/isaac-sim/python.sh missing. Run inside the Isaac Sim container."; fail=1
   fi
 
-  # ROS. We do NOT install ROS here: it is a base-image concern, and silently
-  # installing a desktop distro on someone's machine is exactly the kind of
-  # side effect this workspace forbids.
+  # ROS. The `ros` stage installs it from packages.ros.org when it is missing
+  # (2026-09-16, HISTORY.md 47.6 -- the Isaac Sim base image ships no ROS). It is a
+  # system-wide install, so it happens only on a machine where /opt/ros/$ROS_DISTRO
+  # does not exist yet; it never touches an existing ROS.
   if [ -d "/opt/ros/$ROS_DISTRO" ]; then ok "ROS 2 $ROS_DISTRO present"
+  elif [ "$ROS_STAGED" = 1 ]; then
+    warn "/opt/ros/$ROS_DISTRO missing -- the 'ros' stage will install ros-$ROS_DISTRO-desktop + ros-dev-tools"
   else
-    err "/opt/ros/$ROS_DISTRO missing. Use an image with ROS 2 $ROS_DISTRO, or install it first."
+    err "/opt/ros/$ROS_DISTRO missing. Run the 'ros' stage (setup.sh ros) or use an image with ROS 2 $ROS_DISTRO."
     fail=1
   fi
 
@@ -105,6 +117,55 @@ stage_preflight() {
 # not exist, and set -e turns that into "the whole plan stops here" -- which defeats the
 # point of a dry run.
 PIN_STAGED=0
+
+# ---------------------------------------------------------------------------
+# ros — ROS 2 <distro> itself. The official "Ubuntu (deb packages)" procedure from
+# docs.ros.org, in code, gated on /opt/ros/<distro> being ABSENT:
+#   locale -> universe -> ros2-apt-source .deb (adds ros2.sources + keyring)
+#   -> apt update -> ros-<distro>-desktop + ros-dev-tools (colcon, vcstool, rosdep)
+# Verified combination on this machine: Ubuntu 24.04, ros2-apt-source 1.2.0~noble,
+# ros-jazzy-desktop 0.11.0, ros-dev-tools 1.0.1. Runs BEFORE `pin`/`repos`: the NVIDIA
+# pin only stops NVIDIA repos from shadowing ROS packages; it does not create the
+# ROS repo. On a fresh Ubuntu image the desktop metapackage may want to upgrade a
+# few base libs; the usual guard applies (ALLOW_UPGRADES=1 to accept -- fine on a
+# container created for this workspace, not on a shared one).
+# ---------------------------------------------------------------------------
+stage_ros() {
+  step "ros — ROS 2 $ROS_DISTRO from packages.ros.org (only when missing)"
+  if [ -d "/opt/ros/$ROS_DISTRO" ]; then ok "ROS 2 $ROS_DISTRO already at /opt/ros/$ROS_DISTRO — nothing to do"; return 0; fi
+  local codename; codename="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+  case "$ROS_DISTRO:$codename" in
+    jazzy:noble) ok "Ubuntu $codename matches ROS 2 $ROS_DISTRO" ;;
+    *) err "this stage knows ROS 2 jazzy on Ubuntu noble (24.04) only; got ROS_DISTRO=$ROS_DISTRO on '$codename'"; return 1 ;;
+  esac
+  need_cmd curl || return 1
+  apt_guarded_install locales curl software-properties-common || return 1
+  if locale -a 2>/dev/null | grep -qi "en_US.utf8"; then ok "locale en_US.UTF-8 present"
+  else run "sudo locale-gen en_US en_US.UTF-8 && sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8"; fi
+  if apt-cache policy 2>/dev/null | grep -q "noble/universe"; then ok "universe component enabled"
+  else run "sudo add-apt-repository -y universe"; fi
+  if [ -f /etc/apt/sources.list.d/ros2.sources ] || apt_installed ros2-apt-source; then
+    ok "ros2-apt-source already installed"
+  elif [ "$DRY_RUN" = 1 ]; then
+    echo "  [dry-run] would download ros2-apt-source_<latest>.${codename}_all.deb from"
+    echo "            github.com/ros-infrastructure/ros-apt-source and dpkg -i it (adds ros2.sources + keyring)"
+  else
+    local ver deb
+    ver="$(curl -fsSL https://api.github.com/repos/ros-infrastructure/ros-apt-source/releases/latest | grep -F '"tag_name"' | awk -F'"' '{print $4}')"
+    [ -n "$ver" ] || { err "could not resolve the latest ros-apt-source release (network? GitHub API?)"; return 1; }
+    deb="/tmp/ros2-apt-source_${ver}.${codename}_all.deb"
+    curl -fL -o "$deb" "https://github.com/ros-infrastructure/ros-apt-source/releases/download/${ver}/ros2-apt-source_${ver}.${codename}_all.deb" || { err "download failed: $deb"; return 1; }
+    sudo dpkg -i "$deb" && ok "ros2-apt-source $ver installed (ros2.sources + keyring)"
+  fi
+  if [ "$DRY_RUN" = 1 ]; then
+    echo "  [dry-run] would: sudo apt-get update && install ros-$ROS_DISTRO-desktop ros-dev-tools (guarded)"
+    return 0
+  fi
+  run "sudo apt-get update -qq"
+  apt_guarded_install "ros-$ROS_DISTRO-desktop" ros-dev-tools || return 1
+  [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ] && ok "ROS 2 $ROS_DISTRO installed: /opt/ros/$ROS_DISTRO/setup.bash" \
+    || { err "/opt/ros/$ROS_DISTRO/setup.bash still missing after install"; return 1; }
+}
 
 stage_pin() {
   step "pin — isolate NVIDIA repos (Pin-Priority 100)"
@@ -559,6 +620,8 @@ main() {
     shift
   done
   [ ${#want[@]} -eq 0 ] && want=("${DEFAULT_STAGES[@]}")
+  # preflight downgrades "ROS missing" to a warning when the ros stage is in the plan.
+  ROS_STAGED=0; [[ " ${want[*]} " == *" ros "* ]] && ROS_STAGED=1
 
   echo "${C_H}UR16e workspace setup${C_0}"
   echo "  WS=$WS  ROS_DISTRO=$ROS_DISTRO  DRY_RUN=$DRY_RUN  ALLOW_UPGRADES=$ALLOW_UPGRADES"

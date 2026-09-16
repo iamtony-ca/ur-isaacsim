@@ -18,9 +18,10 @@
 #
 # ASSUMPTIONS (checked by the preflight stage, which runs first and is read-only):
 #   * NVIDIA Isaac Sim container, Isaac 6.0.1, /isaac-sim/python.sh present
-#   * ROS 2 Jazzy already in the image at /opt/ros/jazzy -- NOT installed here.
-#     Installing a ROS distro is a base-image decision, and quietly doing it to
-#     someone's machine is the exact class of side effect this workspace forbids.
+#   * ROS 2 Jazzy: if /opt/ros/jazzy is missing (the Isaac Sim base image has no
+#     ROS), the `ros` stage installs ros-jazzy-desktop + ros-dev-tools from
+#     packages.ros.org by the official deb procedure. It never touches an existing
+#     ROS. (Changed 2026-09-16, HISTORY.md 47.6 -- was "bring your own image".)
 #   * NVIDIA GPU + driver. sm_89/sm_120 (RTX 40/50) triggers an nvblox SOURCE
 #     build automatically -- the apt binary is sm_75-only and aborts otherwise.
 #   * >= 30 GiB free, and sudo for apt.
@@ -56,7 +57,7 @@ echo "=============================================================="
 # higher-versioned copies of ROS packages (robotiq_description 0.0.1 -> 9.0.1),
 # so if they are added before the pin exists, the very next apt upgrade
 # silently replaces workspace-critical packages.
-STAGES="preflight pin repos base cumotion sources build leader"
+STAGES="preflight ros pin repos base cumotion sources build leader"
 [ "$NO_ML" = 1 ] || STAGES="$STAGES ml"
 [ "$WITH_UDEV" = 1 ] && STAGES="$STAGES udev"
 STAGES="$STAGES verify"

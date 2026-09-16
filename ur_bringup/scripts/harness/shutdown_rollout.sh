@@ -24,6 +24,6 @@ for p in $(pgrep -f "lerobot.async_inference"); do [ "$p" != "$ME" ] && kill -9 
 echo "=== remaining (should be empty) ==="
 ps -eo pid,args --no-headers | grep -E "[a]sync_inference|[u]r16e_isaac_ros2|[r]os2 launch ur_bringup|[r]os2_control_node|[m]ove_group|[r]obot_state_publisher|[c]omponent_container|[r]viz2" | cut -c1-90
 echo "=== GPU / shm ==="; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader; df -h /dev/shm | tail -1 | awk '{print "shm", $3"/"$2}'
-set +u; source /opt/ros/jazzy/setup.bash 2>/dev/null; set -u; export ROS_DOMAIN_ID=0
+set +u; source /opt/ros/jazzy/setup.bash 2>/dev/null; set -u; export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 timeout 15 ros2 daemon stop >/dev/null 2>&1; for p in $(pgrep -f "ros2cli.daemon"); do kill "$p" 2>/dev/null; done
 echo "=== ros2 nodes (after daemon stop) ==="; timeout 15 ros2 node list 2>/dev/null | head -5; echo "(empty = clean)"

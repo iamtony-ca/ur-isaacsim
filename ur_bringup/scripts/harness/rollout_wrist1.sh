@@ -15,8 +15,12 @@ N=${1:-6}
 RUN_S=${2:-90}
 CKPT="${3:-$WS/outputs/act_red_left_v5/checkpoints/last/pretrained_model}"
 ME=$$
+# Every trial starts where the demonstrations started. Datasets/checkpoints from
+# before 2026-09-16 start at the old pose (HISTORY.md 47): default ready_v1;
+# START_POSE=ready for anything collected with the new READY.
+START_POSE="${START_POSE:-ready_v1}"
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 cd "$WS"
 [ -d "$CKPT" ] || { echo "FAIL: no checkpoint at $CKPT"; exit 1; }
 echo "== $N rollouts x ${RUN_S}s  ckpt=$CKPT"
@@ -42,7 +46,7 @@ for i in $(seq 1 "$N"); do
   # right initial state.
   parked=0
   for a in 1 2 3; do
-    r=$(python3 "$WS/src/ur_bringup/isaac/common/reset_pose.py" ready 2>&1 | tail -1)
+    r=$(python3 "$WS/src/ur_bringup/isaac/common/reset_pose.py" "$START_POSE" 2>&1 | tail -1)
     case "$r" in *"error_code: 0"*) parked=1; break;; esac
     echo "     reset_pose attempt $a: $r"
     sleep 2

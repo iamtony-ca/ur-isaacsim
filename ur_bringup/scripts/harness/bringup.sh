@@ -20,11 +20,14 @@ set +u
 source /opt/ros/jazzy/setup.bash
 source "$WS/install/setup.bash"
 set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 
+# controller_manager/spawner is in the list on purpose: a spawner orphaned by a dead
+# controller_manager keeps ~/.ros/locks/ros2-control-controller-spawner.lock and every
+# later spawner then dies with "Failed to acquire lock" (HISTORY.md 47).
 echo "== stopping control stack + MoveIt (Isaac untouched)"
 ps -eo pid,args --no-headers \
-  | grep -E "ros2_control_node|robot_state_publisher|moveit_ros_move_group/move_group|lib/rviz2/rviz2|rclcpp_components/component_container" \
+  | grep -E "ros2_control_node|robot_state_publisher|moveit_ros_move_group/move_group|lib/rviz2/rviz2|rclcpp_components/component_container|controller_manager/spawner" \
   | grep -v grep | awk '{print $1}' \
   | while read -r p; do kill "$p" 2>/dev/null && echo "   TERM $p"; done
 sleep 6

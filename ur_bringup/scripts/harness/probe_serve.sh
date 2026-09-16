@@ -15,7 +15,7 @@ CKPT="${1:-$WS/outputs/groot_abs_probe/checkpoints/last/pretrained_model}"
 RUN_S="${2:-40}"
 ME=$$
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 cd "$WS"
 source "$WS/src/setup/ml_env.sh"
 

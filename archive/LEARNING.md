@@ -7,7 +7,7 @@
 > | 부분 | 상태 |
 > |---|---|
 > | **RL (insertion)** — §3-A, §4, §6, §7, §8~§10 | ✅ **유효.** 이 워크스페이스에서 추후 진행 가능 |
-> | **IL (pick&place)** — 구 §5, §1 의 IL 경로, Mimic → robomimic BC | ❌ **제거됨** → [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md) 가 정본 |
+> | **IL (pick&place)** — 구 §5, §1 의 IL 경로, Mimic → robomimic BC | ❌ **제거됨** → [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md) 가 정본 |
 > | **§2 컨트롤러 인터페이스 불일치** | ➡️ `plan_il_vla.md` §2.3 으로 **이관**(IL·RL 공통이라 거기서 관리) |
 > | **§3-A `oht_bolting`** | ⚠️ **다른 워크스페이스**(`/isaac-sim/standalone_examples_my/oht_bolting/`) 자산. 이 ws 범위 밖 — **패턴 참고용으로만** |
 >
@@ -23,8 +23,8 @@
 
 > 이 문서는 **설계/계획**이다(코드 아직 없음). UR16e 워크스페이스(`src/`, ROS2 Jazzy 제어 스택)에
 > RL 을 **Isaac Lab** 으로 얹는 방향을 정리한다.
-> 구성/실행 현황은 [`README.md`](README.md), 실물 절차는 [`HARDWARE.md`](HARDWARE.md), 이력은 [`HISTORY.md`](HISTORY.md).
-> IL/VLA 는 [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md), 작업레이어는 [`to_do.md`](to_do.md).
+> 구성/실행 현황은 [`README.md`](README.md), 실물 절차는 [`HARDWARE.md`](../HARDWARE.md), 이력은 [`HISTORY.md`](../HISTORY.md).
+> IL/VLA 는 [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md), 작업레이어는 [`to_do.md`](to_do.md).
 >
 > 조사 근거(파일 경로/클래스명)는 본문에 인라인으로 박아 두었다. Isaac Sim 6.0.1, GPU = RTX 5090(32GB).
 > (~~Isaac Lab 위치 = `/isaac-sim/IsaacLab` v2.3.2~~ — **2026-09-06 실측: 미설치.** 상단 **착수 전 관문** 참조.)
@@ -56,7 +56,7 @@ IL 과 달리 RL 은 병렬 env 처리량이 본질이라 Isaac Lab 을 건너�
 
 로봇: **UR16e + Robotiq 2F-85**(우리 베이크 USD), 카메라 D405(eye-in-hand) + 정적 카메라.
 
-> IL(pick&place)은 이 문서 범위 밖 → [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md).
+> IL(pick&place)은 이 문서 범위 밖 → [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md).
 
 ---
 
@@ -88,7 +88,7 @@ IL 과 달리 RL 은 병렬 env 처리량이 본질이라 Isaac Lab 을 건너�
 ## 2. 컨트롤러 인터페이스 불일치 → **`plan_il_vla.md` §2.3 으로 이관됨**
 
 > **이 절의 내용은 IL·RL 공통이라 한 곳에서 관리한다.
-> 정본: [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md) §2.3.**
+> 정본: [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md) §2.3.**
 
 요지만 남긴다 — 정책은 **매 스텝 액션**(관절 위치 델타, ~30–60Hz)을 내는데 현행 실행 컨트롤러는
 `scaled_joint_trajectory_controller`(궤적 기반)라 그대로 흘리면 jerky/overshoot 가 난다.
@@ -214,7 +214,7 @@ USD 를 직접 열어 감사한 결과(전체는 `plan_il_vla.md` §5):
 
 ## 5. ~~IL 파이프라인~~ → **이 문서에서 제거됨**
 
-> **IL(pick&place) 정본은 [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md) 다.**
+> **IL(pick&place) 정본은 [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md) 다.**
 > (섹션 번호를 유지하려고 자리만 남긴다.)
 
 원래 여기 있던 계획 — *Isaac Lab `stack/config/ur10_gripper` 기반 env → `record_demos.py` teleop 수집

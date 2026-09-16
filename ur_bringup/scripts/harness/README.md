@@ -27,7 +27,8 @@
 | 롤아웃 (Isaac 재기동 + `bringup.sh` + `policy_inference.launch.py` + N회 채점) | `rollout_gui_then_n.sh [N] [초] [ckpt]` → `rollout_n.sh` | `rollout_gui_then_n_w1.sh [N] [초] [ckpt]` → `rollout_wrist1.sh` |
 | 전체 | `pipeline_100.sh` | `pipeline_wrist1.sh` |
 
-채점 `judge_rollout.py`(GT 로 물체–마커 거리 + 그리퍼 개방). 3태스크 씬 수집은 `collect240.sh [N]`/`convert240.sh`
+채점 `judge_rollout.py`(GT 로 물체–마커 거리 + 그리퍼 개방). **시작 자세 `START_POSE`**(기본 `ready_v1` = 2026-09-16
+이전 데이터셋의 자세; 그 뒤 수집한 데이터셋은 `START_POSE=ready`, `groot_pipeline.sh` 는 자동. `HISTORY.md` §47). 3태스크 씬 수집은 `collect240.sh [N]`/`convert240.sh`
 (환경변수 `RAW OUT REPO RADIUS SEED TAG` 로 재사용 — 기본값은 `240_v2` 재현).
 
 ## GR00T N1.7

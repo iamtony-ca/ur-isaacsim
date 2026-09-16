@@ -91,6 +91,7 @@ grep -aE "^== (rc|peak)" "$LOG/train_$V.log"
 [ -f "$CK/config.json" ] || { echo "FAIL: no final checkpoint (rc=$trc)"; tr '\r' '\n' < "$LOG/train_$V.log" | grep -aE "Error|Traceback" | tail -5; exit 1; }
 echo "   checkpoints: $(ls "$OUT/checkpoints")"
 
+export START_POSE=ready   # this pipeline collects with the current READY (HISTORY.md 47)
 stamp "[4/6] rollout A: radius 0.06, seed 171, 10/task"
 RADIUS=0.06 SEED=171 TAG=gr8v3a ROLL_TAG=grv3a bash "$S/groot_v8.sh" 10 90 "$CK" > "$LOG/rollout_${V}_a.log" 2>&1
 grep -aE "^     |^   |^== (per-task|total)" "$LOG/rollout_${V}_a.log" | grep -vE "stack ready|forward_position|attempt"

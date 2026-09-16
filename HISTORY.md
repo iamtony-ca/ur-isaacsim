@@ -3111,6 +3111,11 @@ timm 1.0.29 · decord 0.6.0 · dm-tree 0.1.10.
 
 ## 41. 텔레옵 랑데부 자세 — ROBOTIS `home` 이 우리 `ready` 로 매핑된다 — 2026-09-10
 
+> **★ 정정 (2026-09-16, §47)**: 이 절의 전제 — SRDF `home` [0,0,+90,−90,+90,0]° 이 "리더를 그냥 내려놓는 자세" —
+> 는 틀렸다. ROBOTIS 브링업은 팔로워를 `initial_positions.yaml` 의 `ready` [0,−90,+152,−62,+90,0]° 로 보내고,
+> 리더도 그 형태로 놓인다. 따라서 "UR16e 쪽 초기 자세를 새로 정의할 필요가 없다"는 결론도 틀렸다.
+> `ready` 는 [0,−180,+152,−152,−90,0]° 로 재정의됐고(J4 오프셋 −90° 포함), 이 절의 자세는 `ready_v1` 이다.
+
 "UR16e 가 다른 일을 하다가 텔레옵을 시작하면 리더와 시작 자세가 크게 다를 텐데 어떻게 되는가"
 라는 사용자 질문에서 출발. 현재 동작은 `/omy_bridge/enable` 이 **거부**하고 어느 관절이 몇 도
 틀렸는지 알려주는 것뿐이며, 조작자가 리더를 손으로 맞추는 경로 하나만 있다.
@@ -3893,3 +3898,110 @@ V7 지연 중앙값 **160 ms**(4스텝 80 ms — 디노이징 4배인데 전체�
 **결론**: 디노이징 스텝은 정지의 원인이 아니다(늘려도 안 풀리고 오히려 -5). 정지는 샘플링 노이즈 수준의 무작위성으로 시행마다
 켜지고 꺼지는, 정책이 사전파지 관측에서 출력하는 분포 자체의 문제다. §46.6 의 1(정지 관측을 서버에 넣어 청크 = 현재 상태인지
 확정)이 남은 갈림길이고, 그 다음이 상대 액션 청크 후처리 구현이다. 변형 디렉터리는 §46.6-3 의 증거로 남긴다(링크뿐).
+
+## 47. UR16e `ready` 재정의 초안 — OMY 팔로워의 실제 초기 자세를 매핑으로 옮긴다 (2026-09-16, GUI 검토 전)
+
+요청: *"ur16e 의 초기 pose(ready)를 재정의하고 가자 … 실물에서 보니 OMY manipulator 의 초기 포즈는 OMY-L100 의 초기 포즈와
+유사해서 처음 움직일 때 연속성이 좋고 직관적인데, 우리 UR16e 초기 포즈는 아예 다르다."* 초안을 만들고 GUI 로 함께 검토하기로.
+
+### 47.1 왜 달랐나 — §41 의 전제가 틀렸다
+
+§41 은 ROBOTIS **SRDF `home`**([0,0,+90,−90,+90,0]°, 상완 수직·전완 전방)이 리더의 휴식 자세라고 보고, 그 매핑값이 우리
+`ready` 라서 "새 초기 자세가 필요 없다"고 결론냈다. 그러나 ROBOTIS 의 **실제 브링업**(`open_manipulator_bringup/config/
+omy_f3m_follower_ai/initial_positions.yaml`, `joint_trajectory_executor`)은 팔로워를 `home`(전부 0) → **`ready`
+= [0, −90, +152, −62, +90, 0]°** 로 보낸다(리더 쪽 `omy_l100_leader_ai` 에는 초기 이동이 없다 — 사람이 놓는 자세).
+FK(`omy_f3m.urdf`)로 보면 이 `ready` 는 **상완이 뒤로 수평, 전완이 앞·위로 접히고, 툴이 베이스 위 z 0.39 에서 전방을
+향하는** 웅크린 자세다. SRDF `home` 과는 상완 방향부터 다르다. 사용자가 본 "OMY 팔로워 초기 = L100 초기" 는 이 yaml
+`ready` 이고, 우리 `ready` 는 그것의 매핑이 아니었다.
+
+### 47.2 ★ J4 오프셋은 유도된다 — −90°
+
+브리지(`omy_to_ur16e.py`) 주석은 "J4/J6 오프셋은 유도 불가, 튜닝 손잡이" 라 했는데 J4 는 **유도된다**. J2 처럼 두 팔의
+피치 영점이 90° 다르다. `offset=[0,−90,0,−90,0,0]`, `sign=[1,1,1,1,−1,1]` 로 OMY 세 자세를 넣고 UR16e FK
+(`cumotion/ur16e_2f85.urdf`)와 툴 방향(손목→툴)을 비교하면:
+
+| OMY 자세 | OMY 툴 방향 | UR16e 매핑 | UR16e 툴 방향 |
+|---|---|---|---|
+| SRDF `home` [0,0,90,−90,90,0] | +X | [0,−90,90,−180,−90,0] | +X |
+| bring-up `ready` [0,−90,152,−62,90,0] | +X | **[0,−180,152,−152,−90,0]** | +X |
+| `init` [0,0,0,0,0,0] | −Y(측방) | [0,−90,0,−90,0,0] | +Y(측방, 손목 측방 오프셋 부호 차 §21) |
+
+오프셋 0 이면 같은 자세에서 UR 툴이 **아래**(−Z)를 향해 베이스 옆 z 0.22 를 가리킨다 — 리더 휴식 자세에서 팔로워 그리퍼가
+베이스에 처박히는 랑데부다. 브리지 주석의 "측방 오프셋 −46 vs +290 mm" 는 **위치** 차이고 피치 **방향**과는 무관하다.
+
+### 47.3 초안 — `ready_omy` = [0, −180, +152, −152, −90, 0]°
+
+`reset_pose.py` 에 **`ready_omy`** 로 추가(기본 `ready` 는 아직 그대로 — GUI 검토 후 교체). Isaac(headless) + 스택에서:
+- MoveIt `/check_state_validity`: 구 `ready`·`ready_omy`·OMY-init 매핑 **셋 다 valid**(자기충돌·테이블 없음).
+- 궤적 컨트롤러로 이동 `error_code 0`, 정적/손목 카메라 캡처(`ready_pose_draft.png`): 팔꿈치(z 0.18)가 베이스 뒤 0.48 m,
+  손목 (−0.16, 0.35), 툴 (−0.03, 0.47) 전방 수평. **손목 카메라가 테이블·마커·블록을 정면에 담는다**(구 `ready` 는 바로
+  아래 바닥). OMY 의 툴 (0.19, 0.39)과 같은 형태이고 0.2 m 뒤로 밀린 것은 UR16e 상완/전완 비(478/360)가 OMY(247/220)보다
+  커서다.
+- **실물 조건**: 베이스 뒤로 상완 길이 **≈0.55 m 이 어깨 높이(0.18 m)에서 비어 있어야** 한다. 테이블 가장자리 설치면 확인 필요.
+- 바꾸면 따라 바뀌는 것: 브리지 `offset[3]=−π/2`·`rendezvous` 기본값(`omy_to_ur16e.py`·`teleop_omy.launch.py`),
+  CHECKLIST E-1②/E-3 표(리더 휴식 = yaml `ready`), HARDWARE·PIPELINE·README 의 `ready` 설명, §41 정정. **기존 데이터셋
+  (`red_left_100`·`wrist_only`·`3task_v3`)과 체크포인트는 구 `ready` 에서 시작**하므로 그 롤아웃은 구 자세를 써야 한다 —
+  교체 시 구 자세를 `ready_v1` 로 남기고 하네스 시작 자세를 변수로 뺀다.
+
+### 47.4 ★ 함정 2개 — 공유 머신 (이번 검증 중 발견, 하네스 수정 완료)
+
+1. **다른 컨테이너의 ROS 2 가 같은 도메인 0 에 있다.** 사용자가 다른 컨테이너에서 `ros2 gz sim` 기반 이동로봇(nav2, `/gz_bridge`,
+   `<robot name="mobile_robot">`)을 테스트 중 → 우리 `controller_manager`/`move_group` 이 **그쪽 `/robot_description`** 을
+   받아 `no 'ros2_control' tag found in the URDF` / `Link 'tool0' … not known` 으로 죽는다. 우리 프로세스 목록에는 아무것도
+   없어서(호스트 네트워크 DDS) `ps` 로는 안 보인다 — `ros2 node list` 에 모르는 노드가 있으면 이거다. 처방: **우리 스택을
+   다른 도메인으로**(`export ROS_DOMAIN_ID=42` 뒤 Isaac 부터 기동). 하네스 14개의 `export ROS_DOMAIN_ID=0` 을
+   `"${ROS_DOMAIN_ID:-0}"` 로 바꿔 환경을 물려받게 했다(기본은 여전히 0). 다른 프로젝트는 건드리지 않는다.
+2. **고아 spawner 가 파일 락을 쥔다.** `controller_manager` 가 죽으면 그 spawner 들이 `~/.ros/locks/
+   ros2-control-controller-spawner.lock` 을 잡은 채 남고, 이후 모든 spawner 가 `Failed to acquire lock in 20 seconds` ×5 로
+   죽는다(`No controllers are currently loaded!`). `bringup.sh` 의 정리 패턴에 `controller_manager/spawner` 추가.
+   부수 함정: bringup 의 "RSP 가 정확히 1개" 검사는 `ps` 문자열 매칭이라 **호출 쉘의 명령줄에 그 문자열이 있으면 오검출**된다
+   (heredoc 안의 패턴 텍스트 때문에 "3 robot_state_publishers" 로 실패) — 긴 명령은 파일로 저장해 실행할 것.
+
+### 47.5 확정 — `ready` 교체, 브리지 오프셋·랑데부·하네스 동기화, sim 3종 검증 (2026-09-16)
+
+사용자가 Isaac GUI 로 보고 확정(*"육안으로 보았을 때는 초기 포즈가 좋아 보여. 이대로 하자."*). 바뀐 것:
+
+| 파일 | 변경 |
+|---|---|
+| `isaac/common/reset_pose.py` | `ready` = [0,−180,152,−152,−90,0]°, 구 자세는 **`ready_v1`**(초안명 `ready_omy` 삭제) |
+| `scripts/pick_place_demo.py` | `READY` 동일값 — 수집 에피소드 시작 = 텔레옵 랑데부 |
+| `scripts/omy_to_ur16e.py`·`launch/common/teleop_omy.launch.py`·`scripts/virtual_omy_leader.py` | `offset=[0,−90°,0,−90°,0,0]`, `rendezvous` 기본 = 새 `ready`, 주석의 "J4 유도 불가" 정정 |
+| `scripts/omy_leader_calib.py` | 주석 정정(J6 만 손잡이) |
+| `isaac/ur16e_2f85/grasp_test.py` | 값 유지(툴 하향 자세가 필요한 테스트) — `ready_v1` 이라고 표기 |
+| `harness/rollout_n.sh`·`rollout_wrist1.sh`·`groot_rollout.sh` | 시작 자세 `START_POSE`(기본 `ready_v1`); `groot_pipeline.sh` 는 `ready` 고정 |
+| 문서 | CHECKLIST E-1②/E-3(기대값·표·**베이스 뒤 공간** 항목), SETUP·plan_il_vla·README·HARDWARE·harness README·CLAUDE.md, §41 정정 박스 |
+
+**sim 검증(Isaac GUI, 도메인 42)** — 셋 다 통과:
+1. `reset_pose.py ready` → error_code 0.
+2. 브리지: `teleop_omy.launch.py virtual_leader:=true leader_amplitude:=0` 기동 로그가 **"put the LEADER at
+   [0,−90,152,−62,90,0] deg"** 를 역산해 찍음(= OMY 브링업 `ready` 그대로) → `/omy_bridge/sync` → `synced` →
+   `enable` → **`engaged`**. 새 오프셋으로 랑데부가 맞아떨어진다.
+3. `pick_place_demo.launch.py cycles:=1` (red→left): READY(start) ok → **1/1 cycles succeeded** → READY(next cycle) ok.
+   cuMotion 이 접힌 자세에서 사전파지까지 계획·실행한다.
+
+**남은 것(실물에서)**: E-1② 실측(리더가 실제로 놓이는 값이 yaml `ready` 와 같은지), 베이스 뒤 0.55 m 확인, J6 오프셋
+캘리브(`omy_leader_calib.py`). 기존 sim 데이터셋 3개는 `ready_v1` 시작이므로 롤아웃 시 `START_POSE=ready_v1`(기본값).
+
+### 47.6 셋업 재점검 — `ros` 단계 추가(ROS 2 자체 설치), 문서 누락 3건 (2026-09-16)
+
+요청: *"다른 PC 에서 셋업을 다시 해야 될 텐데, 셋업 가이드와 스크립트를 정확히 확인해줄래?"* → 이 PC 에서 `setup.sh --dry-run`
+(기본 10단계) rc 0, `check_env.sh` rc 0, 하네스·setup 스크립트 문법, 파이썬 컴파일, 마크다운 링크(깨짐 0) 확인.
+
+**빠져 있던 것 — ROS 2 Jazzy 자체.** 가이드는 "스크립트가 ROS 를 깔지 않는다, 이미지 문제" 라고만 했는데 Isaac Sim 기본
+이미지에는 ROS 가 없어 새 컨테이너에서 `preflight` 가 즉시 실패한다. 사용자 결정(*"ros2 도 한번에 설치하는 것까지 하자"*)에
+따라 `setup.sh` 에 **`ros` 단계**를 추가했다: `/opt/ros/jazzy` 가 **없을 때만** 공식 데비안 절차(locale → universe →
+`ros2-apt-source` .deb → `ros-jazzy-desktop` + `ros-dev-tools`)를 `apt_guarded_install` 안전장치로 실행. 이 컨테이너의 설치
+상태(`ros2-apt-source` 1.2.0~noble, `ros-jazzy-desktop` 0.11.0, `ros-dev-tools` 1.0.1)가 기준. `bootstrap.sh` 기본 순서는
+`preflight → ros → pin → …`, `preflight` 는 `ros` 가 계획에 있으면 "ROS 없음"을 경고로 낮춘다. 검증: ROS 가 있는 이 PC 에서
+"already — nothing to do", ROS 를 없는 것으로 취급한 사본으로 dry-run 시 fresh 경로(locale·universe·apt-source·guarded
+install 계획)가 끝까지 출력. **실제 설치는 사용자가 만들 새 컨테이너에서 처음 검증된다.**
+
+그 밖에: `archive/` 두 문서의 상대 링크 8개(이동 후 깨짐) 수정, `groot_rollout.sh` 주석의 옛 `groot_env.sh` 정정, 트러블슈팅 표에
+§47.4 함정 2개 추가, PIPELINE·CHECKLIST 에 `START_POSE` 안내. 문서가 인용하는 `serve_policy.py`·`inference_service.py` 는
+openpi·GR00T 원본 파일명이라 정상.
+
+**Isaac Sim 6.1.0 주의(2026-09-16, 사용자 예고)**: 새 컨테이너가 6.1.0 일 수 있다. 이 워크스페이스는 6.0.1 에서만 검증됐고
+(5.1.0→6.0.1 은 무수정 이식, SETUP §0), `ur16e_isaac_ros2.py` 는 `isaacsim.core.api`·`isaacsim.core.prims`·
+`isaacsim.core.utils`·`isaacsim.storage.native`·`isaacsim.ros2.bridge`(OmniGraph) 를 쓴다. `preflight` 가 6.0.1 이 아니면
+경고하도록 바꿨다(이전엔 6.x 면 조용히 통과). 6.1.0 에서는 §5 스모크(Isaac 기동 → `/joint_states` → MoveIt plan) 결과를
+먼저 여기에 적고 나서 나머지를 진행한다.

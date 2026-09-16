@@ -30,7 +30,7 @@ SEED="${SEED:-0}"
 TAG="${TAG:-gr8}"           # log-file prefix; groot_rollout.sh gets ROLL_TAG
 ME=$$
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 cd "$WS"
 
 # Workload-specific only -- this machine is shared and a broad pkill is forbidden.

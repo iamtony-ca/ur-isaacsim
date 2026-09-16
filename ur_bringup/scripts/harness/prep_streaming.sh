@@ -7,7 +7,7 @@ WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # wor
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(cd "$(dirname "$0")" && pwd)"; ME=$$
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 for p in $(pgrep -f "lerobot.async_inference"); do [ "$p" != "$ME" ] && kill -9 "$p" 2>/dev/null; done
 sleep 2
 pgrep -f "lerobot.async_inference" >/dev/null && echo "clients: STILL PRESENT" || echo "clients: cleared"

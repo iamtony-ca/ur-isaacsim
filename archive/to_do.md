@@ -3,7 +3,7 @@
 > 빠져 있던 **"작업(task) 레이어"**: perception → 물체 → grasp → pick → place(장애물 회피)를 기존 ROS2 스택
 > (cuMotion + nvblox + 2F-85 + D405)에 얹는다. **목표: sim2real gap 최소화** — 그래서 GT 대신 **실물에서 쓸
 > foundation model 들을 sim 카메라(RGB)에 그대로** 돌린다.
-> 관련: 학습(IL/VLA) 설계는 [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md),
+> 관련: 학습(IL/VLA) 설계는 [`ur_bringup/docs/plan_il_vla.md`](../ur_bringup/docs/plan_il_vla.md),
 > 제어/실행 현황은 [`README.md`](README.md).
 > (`LEARNING.md` 는 **RL insertion 설계로 보존** — IL 절반만 `plan_il_vla.md` 로 대체됐다.
 > 그 문서의 `oht_bolting` 참조는 다른 워크스페이스 자산이라 이 ws 범위 밖.)

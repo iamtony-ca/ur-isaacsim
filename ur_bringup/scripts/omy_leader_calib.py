@@ -8,7 +8,8 @@ leader's ENCODER ZERO and the wrist offsets, because:
   * the Dynamixel zero depends on how the arm was assembled/homed, and
   * the L100 is the leader for the OMY-F3M, not a scaled UR16e -- its lateral
     offset accumulates to -46 mm where the UR16e's is +290.7 mm, opposite sign
-    (HISTORY.md 21). So J4/J6 have no derivable offset, only a comfortable one.
+    (HISTORY.md 21). That is a position mismatch; the J4 pitch offset IS derivable
+    (-90 deg, HISTORY.md 47.2). Only J6 (tool roll) has no derivable offset.
 
 This tool measures both instead of making you guess.
 

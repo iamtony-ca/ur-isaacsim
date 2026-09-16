@@ -34,7 +34,7 @@ set +u
 source /opt/ros/jazzy/setup.bash
 source /isaac-sim/volume/ur_ws/install/setup.bash
 set -u
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 WS=/isaac-sim/volume/ur_ws
 LOGS=${LOGS:-/tmp/il_collect}
 mkdir -p "$LOGS"
