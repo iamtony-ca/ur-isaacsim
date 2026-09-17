@@ -117,7 +117,7 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 | `--fresh` | **이 워크스페이스 전용으로 만든 컨테이너.** Ubuntu 공식 출처의 기존 패키지 업그레이드만 허용(§1-B). 공유 컨테이너에선 쓰지 않는다 |
 | `--no-ml` | torch/lerobot venv(약 8 GB) 생략. sim + teleop 만 할 거면 불필요 |
 | `--with-groot` | `groot` 단계까지(lerobot[groot] 약 1 GB). 모델 파일은 §2-C-2 대로 따로 |
-| `--with-udev` | U2D2 udev 규칙까지 설치. **실물 OMY-L100 이 있을 때만** (유일하게 `/etc/udev` 에 쓴다) |
+| `--with-udev` | U2D2 udev 규칙까지 설치. **실물 OMY-L100 이 있을 때만** (유일하게 `/etc/udev` 에 쓴다). **컨테이너 안에서는 효과 없음 — 호스트에서 적용**(`HARDWARE.md` 4-B ⑥) |
 
 > **★ `pin` 이 `repos` 보다 먼저인 이유**: NVIDIA 레포는 ROS 패키지의 상위 버전을 갖고 있어서
 > (`robotiq_description` 0.0.1 → **9.0.1**) 핀 없이 레포부터 추가하면 다음 apt 때 조용히 덮어쓴다.
@@ -177,7 +177,7 @@ cd <ws>/src/setup
 | `ml` | IL/VLA용 격리 venv (torch sm_120 + lerobot). 약 8 GB |
 | `groot` | `lerobot[groot]` extra + `deps/hf_cache` 준비(§2-C-2). **기본 제외** — `--with-groot` 또는 따로 |
 | `verify` | `check_env.sh` |
-| `udev` | **U2D2 udev 규칙 — 실물 리더 전용.** 유일하게 `/etc/udev` 에 쓰므로 **기본 실행에서 제외**되어 있고 명시해야 돈다 |
+| `udev` | **U2D2 udev 규칙 — 실물 리더 전용.** 유일하게 `/etc/udev` 에 쓰므로 **기본 실행에서 제외**되어 있고 명시해야 돈다. udev 는 호스트 데몬이라 **컨테이너 안에서 실행하면 무효** — 호스트에서 규칙을 넣고 `check_env.sh` 로 `latency_timer` 만 확인 |
 
 **★ 공유 머신 안전장치 (스크립트에 내장)**
 - 모든 apt 설치를 **먼저 시뮬레이션**하고 영향도를 **출처와 함께** 출력한다
@@ -649,7 +649,9 @@ ROBOTIS AI **OMY-L100** 을 UR16e 의 teleop 리더로 쓰기 위한 스택. **�
 (`gravity_compensation_controller` + `spring_actuator_controller`, 300 Hz effort).
 ROS 없이 다이나믹셀을 직접 읽는 `lerobot_teleoperator_omy` 로도 관절값은 얻지만 **중력보상이 없어**
 1.46 kg 암을 에피소드 내내 사람이 들고 있어야 하고, 그 피로가 데이터 품질로 직결된다.
-이 스택은 `/leader/joint_states` 를 네이티브로 발행해서 **`il_recorder.py --action-source topic` 이 무수정으로 붙는다.**
+이 스택은 `/leader/joint_states` 를 네이티브로 발행하고, 브리지가 그것을 매핑한 명령을 `/omy_bridge/command_joint_states`
+로 내보내서 **`il_recorder.py -p action_source:=topic -p action_topic:=/omy_bridge/command_joint_states` 가 무수정으로
+붙는다**(리더 원토픽을 직접 주면 관절 이름이 달라 action 이 null — `HISTORY.md` §49.1).
 
 ```bash
 cd /isaac-sim/volume/ur_ws
@@ -713,6 +715,9 @@ ros2 topic hz /leader/joint_trajectory                        # 300 Hz
 ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true
 python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming   # 팔로워 스트리밍 모드
 ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
+# 속도 관련 런치 인자: max_joint_speed(팔로워 slew, 기본 1.0 rad/s — 실물은 0.3 부터, 상한 2.0)
+#                     max_leader_speed(글리치 가드 20 rad/s) · min_leader_jump(0.1 rad)
+# 팔로워가 느리면 브리지 로그의 `slew capped N%` 를 본다 → HARDWARE.md 4-B ⑤
 ```
 > **★ mock 리더로는 팔을 못 움직인다.** `mock_components/GenericSystem` 은 *짝이 맞는* 인터페이스만
 > 미러링하는데 L100 은 **effort 명령 / position 은 state 전용**이라 위치가 0 으로 고정된다.
@@ -751,9 +756,10 @@ leader [0, −90°, +152°, −62°, +90°, 0]  →  UR16e [0, −180°, +152°,
 
 ```bash
 ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger   # 리더를 먼저 내려놓고
-ros2 topic echo   /omy_bridge/status                        # sync:moving → synced
+ros2 topic echo   /omy_bridge/status                        # sync:moving → synced (disabled|watchdog|leader_jump 도 여기)
 ros2 topic echo   /omy_bridge/engage_error                  # [rad] 관절별 오차, 5 Hz
 ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
+ros2 service call /omy_bridge/sync_to_leader std_srvs/srv/Trigger   # 대안: UR16e 를 리더의 현재 매핑 자세로(캘리브용, 충돌이면 거부)
 ```
 
 - **MoveIt 으로 계획한다**(`/move_action`, `plan_only=false`). 직전 작업 때문에 팔이 픽스처
@@ -1011,6 +1017,10 @@ pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib
 | (새 컨테이너) `setup.sh` 가 `E: Unable to locate package software-properties-common` / `ros-jazzy-ur` 로 즉사 | `apt-get update` 가 한 번도 안 된 이미지(목록 비어 있음). `ros` 단계가 이제 먼저 갱신한다(`apt_lists_refresh`). `--dry-run` 에선 "could not be simulated" 로 뜨는 게 정상 |
 | (새 컨테이너) `refusing: this would change packages ...` 에 `util-linux`·`libsystemd0`·`ncurses` 등 Ubuntu 출처 목록 | 새 이미지의 낡은 기반 라이브러리 vs `ros-jazzy-desktop`/`moveit` 의존. 전용 컨테이너면 `bootstrap.sh --fresh`(`ALLOW_UPGRADES=ubuntu`). 목록에 `Ubuntu:` 아닌 출처가 섞이면 그건 다른 문제 — 핀 확인 |
 | (롤아웃) `robot_client.py: error: argument --robot.type: invalid choice: 'ur16e_ros'` | LeRobot 로봇 플러그인이 ML venv 에 미설치 → `setup.sh ml`(또는 §2-C 의 `pip install -e`). `check_env.sh` 가 REQUIRED 로 잡는다 |
+| (기록) `not ready: action topic '...' has no UR arm joints` / 변환기 `None + None` | `action_topic` 에 리더 원토픽(`/leader/joint_states`, 이름 `joint1..6`)을 줌. **`/omy_bridge/command_joint_states`** 로, 브리지 engaged 후 기록 시작(§49.1) |
+| (teleop) 브리지가 스스로 `leader_jump` 로 끊김 | 리더 샘플 간 속도 > `max_leader_speed`(20 rad/s) 이고 스텝 > 0.1 rad — 케이블/엔코더 글리치. 원인 확인 후 `enable`(게이트가 판단). 정상 동작에서 반복되면 `max_leader_speed` 를 올리되 사람 속도(≤ 5 rad/s) 이상으로 |
+| (teleop) 팔로워가 리더보다 느리다 | 브리지 로그 `slew capped N%` 가 있으면 `max_joint_speed`(기본 1.0) 가 병목 → 재기동으로 올림(UR16e 는 ≤ 2.0). 없으면 PolyScope 안전 한계/하드웨어 120°/s. `HARDWARE.md` 4-B ⑤ |
+| (실물, 컨테이너) U2D2 발행률이 60 Hz 근처 / `latency_timer` 가 16 | udev 를 컨테이너 안에서 실행함 — 호스트에서 규칙 적용 또는 `echo 1 > .../latency_timer`, `HARDWARE.md` 4-B ⑥ |
 | (하네스) 재기동 시 `A controller named ... was already loaded` / `can not be configured from 'active' state` | 이전 스택의 `ros2_control_node` 가 아직 종료 중인데 새 spawner 가 붙음. `bringup.sh` 가 이제 0개까지 대기(§48.8). 손으로는 `ps` 로 `ros2_control_node` 가 사라진 걸 확인한 뒤 재기동 |
 | (새 컨테이너) `python3: command not found` | Isaac 기본 이미지엔 python3 이 없다. `ros` 단계(`ros-dev-tools`)가 가져온다 — `ml` 단계만 따로 돌리지 말 것 |
 | Isaac 6.1.0 에서 `isaacsim.core.api` 등 import 경고 | `extsDeprecated` 로 이동했지만 동작함(§0). 6.1.0 초과 버전에서 ImportError 가 나면 `ur16e_isaac_ros2.py` 의 import 를 새 API 로 옮겨야 한다 |

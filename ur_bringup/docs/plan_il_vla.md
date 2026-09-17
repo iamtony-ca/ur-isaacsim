@@ -417,13 +417,21 @@ teleop/freedrive 데모를 섞으면 된다**(스키마가 하나라서 가능�
 | 장치 | 경로 | action 출처 |
 |---|---|---|
 | 키보드 / DualSense | EE twist → MoveIt Servo → `forward_position_controller` (IK 있음) | leader 없음 → `next_state` |
-| **OMY leader / GELLO** | **관절 직결** → `forward_position_controller` (**IK 없음** — 아래 실측으로 확인) | **leader 관절값**(ALOHA 관례) |
+| **OMY leader / GELLO** | **관절 직결** → `forward_position_controller` (**IK 없음** — 아래 실측으로 확인) | **브리지의 매핑 후 명령**(`/omy_bridge/command_joint_states`; ALOHA/GELLO 의 `agent.act(obs)` 와 같은 정의 — 리더 원값이 아님, 아래 정정) |
 | UR freedrive(실물) | 명령 없음, 사람이 팔을 끔 | 없음 → `next_state` |
 
 **세 경로 모두 `forward_position_controller` 로 수렴한다**(§2.3). 그래서 T1 에서 만든 스트리밍
 컨트롤러가 그대로 재사용되고, 기록기는 `--action-source`(`next_state` | `topic`) 하나로 전부 커버한다.
-OMY/GELLO 연결 시 `--action-source topic --action-topic /<leader>/joint_states` 로 바꾸면 끝이고,
+OMY/GELLO 연결 시 `--action-source topic --action-topic /omy_bridge/command_joint_states` 로 바꾸면 끝이고,
 **기록기 코드는 손대지 않는다**.
+
+> **정정(2026-09-17, `HISTORY.md` §49)**: 여기 원래 `--action-topic /<leader>/joint_states` 라고 적혀 있었다.
+> **틀렸다.** 리더 토픽의 관절 이름은 `joint1..6`/`rh_r1_joint` 이고 값도 sign/offset 적용 **전**이라, 기록기가
+> 팔 관절을 못 찾아 모든 action 이 null 이 되고(저장은 조용히 성공) 변환기가 `None + None` 으로 죽는다 —
+> 재현으로 확인. GELLO 가 기록하는 action 도 `agent.act(obs)` = **매핑 후 팔로워 명령**이다. 그래서 브리지가
+> 그 명령을 UR 관절 이름의 JointState(`/omy_bridge/command_joint_states`, `finger_joint` 포함)로 내보내고
+> 기록기는 그것을 받는다. 기록기는 이제 action 토픽에 UR 팔 관절이 없으면 시작을 거부하고, null action 이
+> 있는 에피소드는 저장하지 않는다.
 
 #### ★ OMY ↔ UR16e 기구학 대조 (2026-09-06 실측 — 앞선 추측을 정정)
 
@@ -563,7 +571,7 @@ open_manipulator_bringup/{launch,config}/omy_l100_leader_ai*        # ★ 리더
 | 2 | **부호·오프셋 캘리브레이션** (**URDF 로 대부분 확정됨**) | 확정: **J5 부호 반전**, **J2 −90° 오프셋**. 미확정: 손목 J4/J6 오프셋(구조 비동형 → 조작감 기준 실물 튜닝) + **다이나믹셀 엔코더 영점이 URDF 영점과 일치하는지 1회 확인** |
 | 3 | **`omy_to_ur16e` 브리지 노드**(신규) | L100 7관절 → UR16e 관절명 `JointState` 발행 → `forward_position_controller`. **IK 없음** |
 | 4 | 안전 게이트 | **관절별 clamp(UR 한계 ±95%) + 속도 상한 + deadman 필수**(16 kg 가반). ★ L100 J3 는 UR elbow 와 한계가 같아 **마진이 없다** — 위 정정 참조 |
-| 5 | 기록 | `il_recorder.py --action-source topic --action-topic /omy_leader/joint_states` — **기록기 수정 불필요** |
+| 5 | 기록 | `il_recorder.py --action-source topic --action-topic /omy_bridge/command_joint_states`(★ 리더 토픽이 아니라 브리지 명령 토픽, §3.5 정정) — **기록기 수정 불필요** |
 | 6 | **랑데부 자세로 시작** | 아래 참조. 임의 자세에서 engage 하지 않는다 |
 
 #### ★ 시작 자세 문제와 랑데부 (2026-09-10)

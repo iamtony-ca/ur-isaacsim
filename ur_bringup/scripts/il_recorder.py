@@ -44,9 +44,22 @@ Observation always comes from /joint_states, whatever moves the arm:
 The ACTION differs per device, hence --action-source:
     next_state  (default) action[t] = state[t+1]. Works for every device including
                 freedrive, where no command exists at all.
-    topic       action[t] = a JointState topic you name (--action-topic), e.g. the
-                leader arm's own joints. This is the ALOHA/GELLO convention and is
-                the right choice once the OMY leader is wired up.
+    topic       action[t] = a JointState topic you name (--action-topic). This is
+                the ALOHA/GELLO convention and the right choice with a leader arm.
+                *** The topic must carry the UR16e joint NAMES ***: it is the
+                MAPPED command, not the raw leader. With the OMY bridge that is
+                    /omy_bridge/command_joint_states
+                (mapped + clamped + slewed arm command, finger_joint = gripper
+                target). /leader/joint_states does NOT work: its names are
+                joint1..6, so no arm action would be found. The recorder refuses
+                to start while the action topic lacks the arm joints, and refuses
+                to save an episode with a null action (HISTORY.md 49).
+
+Episode tail trimming (GELLO drops its last 5 frames)
+-----------------------------------------------------
+    trim_tail_frames (default 0) drops the last N frames at stop: the operator
+    is reaching for the stop button/pad, so the tail is a still arm. Recorded in
+    meta.json. Off by default so existing datasets stay comparable.
 
 Usage
 -----
@@ -100,6 +113,7 @@ class ILRecorder(Node):
         p("gripper_open_rad", 0.0)
         p("gripper_closed_rad", 0.8)
         p("min_episode_frames", 10)
+        p("trim_tail_frames", 0)                   # drop the last N frames at stop
         p("auto_reset", True)                      # call /scene/reset_episode on stop
 
         g = lambda n: self.get_parameter(n).value
@@ -122,6 +136,7 @@ class ILRecorder(Node):
         self.g_open = float(g("gripper_open_rad"))
         self.g_closed = float(g("gripper_closed_rad"))
         self.min_frames = int(g("min_episode_frames"))
+        self.trim_tail = max(0, int(g("trim_tail_frames")))
         self.auto_reset = bool(g("auto_reset"))
 
         self.bridge = CvBridge()
@@ -187,6 +202,12 @@ class ILRecorder(Node):
             return False, "joint_states missing arm joints"
         if GRIPPER_JOINT not in self._js:
             return False, f"joint_states missing {GRIPPER_JOINT}"
+        if self.action_source == "topic" and any(j not in self._act_js for j in ARM):
+            seen = sorted(self._act_js) if self._act_js else "nothing yet"
+            return False, (f"action topic '{self.action_topic}' has no UR arm joints "
+                           f"(seen: {seen}). It must carry the MAPPED command with UR names -- "
+                           "with the OMY bridge use /omy_bridge/command_joint_states, "
+                           "not /leader/joint_states")
         return True, ""
 
     def _heartbeat(self):
@@ -228,14 +249,24 @@ class ILRecorder(Node):
         })
 
     def _finalise_actions(self):
-        """action[t] = state[t+1] for the next_state source; last frame repeats."""
-        if self.action_source != "next_state":
-            return
+        """action[t] = state[t+1] for the next_state source; last frame repeats.
+
+        topic source: the arm action is already there (the ready gate guarantees
+        it). Only the GRIPPER may be missing -- an action topic without finger_joint
+        (leader with no trigger) -- and then it falls back to next_state so the
+        schema field is never null. Returns the number of frames that used that
+        fallback so the caller can say so."""
         n = len(self._frames)
+        filled = 0
         for i, f in enumerate(self._frames):
             nxt = self._frames[min(i + 1, n - 1)]
-            f["action.single_arm"] = list(nxt["state.single_arm"])
-            f["action.gripper"] = list(nxt["state.gripper"])
+            if self.action_source == "next_state":
+                f["action.single_arm"] = list(nxt["state.single_arm"])
+                f["action.gripper"] = list(nxt["state.gripper"])
+            elif f["action.gripper"] is None:
+                f["action.gripper"] = list(nxt["state.gripper"])
+                filled += 1
+        return filled
 
     # ----------------------------------------------------------- services
     def _srv_start(self, req, res):
@@ -268,13 +299,40 @@ class ILRecorder(Node):
             res.success, res.message = False, "not recording"
             return res
         self._recording = False
+        # Read at stop time on purpose: `ros2 param set /il_recorder trim_tail_frames N`
+        # must take effect, not silently no-op like a value cached in __init__.
+        self.trim_tail = max(0, int(self.get_parameter("trim_tail_frames").value))
+        if self.trim_tail:
+            del self._frames[len(self._frames) - self.trim_tail:]
+            for key in self.cams:                 # keep frames/ and data.json in step
+                d = os.path.join(self._ep_dir, "frames", key)
+                for i in range(len(self._frames), len(self._frames) + self.trim_tail):
+                    try:
+                        os.remove(os.path.join(d, f"{i:06d}.jpg"))
+                    except FileNotFoundError:
+                        pass
         n = len(self._frames)
         if n < self.min_frames:
             res.success, res.message = False, f"only {n} frames (< {self.min_frames}) -- discarded"
             self._rm_ep()
             self.get_logger().warn(res.message)
             return res
-        self._finalise_actions()
+        filled = self._finalise_actions()
+        if filled:
+            self.get_logger().warn(
+                f"{filled} frames had no gripper in '{self.action_topic}' -> action.gripper "
+                "= next state (arm action is from the topic)")
+        # Belt and braces: a null action would only surface much later, in
+        # raw_to_lerobot.py, as `None + None`. Refuse to save it at all.
+        bad = sum(1 for f in self._frames
+                  if f["action.single_arm"] is None or f["action.gripper"] is None)
+        if bad:
+            res.success, res.message = False, (
+                f"{bad}/{n} frames have a null action (action_source={self.action_source}, "
+                f"action_topic='{self.action_topic}') -- discarded, nothing written")
+            self._rm_ep()
+            self.get_logger().error(res.message)
+            return res
         task = self.get_parameter("task").value
         meta = {
             "raw_format_version": RAW_FORMAT_VERSION,
@@ -290,6 +348,7 @@ class ILRecorder(Node):
             "gripper_closed_rad": self.g_closed,
             "action_source": self.action_source,
             "action_topic": self.action_topic,
+            "trim_tail_frames": self.trim_tail,
             "schema": "ur_bringup/docs/plan_il_vla.md 2.6",
             "recorded_unix_time": time.time(),
         }

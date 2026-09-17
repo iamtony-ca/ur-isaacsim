@@ -83,6 +83,21 @@ SAFETY (this is a 16 kg-payload, 900 mm arm driven by a 1.46 kg toy)
   7. Pad buttons that START motion (enable, sync) require the deadman held; the one
      that STOPS motion (disable) never does. A stray /joy message must not be able
      to move the arm.
+  8. Leader JUMP guard (`max_leader_speed` [rad/s], between consecutive leader
+     samples, while engaged): a loose Dynamixel cable or an encoder wrap shows up
+     as one sample implausibly far from the previous one. The watchdog (5) cannot
+     see that -- data keeps coming -- and the slew (4) would faithfully drive the
+     arm there at max_joint_speed. GELLO has a similar check ("Action is too big",
+     0.5 rad absolute). It is a SPEED, not an angle, on purpose: the first cut was
+     an absolute 0.5 rad per sample and it FALSE-TRIGGERED on a 3 rad/s (fast but
+     human) sine the moment the 300 Hz stream hiccupped for 0.16 s on the PC side
+     (HISTORY.md 49.4). A human tops out around 5 rad/s; a wrap is hundreds. Here
+     it disables the bridge and the engage gate (2) decides about re-enabling.
+     Two details, both from false triggers: dt is WALL clock (time.monotonic), not
+     the node clock -- under use_sim_time the /clock granularity made two samples
+     "0 ms" apart -- and the step must also exceed `min_leader_jump` (0.1 rad),
+     because a sim-time leader delivers its 300 Hz samples in bursts, and a burst
+     of 1.2 deg steps microseconds apart is not a glitch.
 
 USAGE
 -----
@@ -99,6 +114,12 @@ USAGE
     # how far off am I?  (rad, leader-mapped minus follower, per joint)
     ros2 topic echo /omy_bridge/engage_error
 
+    # alternative to the rendezvous (GELLO style): leave the leader WHEREVER it is
+    # and bring the UR16e to the leader's mapped pose, still through MoveIt:
+    ros2 service call /omy_bridge/sync_to_leader std_srvs/srv/Trigger
+    #   -> useful during calibration / tuning; for DATA COLLECTION prefer /sync,
+    #      so every episode starts from the same pose (plan_il_vla.md 2.6).
+
     # calibration loop -- `offset` and `sign` take effect live WHILE DISABLED, so
     # measure -> apply -> feel -> adjust does not need a node restart each time:
     ros2 run ur_bringup omy_leader_calib.py --mode match     # prints the offsets
@@ -112,10 +133,22 @@ USAGE
 steps by hand -- `switch_control_mode.py trajectory` + `reset_pose.py ready` +
 `switch_control_mode.py streaming` -- after checking the arm's surroundings by eye.
 
-Recording is unchanged: il_recorder.py --action-source topic --action-topic
-/leader/joint_states already handles this (plan_il_vla.md 2.5).
+RECORDING THE ACTION -- use the bridge's output, not the raw leader
+--------------------------------------------------------------------
+    il_recorder.py ... -p action_source:=topic \
+                       -p action_topic:=/omy_bridge/command_joint_states
+
+/omy_bridge/command_joint_states is a JointState with the UR16e joint NAMES and
+the command that was actually sent this tick (mapped + clamped + slewed), plus
+`finger_joint` = the gripper target. That is what GELLO records (`agent.act(obs)`,
+the mapped command) and what the dataset schema calls action (plan_il_vla.md 2.6).
+/leader/joint_states is NOT usable as action_topic: its names are joint1..6 /
+rh_r1_joint, so the recorder finds no arm joints and every action is null -- the
+episode saves silently and raw_to_lerobot.py dies on `None + None`
+(HISTORY.md 49, found 2026-09-17 by reproduction).
 """
 import math
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -138,6 +171,7 @@ UR_JOINTS = [
     "shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
     "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
 ]
+GRIPPER_JOINT = "finger_joint"      # 2F-85, as il_recorder.py names it
 LEADER_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 LEADER_GRIPPER = "rh_r1_joint"
 
@@ -174,6 +208,9 @@ class OmyToUr16e(Node):
         p("max_joint_speed", 1.0)      # [rad/s] per joint, slew on the command
         p("engage_tol", 0.15)          # [rad] per joint, checked on enable
         p("leader_timeout", 0.5)       # [s] without leader data -> disable
+        p("max_leader_speed", 20.0)    # [rad/s] between two leader samples while
+                                       # engaged -> disable (0 = off). See SAFETY 8.
+        p("min_leader_jump", 0.1)      # [rad] AND the step itself must exceed this
         p("publish_rate", 100.0)       # [Hz] to the follower
 
         # --- rendezvous / sync ------------------------------------------------
@@ -216,6 +253,9 @@ class OmyToUr16e(Node):
         self.max_speed = float(g("max_joint_speed"))
         self.engage_tol = float(g("engage_tol"))
         self.leader_timeout = float(g("leader_timeout"))
+        self.max_speed_leader = float(g("max_leader_speed"))
+        self.min_jump = float(g("min_leader_jump"))
+        self.leader_wall = None         # time.monotonic() of the last leader sample
         self.rendezvous = [float(v) for v in g("rendezvous")]
         if len(self.rendezvous) != 6:
             raise ValueError("rendezvous must have 6 entries")
@@ -239,6 +279,8 @@ class OmyToUr16e(Node):
         self.grip_deadband = float(g("gripper_deadband"))
 
         self.enabled = False
+        self.stop_reason = "disabled"   # disabled | watchdog | leader_jump -- what
+                                        # /omy_bridge/status says while not engaged
         self.leader_raw = None          # latest leader joints, BEFORE the map. Kept so a
                                         # runtime sign/offset change can be re-applied to
                                         # the current reading instead of waiting for the
@@ -247,8 +289,14 @@ class OmyToUr16e(Node):
         self.leader_grip = None
         self.leader_stamp = None
         self.ur_q = None                # follower's actual position
+        self.ur_grip = None             # follower finger_joint [rad], if present
         self.cmd = None                 # last published command (slew origin)
-        self.last_grip = None
+        self.last_grip = None           # last gripper GOAL sent (deadband origin)
+        self.grip_target = None         # gripper target this tick (recorded action)
+        self.slew_hits = 0              # ticks (since last report) where the slew capped a joint
+        self.slew_ticks = 0
+        self.sync_goal = None           # joint target of the sync in progress
+        self.sync_kind = "rendezvous"   # rendezvous | leader
         self.ctrl_active = {}           # controller name -> bool; empty = not polled yet
         self.sync_state = "idle"        # idle|to_traj|moving|to_stream|done|failed
         self.sync_deadline = None
@@ -265,6 +313,9 @@ class OmyToUr16e(Node):
         # needs "how far off, per joint" WITHOUT having to call enable and read the
         # rejection -- otherwise matching the leader is call-refuse-adjust-repeat.
         self.err_pub = self.create_publisher(Float64MultiArray, "/omy_bridge/engage_error", 10)
+        # The command as a JointState with UR names: this is the ACTION for IL
+        # recording (module docstring, RECORDING). Published only while engaged.
+        self.cmd_js_pub = self.create_publisher(JointState, "/omy_bridge/command_joint_states", 10)
         self.grip_cli = ActionClient(self, GripperCommand, "/gripper_controller/gripper_cmd")
         self.move_cli = ActionClient(self, MoveGroup, "/move_action")
         self.switch_cli = self.create_client(SwitchController, f"{self.cm}/switch_controller")
@@ -273,6 +324,7 @@ class OmyToUr16e(Node):
         self.create_service(Trigger, "/omy_bridge/enable", self._enable)
         self.create_service(Trigger, "/omy_bridge/disable", self._disable)
         self.create_service(Trigger, "/omy_bridge/sync", self._sync)
+        self.create_service(Trigger, "/omy_bridge/sync_to_leader", self._sync_to_leader)
 
         if self.joy_on:
             self.create_subscription(Joy, "/joy", self._on_joy, 10)
@@ -281,6 +333,7 @@ class OmyToUr16e(Node):
         self.dt = 1.0 / rate
         self.create_timer(self.dt, self._tick)
         self.create_timer(0.2, self._publish_error)      # 5 Hz is plenty for a human
+        self.create_timer(2.0, self._report_slew)        # "is max_joint_speed the throttle?"
         self.create_timer(1.0, self._poll_controllers)
 
         # Registered LAST, after every declare_parameter above: rclpy runs this callback
@@ -290,8 +343,8 @@ class OmyToUr16e(Node):
         self.get_logger().info(
             f"omy_to_ur16e up (DISABLED). sign={self.sign} offset_deg="
             f"{[round(math.degrees(o), 1) for o in self.offset]} "
-            f"margin={self.margin} max_speed={self.max_speed} rad/s. "
-            "Call /omy_bridge/enable to engage."
+            f"margin={self.margin} max_speed={self.max_speed} rad/s "
+            f"max_leader_speed={self.max_speed_leader} rad/s. Call /omy_bridge/enable to engage."
         )
         self.get_logger().info(
             "rendezvous: put the LEADER at "
@@ -319,15 +372,36 @@ class OmyToUr16e(Node):
         if not all(n in idx for n in LEADER_JOINTS):
             return
         self.leader_raw = [msg.position[idx[n]] for n in LEADER_JOINTS]
-        self.leader_q = self._map(self.leader_raw)
+        q = self._map(self.leader_raw)
+        now = self.get_clock().now()
+        wall = time.monotonic()
+        if self.enabled and self.leader_q is not None and self.max_speed_leader > 0 \
+                and self.leader_wall is not None:
+            # Wall-clock dt floored at 1 ms: two samples that arrive back to back
+            # (DDS burst after a hiccup) must not divide a small step by ~0.
+            dt = max(wall - self.leader_wall, 1e-3)
+            jump = max(abs(a - b) for a, b in zip(q, self.leader_q))
+            if jump > self.min_jump and jump / dt > self.max_speed_leader:
+                self.enabled = False
+                self.stop_reason = "leader_jump"
+                self.get_logger().error(
+                    f"leader JUMPED {math.degrees(jump):.1f} deg in {dt * 1e3:.0f} ms "
+                    f"= {jump / dt:.0f} rad/s (> max_leader_speed {self.max_speed_leader:.0f}) "
+                    "-- DISABLED. Check the leader cable/encoders, then /omy_bridge/enable "
+                    "again (the engage gate decides whether that is safe).")
+                self._status("leader_jump")
+        self.leader_q = q
         if LEADER_GRIPPER in idx:
             self.leader_grip = msg.position[idx[LEADER_GRIPPER]]
-        self.leader_stamp = self.get_clock().now()
+        self.leader_stamp = now
+        self.leader_wall = wall
 
     def _on_follower(self, msg):
         idx = {n: i for i, n in enumerate(msg.name)}
         if all(n in idx for n in UR_JOINTS):
             self.ur_q = [msg.position[idx[n]] for n in UR_JOINTS]
+        if GRIPPER_JOINT in idx:
+            self.ur_grip = msg.position[idx[GRIPPER_JOINT]]
 
     def _on_joy(self, msg):
         """Edge-triggered pad control. The operator's hands are on the leader, so
@@ -484,6 +558,7 @@ class OmyToUr16e(Node):
         # Start the slew from where the robot IS, not from a stale command.
         self.cmd = list(self.ur_q)
         self.enabled = True
+        self.stop_reason = "disabled"
         # "synced" means "a sync finished and you have not engaged since". Once the
         # operator engages, the arm is wherever the leader took it, so reporting
         # "synced" after the next disable would be a lie.
@@ -494,13 +569,34 @@ class OmyToUr16e(Node):
 
     def _disable(self, _req, res):
         self.enabled = False
+        self.stop_reason = "disabled"
         res.success, res.message = True, "disabled"
         self.get_logger().info("disabled -- holding")
         return res
 
     # -------------------------------------------------------------------- sync
     def _sync(self, _req, res):
-        """Drive the UR16e to the rendezvous pose through MoveIt.
+        """Drive the UR16e to the rendezvous pose through MoveIt."""
+        return self._start_sync(res, list(self.rendezvous), "rendezvous")
+
+    def _sync_to_leader(self, _req, res):
+        """GELLO-style: bring the UR16e to wherever the leader IS (mapped, clamped),
+        instead of asking the operator to put the leader at the rendezvous.
+
+        Same MoveIt path as /sync (collision-checked, slow), only the target differs.
+        Handy while calibrating on hardware -- lift the leader somewhere comfortable,
+        call this, enable, feel. For data collection keep using /sync: the dataset
+        wants every episode to start from the same pose.
+        """
+        if self.leader_q is None:
+            res.success, res.message = False, "no /leader/joint_states yet"
+            return res
+        goal = [max(-UR_LIMITS[i] * self.margin, min(UR_LIMITS[i] * self.margin, self.leader_q[i]))
+                for i in range(6)]
+        return self._start_sync(res, goal, "leader")
+
+    def _start_sync(self, res, goal, kind):
+        """Common part of /sync and /sync_to_leader.
 
         Returns as soon as the sequence is ACCEPTED, not when it finishes: this
         service is meant to be called from a pad button, and blocking a service
@@ -530,11 +626,14 @@ class OmyToUr16e(Node):
             res.success, res.message = False, f"{self.cm}/switch_controller not available"
             return res
 
+        self.sync_goal, self.sync_kind = goal, kind
         self.sync_deadline = self.get_clock().now().nanoseconds * 1e-9 + self.sync_timeout
         self._set_sync("to_traj")
         self._switch(self.traj_ctrl, self.stream_ctrl, self._sync_send_goal)
+        where = ("the rendezvous pose" if kind == "rendezvous" else
+                 f"the leader's pose {[round(math.degrees(v), 1) for v in goal]} deg")
         res.success, res.message = True, (
-            "sync started -- MoveIt is planning to the rendezvous pose. "
+            f"sync started -- MoveIt is planning to {where}. "
             "Watch /omy_bridge/status; call /omy_bridge/enable when it says 'synced'.")
         self.get_logger().info(res.message)
         return res
@@ -544,9 +643,14 @@ class OmyToUr16e(Node):
         if state == "failed":
             self.get_logger().error(f"sync FAILED: {why}")
         elif state == "done":
-            self.get_logger().info(
-                "sync done -- UR16e at the rendezvous pose, streaming controller active. "
-                "Put the leader in its rest pose and call /omy_bridge/enable.")
+            if self.sync_kind == "leader":
+                self.get_logger().info(
+                    "sync done -- UR16e at the leader's pose, streaming controller active. "
+                    "Hold the leader still and call /omy_bridge/enable.")
+            else:
+                self.get_logger().info(
+                    "sync done -- UR16e at the rendezvous pose, streaming controller active. "
+                    "Put the leader in its rest pose and call /omy_bridge/enable.")
         else:
             self.get_logger().info(f"sync: {state}")
 
@@ -596,7 +700,7 @@ class OmyToUr16e(Node):
         req.max_velocity_scaling_factor = self.sync_vel
         req.max_acceleration_scaling_factor = self.sync_acc
         constraints = Constraints()
-        for name, pos in zip(UR_JOINTS, self.rendezvous):
+        for name, pos in zip(UR_JOINTS, self.sync_goal):
             jc = JointConstraint()
             jc.joint_name = name
             jc.position = float(pos)
@@ -671,27 +775,69 @@ class OmyToUr16e(Node):
             self._status(f"sync:{self.sync_state}")
             return
         if not self.enabled:
+            # The reason sticks (watchdog / leader_jump) until the next enable or an
+            # explicit disable, so a one-off event is not overwritten by the next tick.
             self._status("synced" if self.sync_state == "done" else
-                         "sync_failed" if self.sync_state == "failed" else "disabled")
+                         "sync_failed" if self.sync_state == "failed" else self.stop_reason)
             return
         if self.leader_stamp is None or \
                 (self.get_clock().now() - self.leader_stamp).nanoseconds * 1e-9 > self.leader_timeout:
             self.enabled = False
+            self.stop_reason = "watchdog"
             self.get_logger().error("leader data stale -- DISABLED (watchdog)")
             self._status("watchdog")
             return
 
         step = self.max_speed * self.dt
         out = []
+        capped = False
         for i in range(6):
             lim = UR_LIMITS[i] * self.margin
             tgt = max(-lim, min(lim, self.leader_q[i]))          # clamp
             cur = self.cmd[i]
-            out.append(cur + max(-step, min(step, tgt - cur)))   # slew
+            d = tgt - cur
+            if abs(d) > step:
+                d = step if d > 0 else -step                     # slew
+                capped = True
+            out.append(cur + d)
+        self.slew_ticks += 1
+        self.slew_hits += capped
         self.cmd = out
         self.pub.publish(Float64MultiArray(data=out))
         self._gripper()
+        self._publish_command_js(out)
         self._status("engaged")
+
+    def _report_slew(self):
+        """The follower "feels slow" for one of three reasons: this slew, the UR's own
+        joint speed limits (UR16e: 120 deg/s base..elbow, 180 deg/s wrists, or lower in
+        the PolyScope safety config), or the driver's servoj (fixed gain 2000 /
+        lookahead 0.03 s). Only the first is ours, and this tells you when it is the one
+        binding: the fraction of ticks in the last 2 s where a joint hit max_joint_speed."""
+        if self.slew_ticks == 0:
+            return
+        frac = self.slew_hits / self.slew_ticks
+        self.slew_hits = self.slew_ticks = 0
+        if frac > 0.3:
+            self.get_logger().warn(
+                f"slew capped {frac * 100:.0f}% of the last 2 s -- max_joint_speed "
+                f"({self.max_speed} rad/s) is the throttle. Raise it (relaunch with "
+                f"max_joint_speed:=<v>; keep v below the UR's own joint speed limit, "
+                f"UR16e 2.09 rad/s) if the leader is meant to move that fast.",
+                throttle_duration_sec=10.0)
+
+    def _publish_command_js(self, arm_cmd):
+        """The action for IL: what was commanded THIS tick, in UR joint names.
+        finger_joint = the gripper target if the leader has a trigger, else the
+        follower's own finger position (a hold), so the field is never missing."""
+        grip = self.grip_target if self.grip_target is not None else self.ur_grip
+        if grip is None:
+            grip = self.go_open
+        m = JointState()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.name = UR_JOINTS + [GRIPPER_JOINT]
+        m.position = [float(v) for v in arm_cmd] + [float(grip)]
+        self.cmd_js_pub.publish(m)
 
     def _gripper(self):
         if not (self.grip_on and self.leader_grip is not None):
@@ -701,6 +847,7 @@ class OmyToUr16e(Node):
             return
         f = max(0.0, min(1.0, (self.leader_grip - self.gi_open) / span))
         target = self.go_open + f * (self.go_closed - self.go_open)
+        self.grip_target = target            # recorded even when the deadband skips the goal
         if self.last_grip is not None and abs(target - self.last_grip) < self.grip_deadband:
             return
         if not self.grip_cli.server_is_ready():

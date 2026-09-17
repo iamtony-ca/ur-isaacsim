@@ -33,6 +33,14 @@ Bring-up (Set 2/3 control stack must already be running)
     #    Put the leader down in its rest pose first -- see HISTORY.md 41.
     ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger
     ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
+    #    /omy_bridge/sync_to_leader: same, but the target is the leader's CURRENT
+    #    pose (GELLO style) -- for calibration; data collection uses /sync.
+    #    Recording the action: il_recorder.py -p action_source:=topic
+    #        -p action_topic:=/omy_bridge/command_joint_states   (NOT /leader/...)
+    #    Follower slower than the leader?  The bridge logs `slew capped N%` when
+    #    max_joint_speed is the throttle (default 1.0 rad/s; real UR16e: start 0.3,
+    #    never above 2.0 = its own joint speed limit). HARDWARE.md 4-B (5).
+    #    Glitch guard: max_leader_speed (20 rad/s) AND min_leader_jump (0.1 rad).
 
     #    Without move_group, do the same by hand (check the arm's surroundings first):
     #      switch_control_mode.py trajectory && reset_pose.py ready
@@ -76,6 +84,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "max_joint_speed", default_value="1.0",
             description="[rad/s] per-joint slew limit on the follower command."),
+        DeclareLaunchArgument(
+            "max_leader_speed", default_value="20.0",
+            description="[rad/s] fastest plausible leader motion between two samples while "
+                        "engaged; faster disables the bridge (cable/encoder glitch guard; "
+                        "a human is < 5 rad/s, an encoder wrap is hundreds). 0 turns it off."),
+        DeclareLaunchArgument(
+            "min_leader_jump", default_value="0.1",
+            description="[rad] the glitch guard also needs the step itself above this "
+                        "(sim-time leaders deliver samples in bursts)."),
         DeclareLaunchArgument(
             "engage_tol", default_value="0.15",
             description="[rad] per-joint match required before /omy_bridge/enable "
@@ -156,6 +173,8 @@ def generate_launch_description():
             "use_sim_time": use_sim_time,
             "max_joint_speed": LaunchConfiguration("max_joint_speed"),
             "engage_tol": LaunchConfiguration("engage_tol"),
+            "max_leader_speed": LaunchConfiguration("max_leader_speed"),
+            "min_leader_jump": LaunchConfiguration("min_leader_jump"),
             "limit_margin": LaunchConfiguration("limit_margin"),
             "rendezvous": ParameterValue(LaunchConfiguration("rendezvous"),
                                          value_type=None),

@@ -296,6 +296,11 @@ ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger
 ros2 topic echo   /omy_bridge/status                     # sync:moving → synced
 ros2 topic echo   /omy_bridge/engage_error               # [rad] 관절별 오차, 보면서 리더를 맞춘다
 ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
+# 대안(캘리브 중): 리더를 아무 자세에 두고 UR16e 를 리더 쪽으로 (MoveIt, GELLO 방식)
+ros2 service call /omy_bridge/sync_to_leader std_srvs/srv/Trigger
+# 기록의 action 은 브리지 출력 토픽 — /leader/joint_states 가 아니다 (HISTORY.md §49)
+ros2 run ur_bringup il_recorder.py --ros-args -p action_source:=topic \
+    -p action_topic:=/omy_bridge/command_joint_states -p out_dir:=<경로> -p task:="<지시문>"
 ```
 > **`/omy_bridge/sync` 는 `move_group` 이 필요하다.** 없으면 서비스가 그 사실과 수동 절차를
 > 알려주고 거부한다 — 조용히 위험한 경로(`reset_pose.py` = 직선 관절 보간, 충돌검사 없음)로
@@ -353,13 +358,41 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
 > 사라진다. 값이 바뀌면 `virtual_omy_leader.py` 쪽도 같이 고쳐야
 > sim 회귀 테스트의 engage 게이트가 계속 통과한다.
 
-### ⑤ 데이터 기록
-기록기는 **수정 불필요**(장치무관 설계, `plan_il_vla.md` §2.5):
+### ⑤ 추종이 느릴 때 — 팔로워 속도를 정하는 곳 (2026-09-17, 실물 첫 시도 피드백)
+
+"L100 보다 UR16e 가 느리게 따라온다"는 정상이며, 어디서 잘리는지는 아래 순서로 본다.
+
+| # | 어디 | 값 | 바꾸는 법 | 비고 |
+|---|---|---|---|---|
+| 1 | **브리지 slew `max_joint_speed`** | 기본 **1.0 rad/s**, 첫 연결 권장 0.3 | `teleop_omy.launch.py max_joint_speed:=<v>` (**재기동 필요**, `param set` 은 거부) | 관절별 속도 상한. 리더가 이보다 빠르면 팔이 뒤늦게 같은 자세에 도착한다. **브리지가 2 s 마다 `slew capped N%` 경고**를 찍으면 이게 병목 |
+| 2 | **UR16e 하드웨어 한계** | base·shoulder·elbow **120°/s (2.09 rad/s)**, wrist 180°/s | 못 바꿈 | 1.5 kg 리더는 사람이 이보다 빨리 휘두를 수 있다. **`max_joint_speed` 는 2.0 이하**로 두어야 보호정지(joint speed violation)가 안 난다 |
+| 3 | PolyScope 안전 설정 | Joint Limits → max speed, Reduced mode | 펜던트 | 2 보다 더 낮게 잡혀 있으면 여기가 병목 |
+| 4 | 드라이버 servoj | gain 2000, lookahead 0.03 s | `ur_robot_driver/urdf/ur.ros2_control.xacro` 고정값(Jazzy 런치 인자 없음) | 응답 지연 수십 ms. GELLO 의 gain 100 / lookahead 0.2 보다 훨씬 타이트 → 원인 아님 |
+| 5 | 브리지 `publish_rate` | 100 Hz | 런치 인자 | 드라이버가 500 Hz servoj 로 보간. 원인 아님 |
+| — | speed slider | — | — | `forward_position_controller`(servoj) 경로에는 **영향 없음** |
+
+권장 절차: 0.3 → 1.0 → 1.5 → 2.0 으로 올리면서 보호정지가 없는지 본다. sim 실측(Isaac, 리더 peak ≈1 rad/s):
+0.3 이면 지연 100 ms·최대 오차 3.7°, 1.0 이상이면 33 ms·1.1°(`HISTORY.md` §49.5).
+
+### ⑥ 컨테이너에서 실물을 붙일 때 (Isaac 컨테이너 재사용 시)
+
+- **udev·`latency_timer=1` 은 호스트에서.** `setup.sh udev` 는 컨테이너 안 `/etc/udev` 에 쓰므로 효과가 없다. 호스트에서
+  규칙을 넣거나 `echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer` 후, 컨테이너 안 `check_env.sh` 로 값만 확인.
+- 컨테이너 플래그: U2D2 `--device=/dev/ttyUSB0`(FTDI 가 둘이면 `port_name:=/dev/serial/by-id/...`), UR 은 **`--network host`**
+  — 로봇이 PC 의 50001~50003 으로 **역접속**하므로 브리지 네트워크에선 External Control 이 안 붙는다.
+- 예: PC `192.168.0.20/24`, UR16e `192.168.0.10` → `robot_ip:=192.168.0.10`, URCap 의 host IP = **192.168.0.20**(컨테이너도 host 네트워크라 동일).
+- `ROS_DOMAIN_ID`: 코드에 고정된 곳은 없다(하네스는 `${ROS_DOMAIN_ID:-0}`). 같은 호스트의 다른 컨테이너가 host 네트워크로
+  ROS 2 를 쓰면 도메인이 겹치니, 실물에서도 정하지 않을 거면 그쪽과 겹치지 않는지만 확인(`ros2 node list` 에 모르는 노드).
+
+### ⑦ 데이터 기록
+기록기는 **수정 불필요**(장치무관 설계, `plan_il_vla.md` §2.5) — 단 action 토픽은 **브리지 출력**이다:
 ```bash
 ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=false \
     -p out_dir:=<경로> -p task:="..." -p action_source:=topic \
-    -p action_topic:=/leader/joint_states
+    -p action_topic:=/omy_bridge/command_joint_states      # ★ /leader/joint_states 아님 (HISTORY.md §49.1)
 ```
+브리지가 **engaged** 일 때만 이 토픽이 나오므로 기록은 engage 후에 시작한다(아니면 `not ready: action topic ... has
+no UR arm joints` 로 거부). 꼬리 정지 프레임 폐기는 `-p trim_tail_frames:=N`(기본 0, 먼저 `il_tail_stats.py` 로 잰다).
 
 ### 함정
 | 증상 | 원인 / 대처 |

@@ -1101,7 +1101,7 @@ raw 포맷은 자기서술적(`meta.json` 에 스키마·관절명·그리퍼 �
 | 장치 | 제어 경로 | action 의 자연스러운 출처 |
 |---|---|---|
 | 키보드 / DualSense | EE twist → Servo → `forward_position_controller` | leader 없음 |
-| **OMY leader / GELLO** | **관절 직결** → `forward_position_controller` (IK 없음) | **leader 관절값**(ALOHA 관례) |
+| **OMY leader / GELLO** | **관절 직결** → `forward_position_controller` (IK 없음) | **leader 관절값**(ALOHA 관례) — **§49.1 정정**: 실제로는 브리지의 매핑 후 명령 토픽이어야 한다 |
 | UR freedrive(실물) | 명령 없음, 읽기만 | 없음 |
 
 → `--action-source` 파라미터:
@@ -1259,7 +1259,7 @@ OMY ≈ UR16e 의 **축소판**(reach 580 vs 900 mm) → GELLO 가 말하는 **"
 
 ### OMY 연결 시 할 일 (§3.5 에 상세)
 1. `lerobot_teleoperator_omy` 설치(`deps/.venv-ml`) 2. **부호·오프셋 캘리브레이션**(플러그인이 노출 안 함)
-3. **`omy_to_ur16e` 브리지 노드**(관절 1:1, IK 없음) 4. 속도상한+deadman 5. 기록은 `--action-source topic` 그대로
+3. **`omy_to_ur16e` 브리지 노드**(관절 1:1, IK 없음) 4. 속도상한+deadman 5. 기록은 `--action-source topic` 그대로(→ **§49.1 정정**: 토픽은 `/omy_bridge/command_joint_states`)
 
 ### 교훈
 문서에 **추측을 "확인 필요"로 남겨둔 것이 제 역할을 했다** — 나중에 실측으로 뒤집혔고, 그 사이
@@ -1334,7 +1334,7 @@ OMY 일반값으로 적었다. 공식 사양 기준 **둘은 한계가 다르다
 - ★ **L100 은 중력보상 리더다**: `omy_l100_leader_ai` 가 `gravity_compensation_controller` +
   `spring_actuator_controller` 를 300 Hz effort 로 돌린다. → **연결 경로를 B(ROBOTIS ros2_control 스택)로
   권장 변경**, 기존 A(`lerobot_teleoperator_omy`)는 폴백. B 는 `/joint_states` 를 네이티브로 뱉어
-  **`il_recorder.py --action-source topic` 이 무수정으로 붙는다**(§18 장치무관 설계의 회수).
+  **`il_recorder.py --action-source topic` 이 무수정으로 붙는다**(§18 장치무관 설계의 회수). (→ **§49.1 정정**: 리더 원토픽은 관절 이름이 달라 안 붙는다. 브리지 명령 토픽으로.)
   의존은 소스 2개(`dynamixel_hardware_interface`, `robotis_interfaces`) + 자체 컨트롤러 3종뿐.
 
 > **정정**: §21 본문에 *"DH·좌표계·회전방향 규약이 없어 부호/오프셋은 실물 측정 필수"* 라고 적었으나,
@@ -1464,7 +1464,7 @@ engage 게이트를 바로 통과하게 만든다. 나머지 체인(브리지→
 
 ### 다음
 실물 L100 연결(U2D2) 후 **손목 J4/J6 오프셋 + 엔코더 영점** 튜닝. 파라미터만 만지면 되고
-코드/스키마는 그대로다. 기록은 `il_recorder.py --action-source topic --action-topic /leader/joint_states`.
+코드/스키마는 그대로다. 기록은 `il_recorder.py --action-source topic --action-topic /leader/joint_states`. (→ **§49.1 정정**: `/omy_bridge/command_joint_states`)
 
 ---
 
@@ -4141,3 +4141,135 @@ rc 144 로 죽었다(§47.4 의 "긴 명령은 파일로" 그대로). 정리 루
   `--shm-size` 문제)·§9(새 컨테이너 5행), `CHECKLIST.md` A/B/B-0/**B-2 신설**, `README.md`, `CLAUDE.md`, harness `README.md`,
   `bootstrap.sh`(`--fresh`·`--with-groot`·`--help`), `setup.sh`, `lib.sh`, `check_env.sh`, `ml_env.sh`, `requirements-ml.lock`,
   `harness/bringup.sh`. 커밋은 하지 않았다(사용자 검토용 working tree).
+
+## 49. GELLO(`gello_software`) 대조 검토 — 리더 action 기록 결함 1건 수정 + GELLO 장점 3건 반영 (2026-09-17)
+
+`tempp/gello_software`(wuphilipp/gello_software, HEAD `204f53a`, repo 밖 참고용 클론)를 통째로 읽고 우리
+OMY 브리지·기록기·캘리브·체크리스트와 대조했다. 전제는 같다(관절 1:1 affine 매핑, IK 없음). 안전장치는 우리가
+더 많다(상시 slew·clamp·워치독·데드맨·engage 게이트 vs GELLO 는 정렬 단계 속도 제한뿐). 그런데 **GELLO 가 하는
+핵심 한 가지를 우리는 실제로 못 하고 있었다.**
+
+### 49.1 결함 — `action_source:=topic` 기록이 깨져 있었다 (재현으로 확인)
+
+`CHECKLIST.md` H·`HARDWARE.md` 4-B·`plan_il_vla.md` §3.5 가 전부 실물 수집 명령으로
+`-p action_source:=topic -p action_topic:=/leader/joint_states` 를 안내했고, §20·§41·§47 은 "기록기 무수정으로
+붙는다"고 적었다. **틀렸다.**
+
+| | |
+|---|---|
+| 원인 | `/leader/joint_states` 의 관절 이름은 `joint1..6`/`rh_r1_joint`. 기록기는 UR 이름(`shoulder_pan_joint`…)만 찾는다 → `act_arm=None`. 이름을 맞춰도 값이 sign/offset 적용 **전** 리더 좌표라 틀린 action |
+| 증상 | 기록기는 `saved ... (79 frames)` 로 **성공을 보고**하고 79 프레임 전부 `action.single_arm: null`. `raw_to_lerobot.py:226` 이 `TypeError: unsupported operand type(s) for +: 'NoneType' and 'NoneType'` 로 사망 |
+| 재현 | 가짜 `/joint_states`+카메라 2개 + `virtual_omy_leader.py` + `il_recorder.py -p action_source:=topic -p action_topic:=/leader/joint_states` → start/stop → `data.json` 검사 → 변환 |
+| 안 드러난 이유 | 지금까지 모든 데이터셋(§19~§46)은 `next_state` 로 모았다. 실물 리더를 붙이는 첫날 터졌을 결함 |
+
+GELLO 가 기록하는 action 은 `agent.act(obs)` = **매핑 후 팔로워 명령**(`format_obs.save_frame` 의 `control`)이다.
+우리 스키마(§2.6)의 action 도 "UR16e 목표 관절"이므로 같은 것을 브리지가 내보내면 된다.
+
+**수정**
+- `omy_to_ur16e.py`: engaged 중 매 tick **`/omy_bridge/command_joint_states`**(JointState, UR 6관절 이름 + `finger_joint`)
+  발행 — 값은 이번 tick 에 실제로 보낸 명령(매핑·clamp·slew 후)과 그리퍼 목표(deadband 로 goal 을 건너뛴 tick 에도
+  목표값은 기록). 리더에 트리거가 없으면 팔로워의 `finger_joint` 현재값(hold).
+- `il_recorder.py`: `topic` 모드에서 action 토픽에 UR 팔 관절이 없으면 **`_ready()` 가 거부**(메시지에 올바른 토픽 안내);
+  action 토픽에 `finger_joint` 만 없으면 그리퍼는 `next_state` 로 폴백(경고 1회); 저장 직전 **null action 이 하나라도
+  있으면 저장 거부**(변환기에서 뒤늦게 죽는 대신 그 자리에서).
+- 문서: `CHECKLIST.md` H·E-3, `HARDWARE.md` 4-B ③, `README.md`, `plan_il_vla.md` §3.5(정정 블록)·할 일 표 5행,
+  `teleop_omy.launch.py` 헤더, `CLAUDE.md`.
+
+### 49.2 GELLO 에서 가져온 것 3건
+
+| # | GELLO | 우리(반영) |
+|---|---|---|
+| ① 리더 점프 가드 | 정렬 후에도 매 사이클 리더−팔로워 차 0.5 rad 초과면 `exit()` ("Action is too big") | 초안 `max_leader_jump`(절대 0.5 rad/샘플) → **§49.4 에서 오탐 확인, `max_leader_speed`(20 rad/s, Δq/Δt) 로 교체**. engaged 중 초과하면 disable, status 는 다음 enable 까지 **`leader_jump`** 로 유지(`stop_reason` — 워치독도 이제 `watchdog` 가 tick 에 덮이지 않고 남는다). 워치독은 "발행 중단"만 잡고 값 튐(케이블 접촉 불량·엔코더 wrap)은 slew 가 1 rad/s 로 충실히 따라갔던 구멍 |
+| ② 팔로워→리더 자동 정렬 | 리더를 아무 자세에 두면 팔로워가 스텝당 0.05 rad × 25 스텝 접근(초기 차 0.8 rad 초과만 거부), 직선 보간·충돌검사 없음 | **`/omy_bridge/sync_to_leader`**: 목표만 "현재 리더의 매핑 자세(clamp)"로 바꾼 `/sync` — MoveIt 충돌검사·컨트롤러 전환·streaming 복귀 그대로(`_start_sync` 로 공통화). 캘리브/튜닝용. **수집은 `/sync`**(시작 자세 통일) |
+| ③ 에피소드 꼬리 트리밍 | 저장 시 마지막 5 프레임 폐기, 30 프레임 미만 스킵 | `trim_tail_frames`(기본 0, **stop 시점에 읽어** `ros2 param set` 이 실제로 먹는다 — §42.3-C 의 조용한 no-op 함정 회피), `meta.json` 에 기록, `frames/*.jpg` 도 같이 삭제. §46 실패가 "정지"였고 정지 버튼을 누르는 꼬리는 항상 정지라 실험 가치 있음. 기존 데이터셋 비교를 위해 기본 0 |
+
+반영하지 않은 것(범위 밖 또는 이미 커버): 양팔·Quest·SpaceMouse·MuJoCo·FACTR 힘반영(팔로워 토크→리더;
+OMY 스택에도 없음), Dynamixel 내부 PID 가상 스프링/댐퍼(우리는 ROBOTIS `spring_actuator`+중력보상 컨트롤러가 담당,
+E-1 ⑤ 드리프트 점검), baud/`latency_timer`(우리 300 Hz·`setup.sh udev`·`check_env` 이미 있음), π/2 배수
+브루트포스 오프셋(우리 `--mode match` 는 연속값), 리더 EMA 필터(GELLO α=0.99 = 사실상 없음, 동일).
+
+### 49.3 검증 (도메인 42, 다른 컨테이너 ROS 와 격리, Isaac 없이)
+
+**T1 — 기록/가드 (가짜 팔로워: `/joint_states` 가 `/forward_position_controller/commands` 를 그대로 에코, 카메라 2개 검은 프레임)**
+
+| 단계 | 결과 |
+|---|---|
+| engage 전 `start_episode` | **거부** `not ready: action topic '/omy_bridge/command_joint_states' has no UR arm joints (seen: nothing yet) ...` |
+| `enable` → 명령 토픽 | 100.0 Hz |
+| 2 s 기록 → `data.json` | 79 프레임, jpg 79, null 0, **max\|action[t] − state[t+1]\| = 0.0059 rad**(에코 팔로워라 action≈다음 state), `action.gripper` 채워짐 |
+| 리더 샘플 1개를 166° 튀게 pub | `leader JUMPED 166.1 deg ... (> 28.6 deg) -- DISABLED`, status **`leader_jump`** 유지 → `enable` 다시 성공(게이트 통과) |
+| `ros2 param set trim_tail_frames 5` 후 에피소드 2 | 104 프레임, jpg 104, meta `trim_tail_frames: 5` |
+| `raw_to_lerobot.py` | `done -> t1/x (video: h264)` |
+
+**T2 — `sync_to_leader` (set1 mock hardware + `ur16e_moveit.launch.py launch_rviz:=false` + `teleop_omy.launch.py virtual_leader:=true`)**
+
+| 단계 | 결과 |
+|---|---|
+| 가상 리더가 팔로워(0°)에 homed → `reset_pose.py ready` 로 팔로워만 이동 | engage_error J2 +90°, J3 −152° … → `enable` **거부** |
+| `/omy_bridge/sync_to_leader` | 6 s 뒤 `synced`, 팔로워 `[−0.3, −89.6, −0.1, −89.7, −0.2, 0.4]°` = 리더 0° 의 매핑(=offset) |
+| `enable` → `disable` | `engaged` → `disabled` |
+| 회귀: `/omy_bridge/sync` | `synced`, 랑데부 도달 |
+
+산출물은 스크래치에서 지웠고 워크로드 프로세스 0. 실물 UR 에서 잴 BM(추종 지연·오버슈트, 그리퍼 반응)은
+GELLO 의 `servoJ(500 Hz, lookahead 0.2 s, gain 100)` 를 기준점으로 `HARDWARE.md` 시점에 측정.
+
+### 49.4 "동작한다"가 아니라 "이득인가" — 반증 시험 (사용자 요청)
+
+**② 점프 가드 초안은 오탐이었다.** 절대각 0.5 rad/샘플 기준을 **벽시계** 리더(300 Hz 사인, 진폭 1 rad, 주기 2 s
+= 최고 3.1 rad/s)로 돌리자 **정상 동작 중 `JUMPED 29.0 deg`** 로 끊겼다 — 리더 단독 발행률은 300 Hz(min 3 / max 4 ms)
+로 멀쩡한데, 브리지+팔로워가 같이 돌 때 수신 측에서 0.16 s 갭이 생긴 것. (가상 리더 `virtual_omy_leader.py` 는 tick
+누적 위상이라 SIGSTOP/CONT 해도 안 튀어서 이 오탐을 **못 보여준다** — 스톨 시험은 반드시 벽시계 리더로.)
+→ **속도 기준으로 재설계**: `max_leader_speed` 20 rad/s, Δt = 수신시각 차(≥ 1 ms).
+
+| 케이스 (벽시계 리더, `max_joint_speed` 10) | 절대각 초안 | 속도 기준 |
+|---|---|---|
+| 3.1 rad/s 정상 사인 | ✗ 오탐 29° | ✅ engaged 유지 |
+| 0.3 s 발행 끊김(< 워치독 0.5 s) 후 재개 | (무효 시험) | ✅ engaged 유지(0.9 rad/0.3 s = 3 rad/s) |
+| 글리치 1 샘플 +2 rad | — | ✅ `JUMPED 115.2 deg in 3 ms = 621 rad/s` → `leader_jump` |
+
+**③ `sync_to_leader` 가 GELLO 보다 나은 점 = 충돌검사.** 리더를 UR `[0,−90,+170,−90,0,0]°` 에 해당하는 자세로 고정
+발행(mock + MoveIt, `launch_rviz:=false`) → MoveIt `Found a contact between 'wrist_2_link' and 'upper_arm_link'`
+→ `error_code=99999` → `sync_failed`, 팔로워 `[0,−90,0,−90,0,0]°` 그대로. GELLO 의 25 스텝 직선 보간은 그대로 갔을 자세.
+
+**① 명령 action 이 `next_state` 보다 정보가 많은가 — sim 에서는 아니다.** Isaac set2 headless + 실제 제어 스택 +
+가상 리더(0.25 rad, 8 s) 로 `/omy_bridge/command_joint_states` 와 `/joint_states` 를 30 Hz 로 20 s(602 샘플) 동시 샘플링:
+
+| k (action[t] vs state[t+k]) | 0 | **1** | 2 | 3 | 5 | 10 |
+|---|---|---|---|---|---|---|
+| 평균 최대관절 오차 [°] | 0.122 | **0.028** | 0.160 | 0.295 | 0.574 | 1.272 |
+
+프레임당 이동 0.139° 이므로 명령은 state 를 **정확히 1 프레임(33 ms)** 앞서고 잔차는 이동량의 20%. 즉 topic_based
+sim 에서는 **리더 action ≈ next_state**. 둘이 갈라지는 조건(실물 servoj 지연, 접촉으로 팔이 막힘)은 실물에서만 잴 수
+있다 — `docs/gello_comparison.md` §5 ⑤. 그러니 ① 은 "결함 수정" 이지 sim 에서 입증된 이득이 아니다.
+
+**④ `trim_tail_frames` 는 미검증.** 이 컨테이너엔 사람 데모 raw 가 없고(스크립트 수집뿐) 가상 리더 꼬리는 무의미.
+`scripts/il_tail_stats.py`(신규, `install(PROGRAMS)`) 로 꼬리 정지 프레임을 먼저 재는 절차를 `CHECKLIST.md` H 에 넣고
+기본값 0 유지. 판정 전체는 **`docs/gello_comparison.md`**(GELLO 대조표·채택/미채택·실물 BM 6항목).
+
+### 49.5 속도 가드 2차 오탐(sim 시간) · "팔로워가 느리다"의 원인 분해 · Isaac headless 는 실시간의 3.8배 (2026-09-17)
+
+**가드 오탐 2**: Isaac(`use_sim_time:=true`) 에서 engage 직후 `leader JUMPED 1.2 deg in 1 ms = 20 rad/s` 로 끊김. 노드 시계가
+`/clock` 이라 같은 틱에 도착한 두 샘플의 Δt 가 0(→ 1 ms 바닥) 이고, sim 시간 리더는 300 Hz 샘플을 **묶음으로** 보낸다.
+→ Δt 는 **벽시계**(`time.monotonic`) 로, 그리고 스텝 자체가 `min_leader_jump`(0.1 rad) 를 넘어야 판정. 벽시계 리더 회귀
+(fast/stall/glitch) 0/0/1 유지, Isaac 세 케이스 전부 engaged 유지.
+
+**사용자 피드백 "실물에서 L100 보다 UR16e 가 느리게 추종"** — 속도를 정하는 곳을 분해했다(`HARDWARE.md` 4-B ⑤ 표).
+브리지 `max_joint_speed`(기본 1.0, 첫 연결 0.3 권장) 가 1순위, UR16e 관절 한계 120°/s(2.09 rad/s) 가 물리 상한, 드라이버
+servoj(gain 2000 / lookahead 0.03, `ur.ros2_control.xacro` 고정) 는 원인 아님. 브리지에 **`slew capped N%`** 경고(2 s 창,
+30% 초과 시 10 s 스로틀) 를 넣어 실물에서 어느 것이 병목인지 바로 보이게 했다(벽시계 리더 3.1 rad/s, cap 0.3 → `100%` 경고,
+cap 5.0 → 0회).
+
+Isaac 실측(리더 0.5 rad 사인 3 s, joints 0·4, 세 캡):
+
+| cap [rad/s] | 리더→state 최적 지연 | 평균 오차 | 최대 오차 |
+|---|---|---|---|
+| 0.3 | 3 프레임(100 ms) | 1.14° | 3.73° |
+| 1.0 | 1 프레임(33 ms) | 0.11° | 1.06° |
+| 2.0 / 3.0 | 1 프레임 | 0.27° / 0.10° | 1.37° / 1.11° |
+
+**★ 함정(새로 확인)**: headless Isaac 은 이 컨테이너에서 **실시간의 3.78배**로 돈다(`/clock` 17.3 s / 벽시계 4.6 s). sim 시간
+노드(리더·브리지) 와 벽시계 프로브가 섞이면 rad/s 절대값은 무의미하고, 300 Hz 리더 타이머도 못 따라간다(리더 peak 가 wall 기준
+0.52 rad/s 로 관측). 위 표는 **상대 비교만** 유효. 절대 속도가 중요한 시험은 실물 또는 실시간 제한이 있는 Isaac 으로.
+
+**하네스 함정 재발 3회**: 패턴 kill 스크립트(`killmine.sh`)를 그 패턴 문자열이 들어 있는 heredoc 과 **같은 `bash -c`** 에서 부르면
+자기 셸을 죽인다(rc 144). 편집(heredoc)과 실행(스크립트 경로만)은 반드시 별도 호출로.

@@ -197,12 +197,16 @@ ros2 service call /omy_bridge/sync    std_srvs/srv/Trigger   # 충돌 검사됨.
 ros2 topic echo   /omy_bridge/status                         # sync:moving → synced
 ros2 topic echo   /omy_bridge/engage_error                   # [rad] 관절별 오차 (5 Hz)
 ros2 service call /omy_bridge/enable  std_srvs/srv/Trigger
+ros2 service call /omy_bridge/sync_to_leader std_srvs/srv/Trigger   # 대안: UR16e 를 리더의 현재 자세로 (캘리브용)
+# IL 기록의 action 토픽 = /omy_bridge/command_joint_states (UR 이름, 매핑 후 명령). /leader/joint_states 아님
 #   ★ 리더가 로봇 현재자세와 안 맞으면 engage 거부 + 어긋난 관절을 도(deg)로 알려줌.
 #     engage_error 를 띄워 두면 호출 없이 보면서 맞출 수 있다 (이 게이트가 팔이 튀는 걸 막는다)
 #   ★ streaming 컨트롤러가 비활성이면 enable 도 거부 — "engage 됐는데 안 움직임" 방지
 ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
 #   패드: Options=enable / R3=sync (데드맨 L1 필요) · Create=disable (불필요)
 #   부호/오프셋/속도상한/clamp/랑데부 전부 런치 인자 — 실물 튜닝 시 코드 수정 불필요
+#   ★ 팔로워가 리더보다 느리면 브리지 로그 `slew capped N%` → max_joint_speed(기본 1.0, 실물 0.3→2.0) 가 병목. HARDWARE.md 4-B ⑤
+#   ★ 글리치 가드: 리더 샘플 간 속도 > max_leader_speed(20 rad/s) 이고 스텝 > min_leader_jump(0.1 rad) 면 disable, status leader_jump
 #   ★ offset/sign 은 DISABLED 일 때 ros2 param set 으로 즉시 변경된다(캘리브 반복용).
 #     ENGAGED 중이면 거부(팔이 움직인다). 나머지 파라미터는 param set 이 조용히 무시되지
 #     않고 거부되며 재기동 명령을 알려준다. param set 값은 노드와 함께 사라진다.
@@ -210,6 +214,8 @@ ros2 service call /omy_bridge/disable std_srvs/srv/Trigger
 # ── IL 데모 기록 (teleop 위에서) ──
 ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=true \
     -p out_dir:=<데이터경로> -p task:="put the blue block in the green zone"
+#   리더 action 을 기록하려면: -p action_source:=topic -p action_topic:=/omy_bridge/command_joint_states (engaged 후 시작)
+#   꼬리 정지 프레임 폐기: -p trim_tail_frames:=N (기본 0; 먼저 ros2 run ur_bringup il_tail_stats.py <raw_dir> 로 잰다)
 #   패드: Square=start / Triangle=stop+save / Cross=discard  (또는 /il/{start,stop,discard}_episode)
 #   태스크 변경: ros2 param set /il_recorder task "..."   ← 3종 이상 모을 것
 #   ML 환경에서 변환: python3 scripts/raw_to_lerobot.py --raw <데이터경로> --repo-id <user>/<name>
@@ -322,6 +328,7 @@ ros2 launch ur_bringup pick_place_demo.launch.py use_sim:=false cycles:=1
 ### VLA 트랙 (GR00T N1.7, 카메라 2대) — sim 파이프라인 검증 완료 2026-09-13, 30 ep/태스크 재판정 2026-09-15
 
 설계 정본 [`ur_bringup/docs/plan_groot_n17.md`](ur_bringup/docs/plan_groot_n17.md).
+GELLO 대조·실물 BM 항목: [`ur_bringup/docs/gello_comparison.md`](ur_bringup/docs/gello_comparison.md).
 **모델·데이터 경로에 새로 짤 코드가 0** — ACT → GR00T 는 전부 설정 변경이다.
 
 | 항목 | 상태 |
@@ -352,6 +359,9 @@ UR16e 가 다른 작업을 하다 텔레옵으로 넘어올 때 시작 자세가
 |---|---|
 | `/omy_bridge/sync` — MoveIt 으로 UR16e 를 랑데부로(컨트롤러 전환 포함, streaming 으로 복귀) | ✅ mock + Isaac sim, 잔차 0.5° |
 | `/omy_bridge/engage_error` — 관절별 오차 6개 @5 Hz | ✅ |
+| `/omy_bridge/sync_to_leader` — UR16e 를 리더의 매핑 자세로(MoveIt, GELLO 방식) | ✅ mock + MoveIt 2026-09-17 (§49) |
+| `/omy_bridge/command_joint_states` — 매핑·clamp·slew 후 명령(JointState, UR 이름 + `finger_joint`) = IL action | ✅ 기록→변환 round-trip (§49) |
+| `max_leader_speed` — engaged 중 리더 샘플 간 속도가 비정상(기본 20 rad/s)이면 자동 disable, status `leader_jump` | ✅ 오탐 2종 없음·글리치 차단 (§49.4) |
 | 패드 바인딩 — Options=enable · R3=sync(데드맨 필요) · Create=disable | ✅ |
 | `enable` 가드 — streaming 비활성이면 거부 | ✅ |
 | 리더 추종 회귀 | ✅ 오차 **0.14°** (기존 0.24°) |

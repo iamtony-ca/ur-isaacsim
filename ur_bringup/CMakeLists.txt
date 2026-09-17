@@ -15,6 +15,7 @@ install(
   PROGRAMS
     scripts/teleop_joy.py
     scripts/il_recorder.py
+    scripts/il_tail_stats.py
     scripts/raw_to_lerobot.py
     scripts/omy_to_ur16e.py
     scripts/virtual_omy_leader.py

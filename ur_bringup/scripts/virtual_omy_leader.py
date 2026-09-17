@@ -25,6 +25,14 @@ that pose, so nothing steps.
     purpose (this node is a test fixture, not a source of truth), so if you retune
     the bridge on real hardware, retune here too or the engage gate will refuse.
 
+*** WHAT THIS FIXTURE CANNOT TEST (HISTORY.md 49.5) ***
+The phase advances per TICK, not by wall-clock time, so pausing this process
+(SIGSTOP) and resuming produces no jump -- unlike a real encoder, which keeps
+moving while the PC hiccups. The bridge's glitch guard therefore has to be tested
+with a wall-clock leader, not with this node. And under use_sim_time a headless
+Isaac runs ~3.8x realtime, so rad/s measured against a wall clock are meaningless
+here; only relative comparisons hold.
+
 Usage
 -----
     ros2 run ur_bringup virtual_omy_leader.py                      # gentle sine

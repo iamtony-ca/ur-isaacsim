@@ -298,6 +298,13 @@ ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
 ```
 
 - ☐ `/omy_bridge/sync` 가 `synced` 로 끝나고 팔이 랑데부 자세에 있다.
+- ☐ (캘리브/튜닝 중 대안) **`/omy_bridge/sync_to_leader`** — 리더를 편한 아무 자세에 두고 부르면 UR16e 가 **리더의
+      매핑 자세로**(MoveIt, 충돌 검사) 온다. GELLO 의 "팔로워가 리더에게 간다" 방식. 데이터 수집은 시작 자세 통일을 위해 `/sync`.
+- ☐ engaged 중 리더 샘플 간 속도가 `max_leader_speed`(기본 20 rad/s; 사람 ≤ 5, 엔코더 wrap 수백) 를 넘으면 브리지가
+      스스로 끊고 status 가 `leader_jump` 로 남는다(케이블/엔코더 글리치 가드). 다시 `enable` 하면 engage 게이트가 판단한다.
+      절대각 기준이 아닌 이유(0.16 s 통신 끊김에 오탐)는 `docs/gello_comparison.md` §3-②.
+- ☐ 팔이 리더보다 느리면 브리지 로그의 **`slew capped N%`** 를 본다 — 나오면 `max_joint_speed` 가 병목(재기동으로 올림, UR16e 는
+      2.0 rad/s 이하), 안 나오면 UR 안전 설정/하드웨어 한계. 표: `HARDWARE.md` 4-B ⑤.
       **sync 는 move_group 이 필요하다**(`ur16e_moveit.launch.py`). 없으면 서비스가 그 사실과
       수동 절차를 알려주고 거부한다
 - ☐ **수동 절차를 쓸 때만**: `reset_pose.py ready` 는 MoveIt 이 아니라 **직선 관절 보간**이라
@@ -361,9 +368,15 @@ ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
   ```bash
   ros2 run ur_bringup il_recorder.py --ros-args \
       -p out_dir:=<경로> -p task:="<지시문>" \
-      -p action_source:=topic -p action_topic:=/leader/joint_states
+      -p action_source:=topic -p action_topic:=/omy_bridge/command_joint_states
   ```
   카메라가 1대뿐이면 `-p cameras.exterior:=none`
+  - ★ **action 토픽은 브리지의 `/omy_bridge/command_joint_states`**(UR 관절 이름, 매핑·clamp·slew 후 명령 + `finger_joint`
+    목표)이지 `/leader/joint_states`(이름이 `joint1..6`, 매핑 전 값)가 **아니다**. 후자를 주면 기록기는 시작을 거부한다
+    (`action topic ... has no UR arm joints`). 2026-09-17 이전 문서는 후자를 안내했다 — 결함, `HISTORY.md` §49.
+  - 기록은 브리지가 **engaged** 상태여야 시작된다(그때만 명령 토픽이 나온다). 꼬리 정지 프레임을 버리려면
+    `-p trim_tail_frames:=5`(GELLO 관례, 기본 0; 실행 중 `ros2 param set` 도 된다) — 켜기 전에
+    `ros2 run ur_bringup il_tail_stats.py <raw_dir>` 로 꼬리 정지 프레임 중앙값을 먼저 잰다(≈0 이면 무의미).
 - ☐ 변환: `deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py --raw <경로> --repo-id <id> --root <출력>`
 - ☐ 학습 (ACT): `deps/.venv-ml/bin/lerobot-train --policy.type=act --policy.push_to_hub=false ...`
 - ☐ GR00T 준비: `src/setup/setup.sh groot`(lerobot[groot] + `deps/hf_cache`) → 모델 파일 배치(다운로드 또는 복사,
