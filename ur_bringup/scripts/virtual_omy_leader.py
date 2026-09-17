@@ -63,8 +63,8 @@ class VirtualLeader(Node):
     def __init__(self):
         super().__init__("virtual_omy_leader")
         p = self.declare_parameter
-        p("sign", [1.0, 1.0, 1.0, 1.0, -1.0, 1.0])
-        p("offset", [0.0, -math.pi / 2, 0.0, -math.pi / 2, 0.0, 0.0])
+        p("sign", [1.0, -1.0, -1.0, -1.0, 1.0, -1.0])                    # = omy_to_ur16e.py (HISTORY.md 49.8)
+        p("offset", [math.pi, -math.pi / 2, 0.0, -math.pi / 2, 0.0, 0.0])
         p("rate", 300.0)             # the real leader runs at 300 Hz
         p("mode", "sine")            # sine | hold
         p("amplitude", 0.25)         # [rad] peak deviation

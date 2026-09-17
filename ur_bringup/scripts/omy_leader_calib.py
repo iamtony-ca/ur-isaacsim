@@ -50,6 +50,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.utilities import remove_ros_args
+from rcl_interfaces.srv import GetParameters
 from sensor_msgs.msg import JointState
 
 UR_JOINTS = [
@@ -58,9 +59,16 @@ UR_JOINTS = [
 ]
 LEADER_JOINTS = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
 LEADER_GRIPPER = "rh_r1_joint"
-# Keep in step with omy_to_ur16e.py.
-DEF_SIGN = [1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
-DEF_OFFSET = [0.0, -math.pi / 2, 0.0, 0.0, 0.0, 0.0]
+# Fallbacks only: when the bridge (/omy_to_ur16e) is running, its LIVE sign/offset are
+# fetched instead (2026-09-17 -- this copy had drifted from the bridge: J4 offset was
+# still 0 while the bridge had -pi/2 since HISTORY.md 47, so `verify` without --offset
+# reported J4 90 deg off).
+DEF_SIGN = [1.0, -1.0, -1.0, -1.0, 1.0, -1.0]                     # measured 2026-09-17 (HISTORY.md 49.8)
+DEF_OFFSET = [math.pi, -math.pi / 2, 0.0, -math.pi / 2, 0.0, 0.0]
+# ROBOTIS bring-up `ready` for the OMY follower = where the L100 rests (HISTORY.md 47).
+# Used by `check` as a sign sanity test: a joint that reads the OPPOSITE sign of this
+# while the leader is resting has its encoder direction inverted -> flip sign[k].
+REST_NOMINAL_DEG = [0.0, -90.0, 152.0, -62.0, 90.0, 0.0]
 UR_LIMITS = [2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * math.pi]
 
 
@@ -85,6 +93,18 @@ class Calib(Node):
         i = {n: k for k, n in enumerate(m.name)}
         if all(n in i for n in UR_JOINTS):
             self.foll.append([m.position[i[n]] for n in UR_JOINTS])
+
+    def live_params(self):
+        """sign/offset the bridge is actually running with, or None if it is not up."""
+        cli = self.create_client(GetParameters, "/omy_to_ur16e/get_parameters")
+        if not cli.wait_for_service(timeout_sec=1.0):
+            return None
+        fut = cli.call_async(GetParameters.Request(names=["sign", "offset"]))
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=2.0)
+        r = fut.result()
+        if r is None or len(r.values) != 2:
+            return None
+        return [list(v.double_array_value) for v in r.values]
 
     def collect(self, sec):
         self.lead.clear(); self.foll.clear(); self.grip.clear()
@@ -122,6 +142,21 @@ def mode_check(n, sec):
     if n.grip:
         print(f"    {LEADER_GRIPPER:<8}{math.degrees(statistics.mean(n.grip)):+8.2f}°  "
               f"(트리거를 쥐었다 놓으며 값이 변하는지 확인)")
+    # Sign sanity: only meaningful if the leader is RESTING (ROBOTIS `ready`). J1/J6 rest
+    # near 0 so they cannot be judged here -- for those, engage slowly and watch.
+    print("\n  부호 점검 (리더를 rest pose 에 둔 상태에서만 유효; 공칭 "
+          f"{[int(v) for v in REST_NOMINAL_DEG]}°):")
+    for k, j in enumerate(LEADER_JOINTS):
+        nom = REST_NOMINAL_DEG[k]
+        meas = math.degrees(statistics.mean(col(n.lead, k)))
+        if abs(nom) < 30:
+            print(f"    {j:<8}공칭 ≈0 → 여기선 판정 불가. engage 후 천천히 움직여 방향 확인 (J1/J6)")
+        elif abs(meas) > 30 and (meas > 0) != (nom > 0):
+            print(f"    {j:<8}실측 {meas:+.1f}° vs 공칭 {nom:+.0f}°  ★ 부호 반전 의심 → sign[{k}] 를 뒤집고 나서 match")
+        elif abs(meas) > 30:
+            print(f"    {j:<8}실측 {meas:+.1f}° vs 공칭 {nom:+.0f}°  OK (같은 부호)")
+        else:
+            print(f"    {j:<8}실측 {meas:+.1f}° — rest pose 가 아닌 듯. 리더를 내려놓고 다시")
     print("\n== follower (UR16e) ==")
     if not n.foll:
         print("  --    /joint_states 없음. 리더만 확인하는 단계라면 정상.")
@@ -198,13 +233,20 @@ def main():
     ap.add_argument("--offset", default=None, help="verify 용, 쉼표 구분 6개 [rad]")
     a = ap.parse_args(remove_ros_args(sys.argv)[1:])
 
-    sign = [float(x) for x in a.sign.split(",")] if a.sign else list(DEF_SIGN)
-    offset = [float(x) for x in a.offset.split(",")] if a.offset else list(DEF_OFFSET)
-    if len(sign) != 6 or len(offset) != 6:
-        print("sign/offset 은 각각 6개여야 한다"); return 2
-
     rclpy.init()
     n = Calib()
+    live = n.live_params()
+    if live is not None:
+        src = "브리지 /omy_to_ur16e 의 현재값"
+        sign = [float(x) for x in a.sign.split(",")] if a.sign else live[0]
+        offset = [float(x) for x in a.offset.split(",")] if a.offset else live[1]
+    else:
+        src = "내장 기본값 (브리지가 안 떠 있음)"
+        sign = [float(x) for x in a.sign.split(",")] if a.sign else list(DEF_SIGN)
+        offset = [float(x) for x in a.offset.split(",")] if a.offset else list(DEF_OFFSET)
+    if len(sign) != 6 or len(offset) != 6:
+        print("sign/offset 은 각각 6개여야 한다"); return 2
+    print(f"sign={sign} offset_deg={[round(math.degrees(v), 1) for v in offset]}  ← {src}")
     print(f"\nOMY-L100 캘리브레이션 도우미 — mode={a.mode}, {a.seconds:.0f}초 수집")
     print("(읽기 전용: 팔에 명령을 보내지 않는다)")
     try:

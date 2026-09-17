@@ -9,7 +9,7 @@ plan (incl. RViz named states). This script commands the joints back to a valid
 pose regardless, recovering the robot.
 
 Usage (sim or real, after the control stack is up):
-    python3 .../isaac/common/reset_pose.py [ready|ready_v1|home|up|zero]   # default: home
+    python3 .../isaac/common/reset_pose.py [ready|ready_v2|ready_v1|home|up|zero]   # default: home
 
 Named poses home/up/zero match ur_moveit_config's SRDF group_states; `ready` and
 `ready_v1` are ours (see below).
@@ -19,15 +19,17 @@ home/up/zero all have elbow_joint = 0, i.e. the arm fully extended, which is an
 ELBOW SINGULARITY. MoveIt Servo refuses to move there:
     [servo] Very close to a singularity, emergency stop     (status code 2)
 so gamepad/keyboard teleop looks "dead" even though everything is wired up.
-`ready` (2026-09-16, HISTORY.md 47) is the OMY-F3M follower's own bring-up `ready`
-mapped through the leader bridge: upper arm horizontal BACKWARD, forearm folded
-forward-up, tool pointing forward over the base at z~0.47 m. It is where the
-OMY-L100 leader rests, so teleop starts continuous, and it is the per-episode
-reset pose of every dataset collected from that date. Needs ~0.55 m free BEHIND
-the base at shoulder height (0.18 m) on a real cell.
-`ready_v1` is the previous pose (elbow ~90 deg, tool pointing down in front of the
-base). Datasets/checkpoints from before 2026-09-16 (red_left_100, wrist_only,
-3task_v3) start there -- roll those out from `ready_v1`, not `ready`.
+`ready` (2026-09-17, HISTORY.md 49.8) is where the REAL OMY-L100 rests, mapped
+through the measured leader bridge: base at ~180 deg, upper arm horizontal BACKWARD,
+forearm folded forward-up, gripper pointing forward. Same silhouette as the 2026-09-16
+pose but on the mirror branch (wrist offsets on the L100's side). Teleop starts
+continuous here and it is the per-episode reset pose of every dataset from this date.
+Needs ~0.55 m free BEHIND the base at shoulder height (0.18 m) on a real cell.
+`ready_v2` is the 2026-09-16 pose [0,-180,152,-152,-90,0] deg (HISTORY.md 47, URDF-derived
+branch; only sim smoke data, since deleted). `ready_v1` is the pose before that
+(elbow ~90 deg, tool pointing down in front of the base): datasets/checkpoints from
+before 2026-09-16 (red_left_100, wrist_only, 3task_v3) start there -- roll those out
+from `ready_v1`, not `ready`.
 
 NOTE: this talks to scaled_joint_trajectory_controller, so the arm must be in
 TRAJECTORY mode. If you are in streaming/teleop mode, switch first:
@@ -47,14 +49,16 @@ from builtin_interfaces.msg import Duration
 ARM = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint",
        "wrist_1_joint", "wrist_2_joint", "wrist_3_joint"]
 POSES = {
-    # Teleop/policy start pose = teleop RENDEZVOUS (HISTORY.md 47). This is the
-    # OMY-F3M follower's bring-up `ready` [0,-90,152,-62,90,0] deg
-    # (open_manipulator_bringup .../initial_positions.yaml) through the bridge map
-    # sign=[1,1,1,1,-1,1], offset=[0,-90,0,-90,0,0] deg. [0,-180,152,-152,-90,0] deg.
-    # Elbow 152 deg and wrist_2 -90 deg: clear of both singular sets. MoveIt
-    # /check_state_validity: valid. Reviewed in the Isaac GUI 2026-09-16.
-    # Must equal pick_place_demo.py READY and the bridge's `rendezvous` default.
-    "ready": [0.0, -3.1416, 2.6529, -2.6529, -1.5707, 0.0],
+    # Teleop/policy start pose = teleop RENDEZVOUS (HISTORY.md 49.8). The real L100's
+    # measured rest [-1.1,-88.4,152.0,-69.6,87.5,1.6] deg through the MEASURED map
+    # sign=[1,-1,-1,-1,1,-1], offset=[180,-90,0,-90,0,0] deg
+    # -> [178.9, -1.6, -152.0, -20.4, 87.5, -1.6] deg. Elbow -152 and wrist_2 87.5:
+    # clear of both singular sets. Direction of all 6 joints + gripper confirmed on
+    # hardware 2026-09-17. Must equal pick_place_demo.py READY and the bridge's
+    # `rendezvous` default.
+    "ready": [3.1217, -0.0276, -2.6534, -0.3559, 1.5263, -0.0276],
+    # 2026-09-16 pose (HISTORY.md 47): same silhouette on the URDF-derived branch.
+    "ready_v2": [0.0, -3.1416, 2.6529, -2.6529, -1.5707, 0.0],
     # The pose that was `ready` until 2026-09-16: elbow ~90 deg, tool pointing down
     # in front of the base. Kept because every dataset/checkpoint before that date
     # starts here (rollout harness: START_POSE=ready_v1).

@@ -525,7 +525,7 @@ open_manipulator_bringup/{launch,config}/omy_l100_leader_ai*        # ★ 리더
 |---|---|---|
 | 축 순서 @base | `+Z +Y +Y +Y +Z +Y` | UR16e 와 **동일** → 관절 직결 재확인 |
 | 링크 치수 | 94 / 265.8 / 222 / 52.5 / 46 / 44.5 / 125 mm | **도면(PNG)·STEP 과 완전 일치** (교차검증 3중) |
-| **J5 부호** | L100 `+Z` vs UR16e `wrist_2` **`−Z`** | **★ 반전 필요: `q_ur[4] = −q_omy[4]`** |
+| **J5 부호** | L100 `+Z` vs UR16e `wrist_2` **`−Z`** | ~~★ 반전 필요~~ → **정정(2026-09-17, `HISTORY.md` §49.8): 실물에서 J5 는 +1, J6 는 −1.** URDF 축 방향은 엔코더 증가 방향을 말해 주지 않는다. 최종 매핑은 실측 `sign [1,−1,−1,−1,1,−1]`, `offset [180,−90,0,−90,0,0]°`(거울 가지) |
 | 영점 자세 | L100 q=0 = **수직 상방** / UR16e q=0 = **수평 전방** | **J2 오프셋 ≈ −90°** 필요 |
 | 가동 관절 | 7 (`joint1..6` + `rh_r1_joint`) | DOF 6+그리퍼 표기 불일치 해소 |
 
@@ -568,7 +568,7 @@ open_manipulator_bringup/{launch,config}/omy_l100_leader_ai*        # ★ 리더
 | # | 작업 | 비고 |
 |---|---|---|
 | 1 | 리더 스택 구축 (**경로 B 권장**) | `ur16e.repos` 에 `open_manipulator` + `dynamixel_hardware_interface` + `robotis_interfaces` 추가 → colcon 오버레이. 폴백은 A(`deps/.venv-ml`) |
-| 2 | **부호·오프셋 캘리브레이션** (**URDF 로 대부분 확정됨**) | 확정: **J5 부호 반전**, **J2 −90° 오프셋**. 미확정: 손목 J4/J6 오프셋(구조 비동형 → 조작감 기준 실물 튜닝) + **다이나믹셀 엔코더 영점이 URDF 영점과 일치하는지 1회 확인** |
+| 2 | **부호·오프셋 캘리브레이션** (~~URDF 로 대부분 확정됨~~ → **실물 실측으로 확정 2026-09-17**, §49.8) | 실측: sign [1,−1,−1,−1,1,−1], offset [180,−90,0,−90,0,0]° — J5 는 **+1**(URDF 추정 −1 은 오진). 미확정: 손목 J4/J6 오프셋(구조 비동형 → 조작감 기준 실물 튜닝) + **다이나믹셀 엔코더 영점이 URDF 영점과 일치하는지 1회 확인** |
 | 3 | **`omy_to_ur16e` 브리지 노드**(신규) | L100 7관절 → UR16e 관절명 `JointState` 발행 → `forward_position_controller`. **IK 없음** |
 | 4 | 안전 게이트 | **관절별 clamp(UR 한계 ±95%) + 속도 상한 + deadman 필수**(16 kg 가반). ★ L100 J3 는 UR elbow 와 한계가 같아 **마진이 없다** — 위 정정 참조 |
 | 5 | 기록 | `il_recorder.py --action-source topic --action-topic /omy_bridge/command_joint_states`(★ 리더 토픽이 아니라 브리지 명령 토픽, §3.5 정정) — **기록기 수정 불필요** |
@@ -870,7 +870,7 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 | └ T2-5 실물 외부 카메라 런치(sim 과 동일 토픽) | ⬜ |
 | T3. **LeRobot 데이터셋 writer** — `il_recorder.py`(raw) + `raw_to_lerobot.py`(변환). 30Hz 정확, action 규약 검증 완료 | ✅ *(실제 LeRobot 변환은 ML 환경 생긴 뒤 검증)* |
 | **T3-B. OMY-L100 리더 스택**(경로 B) — 빌드 7개, apt 2개·**업그레이드 0**, mock 으로 컨트롤러 4종 active + `/leader/joint_trajectory` **300 Hz** 검증 | ✅ **완료** (2026-09-06, `HISTORY.md` §22 / `SETUP.md` §2-D) |
-| ├ **`omy_to_ur16e` 브리지** — J5 반전 + J2 −90° + UR 한계 ±95% clamp + slew + **engage 게이트** + watchdog. 합성 입력 **7/7 검증** | ✅ **완료** (`scripts/omy_to_ur16e.py`) |
+| ├ **`omy_to_ur16e` 브리지** — 실측 매핑(sign [1,−1,−1,−1,1,−1], offset [180,−90,0,−90,0,0]°, §49.8) + UR 한계 ±95% clamp + slew + **engage 게이트** + watchdog + 리더 속도 가드 + `slew capped` 진단. 합성 입력 7/7 + **실물 L100 6관절 방향·그리퍼 확인** | ✅ **완료** (`scripts/omy_to_ur16e.py`) |
 | ├ **Isaac sim 실기동 검증** — `virtual_omy_leader.py` + `teleop_omy.launch.py` 로 전 구간. **전체 추종오차 0.244°**(브리지 매핑 0.021°), 그리퍼 연동, disable 즉시정지, trajectory 복귀 | ✅ **완료** (`HISTORY.md` §22) |
 | └ 실물 L100 연결 후 손목 J4/J6 오프셋·엔코더 영점 튜닝 | ⬜ *(U2D2 연결 필요 — 파라미터만 조정, 코드 수정 불필요)* |
 | **T3-C. 0단계 — 공개 데이터셋 ACT 관통** — `svla_so101_pickplace` 500스텝(loss 13.5→2.54), sm_120 실동작, 피크 VRAM 6.4 GB. `lerobot[training]` 누락 + `/dev/shm` 64 MiB 함정 발견·수정 | ✅ **완료** (2026-09-07, `HISTORY.md` §24) |

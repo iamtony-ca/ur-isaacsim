@@ -18,18 +18,24 @@ with an offset wrist. That is the GELLO premise, so a per-joint affine map suffi
 
     q_ur[i] = sign[i] * q_leader[i] + offset[i]
 
-*** THE TWO NON-OBVIOUS TERMS -- do not "simplify" these away ***
-  sign[4] = -1   J5: leader joint5 spins about +Z, UR wrist_2_joint about -Z.
-  offset[1] = -pi/2
-                 J2: the two arms have different ZERO POSES. At q=0 the L100 points
-                 straight UP; the UR16e points HORIZONTALLY FORWARD. -90 deg on
-                 shoulder_lift reconciles them.
+*** THE MAP IS MEASURED, NOT DERIVED (2026-09-17, real L100 + sim UR16e, HISTORY.md 49.8) ***
+    sign   = [ 1, -1, -1, -1,  1, -1 ]
+    offset = [ 180, -90, 0, -90, 0, 0 ] deg
 
-  offset[3] = -pi/2
-                 J4: same story as J2 -- the wrist pitch zero differs by 90 deg.
-                 Verified with FK on both URDFs (HISTORY.md 47.2): with this offset
-                 the tool direction agrees for OMY `home`, `ready` and `init`; with
-                 0 the UR tool points DOWN beside the base when the leader rests.
+  It is the MIRROR BRANCH of the URDF-derived map: a UR-type arm reaches the same
+  silhouette two ways, (q1, q2, q3, q4, q5, q6) and (q1+180, -180-q2, -q3, -q4, ...),
+  which differ only in which side the wrist offsets hang on. The operator picked the
+  branch that LOOKS like the L100 (the L100's lateral offset is on the opposite side
+  from the UR16e's, HISTORY.md 21), so the base sits at ~180 deg and the three pitch
+  joints are negated. offset[1]/offset[3] = -90 are the zero-pose differences (the
+  L100 points straight UP at q=0, the UR16e horizontally); offset[0] = 180 is the
+  branch. The joint-by-joint direction test on hardware then fixed the signs the
+  URDF could not know: J5 is +1 (the URDF-only analysis said -1 -- wrong, the
+  encoder direction is not in the URDF) and J6 is -1. Every joint was checked to
+  move the same physical way as the leader, gripper pointing the same way.
+  If you re-measure, do it in this order: signs (engage slowly, one joint at a
+  time) THEN offsets (omy_leader_calib.py --mode match) -- flipping a sign changes
+  that joint's offset.
 
 *** AND THE LIMIT OF THIS MODEL ***
 The L100 is the leader for the OMY-F3M, NOT a scaled UR16e. Its lateral (wrist)
@@ -47,12 +53,13 @@ gate (below) refuses -- correctly, but unhelpfully, because matching six joints 
 eye is not practical. The fix is NOT to chase each other's arbitrary pose but to
 meet at a defined one:
 
-    leader  [0, -90, +152, -62, +90, 0] deg <- ROBOTIS bring-up `ready` for the
-                                               OMY-F3M follower (open_manipulator_bringup
-                                               config/omy_f3m_follower_ai/initial_positions.yaml);
-                                               the L100 rests in the same shape
+    leader  [-1.1, -88.4, +152.0, -69.6, +87.5, +1.6] deg <- MEASURED where the real
+                                               L100 rests (2026-09-17; ROBOTIS' nominal
+                                               `ready` [0,-90,152,-62,90,0] is close)
       maps to
-    UR16e   [0, -180, +152, -152, -90, 0] deg <- reset_pose.py `ready` (HISTORY.md 47)
+    UR16e   [178.9, -1.6, -152.0, -20.4, 87.5, -1.6] deg <- reset_pose.py `ready`
+                                               (HISTORY.md 49.8; the 2026-09-16 pose
+                                               [0,-180,152,-152,-90,0] is `ready_v2`)
 
 Until 2026-09-16 this used ROBOTIS' SRDF `home` [0,0,+90,-90,+90,0] (upper arm
 vertical), which is NOT where the leader rests -- the operator had to lift the leader
@@ -184,7 +191,7 @@ UR_LIMITS = [2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * ma
 # reset_pose.py's `ready`. Kept in step with that file ON PURPOSE: teleop must start
 # where the recorded demonstrations start, or a policy trained on them sees an
 # initial state it never saw in training (HISTORY.md 36).
-READY = [0.0, -math.pi, 2.6529, -2.6529, -math.pi / 2, 0.0]   # = reset_pose.py `ready` (HISTORY.md 47)
+READY = [3.1217, -0.0276, -2.6534, -0.3559, 1.5263, -0.0276]   # = reset_pose.py `ready` (HISTORY.md 49.8)
 
 # Parameters that CAN be changed at run time (only while disabled -- see _on_set_params).
 # These two exist because calibrating J4/J6 on real hardware is measure -> apply -> feel

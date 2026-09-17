@@ -15,7 +15,7 @@ How to read it:
 Run on the REAL robot (wall clock). Under a headless Isaac the sim runs ~3.8x realtime and these
 rad/s are meaningless (HISTORY.md 49.5).
 
-    python3 teleop_lag_probe.py [seconds] [--sign 1,1,1,1,-1,1] [--offset 0,-1.5708,0,-1.5708,0,0]
+    python3 teleop_lag_probe.py [seconds] [--sign 1,-1,-1,-1,1,-1] [--offset 3.1416,-1.5708,0,-1.5708,0,0]
 
 The sign/offset MUST be the ones the bridge is running with (teleop_omy.launch.py defaults, or
 what you set with `ros2 param set /omy_to_ur16e offset ...`).
@@ -72,8 +72,8 @@ class Probe(Node):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("seconds", nargs="?", type=float, default=20.0)
-    ap.add_argument("--sign", default="1,1,1,1,-1,1")
-    ap.add_argument("--offset", default="0,-1.5707963267948966,0,-1.5707963267948966,0,0")
+    ap.add_argument("--sign", default="1,-1,-1,-1,1,-1")
+    ap.add_argument("--offset", default="3.141592653589793,-1.5707963267948966,0,-1.5707963267948966,0,0")
     a = ap.parse_args()
     sign = [float(v) for v in a.sign.split(",")]
     offset = [float(v) for v in a.offset.split(",")]

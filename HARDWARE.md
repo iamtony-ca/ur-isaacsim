@@ -297,7 +297,8 @@ ros2 launch ur_bringup ur16e_2f85_real.launch.py robot_ip:=<UR16e_IP>
 ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=false max_joint_speed:=0.3 pad:=true
 
 # 랑데부: 리더를 rest pose 로 내려놓고 → UR16e 를 MoveIt 으로 이동 (충돌 검사됨)
-#   UR16e 는 [0,-180,152,-152,-90,0]° (상완 뒤로 수평) — 베이스 뒤 0.55 m 비어 있어야 함 (HISTORY.md §47)
+#   UR16e 는 [178.9,-1.6,-152.0,-20.4,87.5,-1.6]° (base 180°, 상완 뒤로 수평, 그리퍼 정면; HISTORY.md §49.8)
+#   — 베이스 뒤 0.55 m 비어 있어야 함. 매핑 sign [1,-1,-1,-1,1,-1] / offset [180,-90,0,-90,0,0]° 는 실물 실측값(런치 기본값)
 ros2 service call /omy_bridge/sync   std_srvs/srv/Trigger
 ros2 topic echo   /omy_bridge/status                     # sync:moving → synced
 ros2 topic echo   /omy_bridge/engage_error               # [rad] 관절별 오차, 보면서 리더를 맞춘다
@@ -323,13 +324,19 @@ ros2 run ur_bringup il_recorder.py --ros-args -p action_source:=topic \
 > 과한 경고였다 — 2026-09-06 확인.)
 
 ### ④ 실물에서만 해야 하는 캘리브레이션 — **여기가 남은 전부**
+> **2026-09-17 1호기 완료** (`HISTORY.md` §49.8): 실측 rest `[−1.1,−88.4,152.0,−69.6,87.5,1.6]°`, 최종 `sign [1,−1,−1,−1,1,−1]`,
+> `offset [180,−90,0,−90,0,0]°`, 랑데부 `[178.9,−1.6,−152.0,−20.4,87.5,−1.6]°` — 전부 런치 기본값. **다른 개체의 L100 이면** 아래를
+> 다시 한다(순서: 방향 → 오프셋). 절차는 `CHECKLIST.md` E-1~E-3, 도구는 `omy_leader_calib.py`(check 에 부호 점검, match/verify 는
+> 브리지의 현재값을 읽음).
+
 sim 은 URDF 상의 이상적인 리더였다. 실물은 **엔코더 영점이 URDF 영점과 같다는 보장이 없다.**
 
 1. **엔코더 영점 확인** — 리더를 **수직 상방**(URDF 영점 자세)으로 세우고
    `ros2 topic echo /leader/joint_states --once`. J1~J6 이 **≈0** 이어야 한다.
    벗어나면 그 값이 그대로 상수 오차이므로 `omy_to_ur16e` 의 `offset` 에 더한다.
 2. **방향 확인** — 각 관절을 조금씩 움직이며 UR 이 **같은 방향**으로 도는지 본다.
-   반대면 해당 `sign` 을 뒤집는다. (J5 는 **이미 −1** 이 기본값이다 — 부호를 또 뒤집지 말 것)
+   반대면 해당 `sign` 을 뒤집는다. **방향을 오프셋보다 먼저** 정한다(부호가 바뀌면 그 관절 오프셋도 바뀐다).
+   1호기 실측: J2·J3·J4·J6 = −1, J5 = +1(URDF 만으로 −1 이라 본 추정은 틀렸다 — 엔코더 방향은 URDF 에 없다).
 3. **손목 J4/J6 오프셋** — L100 은 UR16e 의 축소 복제본이 **아니어서**(측면 오프셋
    UR +290.7 mm vs L100 −46 mm, 부호까지 다름) 이 둘은 *유도되는 정답이 없다*.
    조작감 기준으로 맞춘다.
@@ -372,7 +379,7 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
 |---|---|---|---|---|
 | 1 | **브리지 slew `max_joint_speed`** | 기본 **1.0 rad/s**, 첫 연결 권장 0.3 | `teleop_omy.launch.py max_joint_speed:=<v>` (**재기동 필요**, `param set` 은 거부) | 관절별 속도 상한. 리더가 이보다 빠르면 팔이 뒤늦게 같은 자세에 도착한다. **브리지가 2 s 마다 `slew capped N%` 경고**를 찍으면 이게 병목 |
 | 2 | **UR16e 하드웨어 한계** | base·shoulder·elbow **120°/s (2.09 rad/s)**, wrist 180°/s | 못 바꿈 | 1.5 kg 리더는 사람이 이보다 빨리 휘두를 수 있다. **`max_joint_speed` 는 2.0 이하**로 두어야 보호정지(joint speed violation)가 안 난다 |
-| 3 | PolyScope 안전 설정 | Joint Limits → max speed, Reduced mode | 펜던트 | 2 보다 더 낮게 잡혀 있으면 여기가 병목 |
+| 3 | **PolyScope 안전 설정** | **Robot Limits → Tool Speed / Elbow Speed**(Normal 기본 5000 mm/s, Reduced 750), Joint Limits → max speed, Reduced mode | 펜던트 ≡ → Settings → Safety(비밀번호) → Apply → 재시작. 현재값은 우측 상단 체크섬을 눌러 읽기 전용으로 확인 | **★ 2026-09-17 실물 1호기: Tool/Elbow speed 가 160 mm/s 로 잡혀 있어 `max_joint_speed` 1.0→2.0 이 무의미했다.** 팔 길이 0.9 m 면 base 10°/s 에서 이미 한계. 관절 한계(130/190°/s)는 정상이었다. 값은 작업 셀 안전 평가로 정한다(단계: 750 → 1500 mm/s) |
 | 4 | 드라이버 servoj | gain 2000, lookahead 0.03 s | `ur_robot_driver/urdf/ur.ros2_control.xacro` 고정값(Jazzy 런치 인자 없음) | 응답 지연 수십 ms. GELLO 의 gain 100 / lookahead 0.2 보다 훨씬 타이트 → 원인 아님 |
 | 5 | 브리지 `publish_rate` | 100 Hz | 런치 인자 | 드라이버가 500 Hz servoj 로 보간. 원인 아님 |
 | — | speed slider | — | — | `forward_position_controller`(servoj) 경로에는 **영향 없음** |

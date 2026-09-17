@@ -115,7 +115,7 @@ def generate_launch_description():
                         "The elbow needs this: UR16e and L100 both allow +-pi, so "
                         "the leader can drive it to the limit with zero margin."),
         DeclareLaunchArgument(
-            "rendezvous", default_value="[0.0, -3.1416, 2.6529, -2.6529, -1.5707, 0.0]",
+            "rendezvous", default_value="[3.1217, -0.0276, -2.6534, -0.3559, 1.5263, -0.0276]",   # = reset_pose.py ready (HISTORY.md 49.8)
             description="UR16e joint target for /omy_bridge/sync. Default = "
                         "reset_pose.py `ready` = the OMY follower's bring-up ready pose "
                         "mapped onto the UR16e, i.e. where the L100 rests (HISTORY.md 47). "
@@ -126,16 +126,17 @@ def generate_launch_description():
         # does nothing (HISTORY.md 42.3-C). Calibration therefore re-launches with the
         # measured values -- omy_leader_calib.py --mode match prints this exact line.
         DeclareLaunchArgument(
-            "offset", default_value="[0.0, -1.5707963267948966, 0.0, -1.5707963267948966, 0.0, 0.0]",
+            "offset", default_value="[3.141592653589793, -1.5707963267948966, 0.0, -1.5707963267948966, 0.0, 0.0]",   # measured 2026-09-17, HISTORY.md 49.8
             description="[rad] per-joint offset in q_ur[i] = sign[i]*q_leader[i] + offset[i]. "
-                        "J2 and J4 = -pi/2 reconcile the two arms' pitch zero poses "
-                        "(FK-verified, HISTORY.md 47.2); J6 has no derivable value and "
-                        "comes from omy_leader_calib.py on real hardware."),
+                        "MEASURED on the real L100 2026-09-17 (HISTORY.md 49.8): J1 = pi is the "
+                        "mirror branch, J2/J4 = -pi/2 reconcile the pitch zero poses. Re-measure "
+                        "with omy_leader_calib.py --mode match AFTER the signs are settled."),
         DeclareLaunchArgument(
-            "sign", default_value="[1.0, 1.0, 1.0, 1.0, -1.0, 1.0]",
-            description="Per-joint sign. J5 = -1 because the L100 joint5 spins about "
-                        "+Z and the UR wrist_2_joint about -Z (measured, HISTORY.md 21). "
-                        "Do not flip it again."),
+            "sign", default_value="[1.0, -1.0, -1.0, -1.0, 1.0, -1.0]",   # measured on the real L100 2026-09-17 (mirror branch), HISTORY.md 49.8
+            description="Per-joint sign, MEASURED joint by joint on the real L100 2026-09-17 "
+                        "(HISTORY.md 49.8): J2-J4 and J6 are -1 (mirror branch), J5 is +1 -- the "
+                        "URDF-only guess of -1 for J5 was wrong. Re-measure by engaging slowly "
+                        "and moving one joint at a time; signs BEFORE offsets."),
         DeclareLaunchArgument(
             "pad", default_value="false",
             description="Start joy_node so the pad can call enable/disable/sync "

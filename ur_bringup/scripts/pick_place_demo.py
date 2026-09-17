@@ -85,12 +85,13 @@ ARM_JOINTS = [
 # extended, i.e. the elbow singularity that Servo refuses outright (HISTORY.md 15).
 # The planner tolerates it better than Servo does, but starting a repeatable data
 # run from a singular pose is asking for trouble.
-# 2026-09-16 (HISTORY.md 47): READY is now the teleop rendezvous = the OMY-L100
-# leader's rest pose mapped onto the UR16e (upper arm horizontal backward, forearm
-# folded forward-up, tool forward over the base). Episodes recorded from here start
-# exactly where a human teleop episode starts. Keep equal to reset_pose.py `ready`.
-# Datasets from before that date started at reset_pose.py `ready_v1`.
-READY = [0.0, -3.1416, 2.6529, -2.6529, -1.5707, 0.0]
+# READY is the teleop rendezvous = the real OMY-L100's rest pose through the MEASURED
+# bridge map (2026-09-17, HISTORY.md 49.8): base ~180 deg, upper arm horizontal backward,
+# forearm folded forward-up, gripper forward. Episodes recorded from here start exactly
+# where a human teleop episode starts. Keep equal to reset_pose.py `ready`.
+# 2026-09-16's URDF-derived pose is reset_pose.py `ready_v2`; datasets from before
+# 2026-09-16 started at `ready_v1`.
+READY = [3.1217, -0.0276, -2.6534, -0.3559, 1.5263, -0.0276]
 
 # The finger pads. Used to MEASURE the tool0 -> TCP offset from TF rather than
 # hardcoding it: the coupling standoff differs per set (+11 mm set 2, +18 mm set 3)

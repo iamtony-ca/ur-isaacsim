@@ -172,7 +172,7 @@ ros2 launch ur_bringup static_cam_tf.launch.py use_sim_time:=true
 ros2 launch ur_bringup teleop_servo.launch.py use_sim_time:=true     # servo + 스트리밍 컨트롤러(inactive)
 #   ★ 먼저 특이점 아닌 자세로: home/up/zero 는 팔꿈치 특이점이라 Servo 가 거부한다
 python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory
-python3 src/ur_bringup/isaac/common/reset_pose.py ready      # = 텔레옵 랑데부 = 데이터 시작 자세 (§47; 구 자세는 ready_v1)
+python3 src/ur_bringup/isaac/common/reset_pose.py ready      # = 텔레옵 랑데부 = 데이터 시작 자세 (2026-09-17 실측, §49.8; 구 자세 ready_v2/ready_v1)
 python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
 ros2 launch ur_bringup teleop_dualsense.launch.py                    # 패드 (L1=deadman 유지, L2/R2=그리퍼)
 ros2 run moveit_servo servo_keyboard_input                           # 패드 없으면 키보드로 대체
@@ -351,9 +351,10 @@ GELLO 대조·실물 BM 항목: [`ur_bringup/docs/gello_comparison.md`](ur_bring
 ### 텔레옵 랑데부 + sync/패드 — 2026-09-10
 
 UR16e 가 다른 작업을 하다 텔레옵으로 넘어올 때 시작 자세가 어긋나는 문제. **랑데부 = `reset_pose.py ready`
-= ROBOTIS 브링업의 OMY `ready`(리더가 놓이는 자세)를 매핑한 값 [0, −180°, +152°, −152°, −90°, 0]**
-(2026-09-16 재정의, `HISTORY.md` §47 — 이전 `ready` 는 SRDF `home` 매핑이라 리더 휴식 자세와 달랐다;
-구 자세는 `ready_v1`). 리더는 자동 구동되지 않고(중력보상 전용) 사람이 내려놓는다.
+= 실물 L100 이 손 떼도 서 있는 자세(실측 [−1.1,−88.4,152.0,−69.6,87.5,1.6]°)를 실측 매핑 `sign [1,−1,−1,−1,1,−1]`,
+`offset [180,−90,0,−90,0,0]°` 로 옮긴 [178.9°, −1.6°, −152.0°, −20.4°, 87.5°, −1.6°]**(2026-09-17 확정, `HISTORY.md` §49.8 —
+URDF 유도 매핑은 J5 방향이 틀렸고 사용자가 고른 거울 가지가 L100 과 같은 모양; 2026-09-16 URDF 가지는 `ready_v2`,
+그 전 SRDF `home` 매핑은 `ready_v1`). 리더는 자동 구동되지 않고(중력보상 전용) 사람이 내려놓는다.
 
 | 추가된 것 | 상태 |
 |---|---|

@@ -240,7 +240,7 @@ ros2 control list_controllers | grep forward_position_controller  # 없으면 �
 # ★ 학습과 같은 초기 조건을 만든다. 안 하면 정책이 얼어붙는다(§31.1)
 python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory
 ros2 service call /scene/reset_episode std_srvs/srv/Trigger
-python3 src/ur_bringup/isaac/common/reset_pose.py ready        # error_code: 0 확인. ★ 2026-09-16 이전 데이터셋의 정책은 ready_v1 (HISTORY §47.5)
+python3 src/ur_bringup/isaac/common/reset_pose.py ready        # error_code: 0 확인. ★ ready = 2026-09-17 실측 랑데부(§49.8); 2026-09-16 이전 데이터셋의 정책은 ready_v1, 2026-09-16 sim 스모크는 ready_v2
 python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
 ```
 
