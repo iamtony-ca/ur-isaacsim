@@ -691,7 +691,7 @@ apt 는 **2개뿐이고 업그레이드 0건**이다 — 컨트롤러가 요구�
 
 ### 하드웨어 없이 검증 (U2D2/L100 미연결 상태에서 가능)
 ```bash
-ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+ros2 launch ur_bringup omy_leader.launch.py \
     use_mock_hardware:=true use_self_collision_avoidance:=false
 ros2 control list_controllers -c /leader/controller_manager   # ★ 네임스페이스 /leader
 ros2 topic hz /leader/joint_trajectory                        # 300 Hz

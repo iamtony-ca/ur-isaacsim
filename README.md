@@ -180,7 +180,7 @@ python3 src/ur_bringup/isaac/common/switch_control_mode.py trajectory  # MoveIt/
 
 # ── OMY-L100 리더 (teleop leader, 중력보상 ros2_control) ── 설치: src/setup/setup.sh leader
 #    ★ 하드웨어 없이도 검증됨. 실물은 port_name:=/dev/ttyUSB0 (U2D2). 상세 SETUP.md 2-D
-ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+ros2 launch ur_bringup omy_leader.launch.py \
     use_mock_hardware:=true use_self_collision_avoidance:=false   # ★ 후자 반드시 false
 ros2 control list_controllers -c /leader/controller_manager       # ★ /leader 네임스페이스 필수
 #   → /leader/joint_states (7관절), /leader/joint_trajectory (300 Hz)
@@ -189,7 +189,7 @@ ros2 control list_controllers -c /leader/controller_manager       # ★ /leader 
 #    sim 검증됨: 추종오차 0.14°. Servo 불필요.  pad:=true 면 게임패드로도 조작
 ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true pad:=true
 #    virtual_leader:=true → 하드웨어 없이 /leader/joint_states 합성 (sim 검증용).
-#    실물은 false + 위 omy_l100_leader_ai.launch.py 를 port_name:=/dev/ttyUSB0 로
+#    실물은 false + 위 omy_leader.launch.py(ROBOTIS 런치 래퍼) 를 port_name:=/dev/ttyUSB0 로
 
 # ── 랑데부: 임의 자세에서 engage 하지 않는다 ──
 #    리더를 rest pose(손 떼도 서 있는 자세)로 내려놓고 → UR16e 를 MoveIt 으로 이동

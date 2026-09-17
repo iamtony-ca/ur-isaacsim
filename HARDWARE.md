@@ -274,13 +274,19 @@ cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer   # 1 이어야 함
 
 ### ② 리더 기동 (팔로워와 무관하게 단독 확인 가능)
 ```bash
-ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+ros2 launch ur_bringup omy_leader.launch.py \
     port_name:=/dev/ttyUSB0 use_self_collision_avoidance:=false
 ros2 control list_controllers -c /leader/controller_manager   # ★ /leader 네임스페이스
 ros2 topic echo /leader/joint_states --once
 ```
 컨트롤러 4개(`gravity_compensation` / `spring_actuator` / `joint_state_broadcaster` /
-`joint_trajectory_command_broadcaster`)가 전부 `active` 여야 한다. 손으로 팔을 움직이면
+`joint_trajectory_command_broadcaster`)가 전부 `active` 여야 한다.
+> **★ 왜 ROBOTIS 런치를 직접 안 띄우나 (2026-09-17 실물 첫 연결에서 확인, `HISTORY.md` §49.6)**: ROBOTIS 의
+> `gravity_compensation_controller` 가 **절대 토픽 `/joint_states`**(OMY-F3M 팔로워용)를 구독한다. 같은 도메인에 UR16e
+> 가 있으면 UR 의 `/joint_states` 를 받아 `Joint name 'joint1' not found in the first joint state message` 를
+> **UR 메시지마다** ERROR 로 찍는다. 자기충돌 회피(`/collision_flag`, 우리는 off)에서만 쓰는 데이터라 **기능상 무해**하지만
+> 로그가 묻힌다. `ur_bringup omy_leader.launch.py` 는 ROBOTIS 런치를 그대로 include 하면서 그 절대 토픽만
+> `/leader/joint_states` 로 리매핑한다(mock 재현: 4 s 에 ERROR 287건 → 0건, 300 Hz 유지). 손으로 팔을 움직이면
 `/leader/joint_states` 가 따라 변해야 한다. **여기까지가 UR16e 없이 되는 범위.**
 
 ### ③ UR16e 에 연결
@@ -373,6 +379,8 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
 
 권장 절차: 0.3 → 1.0 → 1.5 → 2.0 으로 올리면서 보호정지가 없는지 본다. sim 실측(Isaac, 리더 peak ≈1 rad/s):
 0.3 이면 지연 100 ms·최대 오차 3.7°, 1.0 이상이면 33 ms·1.1°(`HISTORY.md` §49.5).
+수치로 보려면 engaged 상태에서 리더를 움직이며 `python3 src/ur_bringup/scripts/harness/teleop_lag_probe.py 20`
+(리더→state 지연 k·오차, 명령의 peak 속도가 `max_joint_speed` 와 같으면 상한이 걸린 것; 합격선 `docs/gello_comparison.md` §5 ①).
 
 ### ⑥ 컨테이너에서 실물을 붙일 때 (Isaac 컨테이너 재사용 시)
 

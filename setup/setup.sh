@@ -396,6 +396,25 @@ stage_udev() {
   local src="$WS/src/open_manipulator/open_manipulator_bringup/open-manipulator-cdc.rules"
   local dst="/etc/udev/rules.d/99-open-manipulator-cdc.rules"
   [ -f "$src" ] || { warn "$src missing — run the 'sources' stage first"; return 0; }
+  # udev is a HOST daemon. Inside a container this stage writes a rules file the
+  # host's udevd never reads, and /sys is read-only -- so it would report success
+  # and change nothing (seen 2026-09-17: latency_timer stayed 16). Say so instead.
+  if [ -f /.dockerenv ] || grep -qE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null; then
+    warn "this is a container: udev rules must be installed on the HOST, not here."
+    echo "  On the host, run:"
+    echo "    sudo tee /etc/udev/rules.d/99-open-manipulator-cdc.rules >/dev/null <<'EOF'"
+    sed 's/^/    /' "$src"
+    echo "    EOF"
+    echo "    sudo udevadm control --reload-rules && sudo udevadm trigger   # then replug the U2D2"
+    echo "  Quick check without a rule (until replug): echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer"
+    echo "  Then verify from inside the container: cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer  -> 1"
+    local lt=/sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+    if [ -e "$lt" ]; then
+      [ "$(cat "$lt")" = "1" ] && ok "ttyUSB0 latency_timer = 1 (host already configured)" \
+        || warn "ttyUSB0 latency_timer = $(cat "$lt") -> do the host steps above"
+    fi
+    return 0
+  fi
   echo "  rule contents:"; sed 's/^/    /' "$src"
   echo "  -> mode 0666 (no sudo to open the port) and latency_timer=1."
   echo "     The FTDI default is 16 ms, which throttles a 4 Mbps DYNAMIXEL sync-read"
@@ -414,7 +433,7 @@ stage_udev() {
     fi
   fi
   echo "  smoke test WITHOUT the L100 attached:"
-  echo "    ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \\"
+  echo "    ros2 launch ur_bringup omy_leader.launch.py \\"
   echo "        use_mock_hardware:=true use_self_collision_avoidance:=false"
   echo "    ros2 control list_controllers -c /leader/controller_manager   # 4 active"
 }

@@ -4273,3 +4273,26 @@ Isaac 실측(리더 0.5 rad 사인 3 s, joints 0·4, 세 캡):
 
 **하네스 함정 재발 3회**: 패턴 kill 스크립트(`killmine.sh`)를 그 패턴 문자열이 들어 있는 heredoc 과 **같은 `bash -c`** 에서 부르면
 자기 셸을 죽인다(rc 144). 편집(heredoc)과 실행(스크립트 경로만)은 반드시 별도 호출로.
+
+### 49.6 실물 첫 연결(다른 PC): ROBOTIS 리더 컨트롤러가 UR16e 의 `/joint_states` 를 받는다 — 래퍼 런치로 해결 (2026-09-17)
+
+사용자가 새 PC 컨테이너(`bootstrap.sh --fresh`)에 UR16e(192.168.0.10)·L100 을 붙이고 T1(리더)·T2(UR)·T3(MoveIt)·T4(브리지)를
+띄우자 T1 에 `ERROR Joint name 'joint1' not found in the first joint state message`. 원인은
+`om_gravity_compensation_controller/src/gravity_compensation_controller.cpp:220` — **절대 토픽 `/joint_states`** 구독
+(`follower_joint_state_sub_`, OMY-F3M 팔로워의 상태를 받아 `/collision_flag` 가 참일 때 리더를 팔로워 쪽으로 당기는 용도).
+같은 도메인의 UR16e `/joint_states`(`shoulder_pan_joint`…)가 먼저 오니 인덱스 초기화가 실패하고 **UR 메시지마다** ERROR.
+`use_self_collision_avoidance:=false` 라 그 데이터는 읽히지 않아 **중력보상·`/leader/joint_states` 300 Hz 는 정상** — 로그 스팸.
+지금까지 안 보인 이유: sim 은 `virtual_omy_leader.py`(ROBOTIS 스택 없음), §22 의 mock 리더 시험은 UR 스택 없이 했다.
+
+**해결**: vcs 소스는 안 건드리고 `ur_bringup/launch/common/omy_leader.launch.py` 신설 — ROBOTIS 런치를 include 하고
+`SetRemap('/joint_states' → '/leader/joint_states')`. 절대 규칙이라 상대 이름(`joint_states` → `/leader/joint_states`)은 영향 없음.
+mock 재현(가짜 UR `/joint_states` 50 Hz + 리더 mock, 도메인 42):
+
+| 런치 | 4 s 동안 ERROR | `Joint index mapping initialized` | `/leader/joint_states` |
+|---|---|---|---|
+| `open_manipulator_bringup omy_l100_leader_ai.launch.py` | **287** | 0 | 300.0 Hz |
+| `ur_bringup omy_leader.launch.py` | **0** | 1 | 300.0 Hz |
+
+사용 명령을 전부 래퍼로 교체(`CHECKLIST` E-1, `HARDWARE` 4-B ②, `README`, `SETUP` §2-D, `setup.sh udev` 안내, 브리지·캘리브 독스트링,
+`teleop_omy.launch.py` 헤더). 같은 날 함께 고친 것: `setup.sh udev`/`check_env.sh` 가 컨테이너를 감지해 호스트 절차를 안내
+(컨테이너 안 udev 는 무효, `/dev/ttyUSB0` 권한은 컨테이너 재시작 전까지 `sudo chmod 666`), 실물 지연 프로브 `harness/teleop_lag_probe.py`.

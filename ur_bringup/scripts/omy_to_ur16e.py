@@ -102,7 +102,7 @@ SAFETY (this is a 16 kg-payload, 900 mm arm driven by a 1.46 kg toy)
 USAGE
 -----
     # leader (real: drop use_mock_hardware, add port_name:=/dev/ttyUSB0)
-    ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \\
+    ros2 launch ur_bringup omy_leader.launch.py \\
         use_mock_hardware:=true use_self_collision_avoidance:=false
     ros2 run ur_bringup omy_to_ur16e.py
 

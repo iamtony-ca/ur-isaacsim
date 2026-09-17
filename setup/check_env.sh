@@ -227,22 +227,36 @@ fi
 step "OMY-L100 real-hardware readiness (skipped unless a U2D2 is plugged in)"
 # All warnings, never failures: the sim half of this workspace does not need any
 # of it. These are the things that bite on the REAL machine (HARDWARE.md 4-B).
+# udev is a HOST daemon: inside a container the rule must be installed on the host
+# (HARDWARE.md 4-B (6)); the container's own /etc/udev is never read, and the
+# /dev/ttyUSB0 node inside the container keeps the MODE it had when the container
+# started -- a rule applied on the host afterwards does not change it until the
+# container is restarted (seen 2026-09-17: latency_timer 1 but node still 0660).
+in_container=0
+{ [ -f /.dockerenv ] || grep -qE 'docker|containerd|kubepods' /proc/1/cgroup 2>/dev/null; } && in_container=1
 if [ -e /dev/ttyUSB0 ]; then
   ok "/dev/ttyUSB0 present"
   lt=/sys/bus/usb-serial/devices/ttyUSB0/latency_timer
   if [ -e "$lt" ]; then
     # FTDI defaults to 16 ms, which throttles a 4 Mbps DYNAMIXEL sync-read to
     # ~60 Hz. The udev rule sets it to 1.
-    [ "$(cat "$lt")" = "1" ] && ok "latency_timer = 1" \
-      || warn "latency_timer = $(cat "$lt"), expected 1 -> run: setup/setup.sh udev, then replug"
+    if [ "$(cat "$lt")" = "1" ]; then ok "latency_timer = 1"
+    elif [ "$in_container" = 1 ]; then warn "latency_timer = $(cat "$lt"), expected 1 -> on the HOST: setup/setup.sh udev prints the commands; then replug"
+    else warn "latency_timer = $(cat "$lt"), expected 1 -> run: setup/setup.sh udev, then replug"; fi
   fi
-  [ -r /dev/ttyUSB0 ] && [ -w /dev/ttyUSB0 ] && ok "/dev/ttyUSB0 readable+writable" \
-    || warn "/dev/ttyUSB0 not accessible -> setup/setup.sh udev (rule sets mode 0666)"
+  if [ -r /dev/ttyUSB0 ] && [ -w /dev/ttyUSB0 ]; then ok "/dev/ttyUSB0 readable+writable"
+  elif [ "$in_container" = 1 ]; then
+    warn "/dev/ttyUSB0 not accessible ($(stat -c '%A %U:%G' /dev/ttyUSB0)) -> now: sudo chmod 666 /dev/ttyUSB0 ; permanently: host udev rule (mode 0666) + restart the container"
+  else warn "/dev/ttyUSB0 not accessible -> setup/setup.sh udev (rule sets mode 0666)"; fi
 else
   warn "no /dev/ttyUSB0 — U2D2 not plugged in. Sim needs none of this."
 fi
-[ -f /etc/udev/rules.d/99-open-manipulator-cdc.rules ] \
-  && ok "udev rule installed" || warn "udev rule absent -> setup/setup.sh udev (real HW only)"
+if [ "$in_container" = 1 ]; then
+  echo "       udev rule: lives on the HOST when running in a container (not checked here; latency_timer above is the proof)"
+else
+  [ -f /etc/udev/rules.d/99-open-manipulator-cdc.rules ] \
+    && ok "udev rule installed" || warn "udev rule absent -> setup/setup.sh udev (real HW only)"
+fi
 # The leader's three motors must have model files or the driver cannot start.
 dxl="$WS/install/dynamixel_hardware_interface/share/dynamixel_hardware_interface/param/dxl_model"
 if [ -d "$dxl" ]; then

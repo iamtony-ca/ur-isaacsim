@@ -23,7 +23,7 @@ Bring-up (Set 2/3 control stack must already be running)
     # 2) this launch
     #    SIM (no hardware):  virtual_leader:=true  -- fakes /leader/joint_states
     #    REAL:               virtual_leader:=false + run the ROBOTIS leader stack:
-    #      ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+    #      ros2 launch ur_bringup omy_leader.launch.py \
     #          port_name:=/dev/ttyUSB0 use_self_collision_avoidance:=false
     ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true
 

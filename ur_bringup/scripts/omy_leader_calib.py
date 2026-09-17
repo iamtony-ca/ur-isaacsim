@@ -104,7 +104,7 @@ def mode_check(n, sec):
     print("\n== leader ==")
     if not n.lead:
         print("  FAIL  /leader/joint_states 가 없다.")
-        print("        ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \\")
+        print("        ros2 launch ur_bringup omy_leader.launch.py \\")
         print("            port_name:=/dev/ttyUSB0 use_self_collision_avoidance:=false")
         return 1
     print(f"  OK    발행 {len(n.lead)/el:.0f} Hz  (실물 기대치 ~300 Hz)")

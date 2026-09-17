@@ -210,13 +210,15 @@ ros2 launch ur_bringup ur16e_moveit.launch.py use_sim:=false   # ☐ RViz plan�
 **순서가 중요하다.** E-1 이 틀리면 E-2 의 캘리브레이션은 틀린 값을 정밀하게 재는 일이 된다.
 
 ```bash
-ros2 launch open_manipulator_bringup omy_l100_leader_ai.launch.py \
+ros2 launch ur_bringup omy_leader.launch.py \
     port_name:=/dev/ttyUSB0 use_self_collision_avoidance:=false
 ros2 control list_controllers -c /leader/controller_manager   # ★ /leader 네임스페이스
 ros2 run ur_bringup omy_leader_calib.py --mode check
 ```
 
 - ☐ 컨트롤러 4개 전부 `active`
+- ☐ T1 에 `Joint name 'joint1' not found in the first joint state message` 가 **반복되면** ROBOTIS 런치를 직접 띄운 것
+      (UR16e 의 `/joint_states` 를 받음). 무해하지만 `ur_bringup omy_leader.launch.py`(리매핑 래퍼)로 띄우면 사라진다(`HARDWARE.md` 4-B ②)
 - ☐ 손으로 리더를 움직이면 `/leader/joint_states` 가 따라 변한다
 - ☐ **① 살아있는가** — 발행 **~300 Hz**, `joint1..6` + `rh_r1_joint` **7개 전부** 존재,
       관절별 표준편차 **< 0.01 rad**(`--mode check` 가 `★ 잡음 큼` 을 찍으면 배선/전원부터)

@@ -85,8 +85,9 @@
 
 ## 5. 실물 벤치마크 항목 (UR16e 도착 후, `HARDWARE.md` 4-B 시점)
 
-GELLO 수치를 기준점으로 삼는다. 측정 도구는 이미 있는 것으로 충분하다(`/omy_bridge/command_joint_states` vs
-`/joint_states` 를 같이 구독 — §49.4 의 lag probe 방식, `omy_leader_calib.py --mode check`).
+GELLO 수치를 기준점으로 삼는다. 측정 도구: **`scripts/harness/teleop_lag_probe.py [초]`**(리더 매핑값·브리지 명령·state 를
+30 Hz 로 동시 샘플링해 지연 k 와 오차, 그리고 slew 상한이 걸리는지 출력; 브리지 engaged 상태에서 리더를 움직이며 실행),
+`omy_leader_calib.py --mode check`(발행률·잡음).
 
 | # | 항목 | GELLO 기준점 | 우리 측정 방법 | 합격선(제안) |
 |---|---|---|---|---|
