@@ -138,6 +138,14 @@ def generate_launch_description():
                         "URDF-only guess of -1 for J5 was wrong. Re-measure by engaging slowly "
                         "and moving one joint at a time; signs BEFORE offsets."),
         DeclareLaunchArgument(
+            "gripper_in_open", default_value="0.0",
+            description="[rad] leader trigger (rh_r1_joint) reading when fully RELEASED "
+                        "(CHECKLIST E-1 (4)); maps to finger_joint 0.0 (open)."),
+        DeclareLaunchArgument(
+            "gripper_in_closed", default_value="-1.0",
+            description="[rad] leader trigger reading when fully SQUEEZED; maps to "
+                        "finger_joint 0.8 (closed). Both are estimates until measured."),
+        DeclareLaunchArgument(
             "pad", default_value="false",
             description="Start joy_node so the pad can call enable/disable/sync "
                         "without the operator letting go of the leader."),
@@ -176,6 +184,8 @@ def generate_launch_description():
             "engage_tol": LaunchConfiguration("engage_tol"),
             "max_leader_speed": LaunchConfiguration("max_leader_speed"),
             "min_leader_jump": LaunchConfiguration("min_leader_jump"),
+            "gripper_in_open": LaunchConfiguration("gripper_in_open"),
+            "gripper_in_closed": LaunchConfiguration("gripper_in_closed"),
             "limit_margin": LaunchConfiguration("limit_margin"),
             "rendezvous": ParameterValue(LaunchConfiguration("rendezvous"),
                                          value_type=None),
