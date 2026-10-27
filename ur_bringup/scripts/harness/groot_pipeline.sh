@@ -20,10 +20,13 @@
 # usage: groot_pipeline.sh [episodes_per_task]      (nohup ... > outputs/harness_logs/pipe_v3.log &)
 set -uo pipefail
 S="$(cd "$(dirname "$0")" && pwd)"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 N=${1:-30}
-V=v3
+# v3 = the weld-era run (HISTORY.md 46); a physical-grasp run gets its own name so
+# it can never overwrite or mix with it. Override with V=.
+if [ "$GRASP_MODE" = physical ]; then V="${V:-v4_phys}"; else V="${V:-v3}"; fi
 RAW="$WS/outputs/il_raw_3task_$V"
 DS="$WS/outputs/lerobot_ds_3task_$V"
 REPO="tony/ur16e_pick_place_3task_$V"
@@ -91,7 +94,7 @@ grep -aE "^== (rc|peak)" "$LOG/train_$V.log"
 [ -f "$CK/config.json" ] || { echo "FAIL: no final checkpoint (rc=$trc)"; tr '\r' '\n' < "$LOG/train_$V.log" | grep -aE "Error|Traceback" | tail -5; exit 1; }
 echo "   checkpoints: $(ls "$OUT/checkpoints")"
 
-export START_POSE=ready   # this pipeline collects with the current READY (HISTORY.md 47)
+export START_POSE=ready   # this pipeline collects with pick_place_demo's READY (= ready) in either grasp mode (HISTORY.md 47)
 stamp "[4/6] rollout A: radius 0.06, seed 171, 10/task"
 RADIUS=0.06 SEED=171 TAG=gr8v3a ROLL_TAG=grv3a bash "$S/groot_v8.sh" 10 90 "$CK" > "$LOG/rollout_${V}_a.log" 2>&1
 grep -aE "^     |^   |^== (per-task|total)" "$LOG/rollout_${V}_a.log" | grep -vE "stack ready|forward_position|attempt"

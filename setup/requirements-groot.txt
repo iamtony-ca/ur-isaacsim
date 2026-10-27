@@ -6,5 +6,6 @@
 # Same pin as requirements-ml.txt -- the extra must resolve to the SAME lerobot, or pip
 # would replace it. setup.sh refuses the install if the resolver wants to change ANY
 # already-installed package (torch above all: a PyPI torch has no sm_120 kernels).
-# Exact versions that were verified end-to-end are in requirements-ml.lock.
+# Exact versions that were verified end-to-end are in requirements-ml.lock, which setup.sh
+# passes as pip constraints here too (ML_UNLOCKED=1 opts out).
 lerobot[groot]==0.6.1

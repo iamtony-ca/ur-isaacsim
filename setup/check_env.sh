@@ -1,15 +1,50 @@
 #!/usr/bin/env bash
 # Verify the UR16e workspace environment. Read-only — changes nothing.
 #
-#   ./check_env.sh          # full report, exit 1 if any REQUIRED check fails
+#   ./check_env.sh             # full report, exit 1 if any REQUIRED check fails
+#   ./check_env.sh --verbose   # same, plus the per-package apt drift list (normally one line)
+#   ./check_env.sh --snapshot  # (re)write apt-versions.lock from THIS machine, then exit
+#                              # -- the one mode that writes (a file next to this script)
 #
 # Use it on a fresh machine after setup.sh, and as a health check when something
 # behaves oddly (it catches the failure modes that cost us the most time:
 # GPU-arch mismatch, apt pin not effective, wrong topic_based version).
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# The workspace is wherever this file lives (<ws>/src/setup); WS=... overrides.
+export WS="${WS:-$(cd "$HERE/../.." && pwd)}"
 source "$HERE/lib.sh" 2>/dev/null || { echo "lib.sh missing"; exit 1; }
 set +e   # keep going and report everything
+
+# apt packages whose versions define "the verified stack" (apt-versions.lock). Everything
+# setup.sh installs from packages.ros.org / NVIDIA, plus what our code imports. Not the
+# Ubuntu base libs: those follow noble-updates and are not what breaks this workspace.
+APT_LOCK="$HERE/apt-versions.lock"
+APT_LOCK_RE="ros-$ROS_DISTRO-.*|ros2-apt-source|ros-dev-tools|python3-(vcstool|colcon-common-extensions|colcon-core|rosdep|scipy|matplotlib)|cuda-(toolkit|nvcc|cudart|libraries)-[0-9]+-[0-9]+|libnvvpi[0-9]+|vpi[0-9]+-dev"
+apt_snapshot() {   # installed "pkg=version" lines of that set, sorted
+  dpkg-query -W -f='${db:Status-Abbrev}${Package}=${Version}\n' 2>/dev/null \
+    | awk '/^ii /{print $2}' | grep -E "^($APT_LOCK_RE)=" | sort
+}
+if [ "${1:-}" = "--snapshot" ]; then
+  {
+    echo "# apt-versions.lock -- installed versions of the apt stack this workspace was verified on."
+    echo "# Written by: src/setup/check_env.sh --snapshot   ($(date +%F), Isaac $(cut -d+ -f1 /isaac-sim/VERSION 2>/dev/null || echo '?'))"
+    echo "# Set: ros-$ROS_DISTRO-*, ROS tooling, CUDA toolkit, VPI, python3-scipy/matplotlib (APT_LOCK_RE in check_env.sh)."
+    echo "# check_env.sh WARNs (never fails) on drift. packages.ros.org keeps ONLY the latest build, so"
+    echo "# these exact versions are usually not installable later; this file says what changed, and"
+    echo "# snapshots.ros.org (dated Jazzy snapshot) is the way to get them back if a drift breaks something."
+    apt_snapshot
+  } > "$APT_LOCK.tmp" && mv "$APT_LOCK.tmp" "$APT_LOCK" \
+    && echo "wrote $APT_LOCK ($(grep -vc '^#' "$APT_LOCK") packages)" \
+    || { echo "could not write $APT_LOCK"; rm -f "$APT_LOCK.tmp"; exit 1; }
+  exit 0
+fi
+VERBOSE=0
+case "${1:-}" in
+  "") ;;
+  -v|--verbose) VERBOSE=1; [ $# -eq 1 ] || { echo "usage: $0 [--verbose | --snapshot]"; exit 2; } ;;
+  *) echo "usage: $0 [--verbose | --snapshot]"; exit 2 ;;
+esac
 
 FAILED=0
 req()  { if [ "$1" = 0 ]; then ok "$2"; else err "$2"; FAILED=1; fi; }
@@ -20,11 +55,23 @@ echo "  $(. /etc/os-release && echo "$PRETTY_NAME")  kernel $(uname -r)"
 [ -d "/opt/ros/$ROS_DISTRO" ]; req $? "ROS 2 $ROS_DISTRO present"
 if command -v nvidia-smi >/dev/null; then
   nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | sed 's/^/  GPU: /'
+  # Driver vs the CUDA toolkit the cumotion stage installed (13.2 here). Within one major
+  # version CUDA's minor-version compatibility covers an older driver (verified: driver
+  # 580 = "CUDA 13.0" runs the 13.2 toolkit); a LOWER major (e.g. an R570 = 12.x driver)
+  # cannot run CUDA 13 code at all -> cuMotion / source-built nvblox fail at start-up.
+  drv_cuda="$(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: *[0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+  tk="$(grep -A2 '"cuda" *:' /usr/local/cuda/version.json 2>/dev/null | grep -oE '"version" *: *"[0-9.]+"' | grep -oE '[0-9]+(\.[0-9]+)+' | head -1)"
+  if [ -n "$drv_cuda" ] && [ -n "$tk" ]; then
+    if [ "${tk%%.*}" -gt "${drv_cuda%%.*}" ] 2>/dev/null; then
+      warn "CUDA toolkit $tk needs a newer driver: this driver supports CUDA $drv_cuda (CUDA 13 needs >= R580) -> cuMotion/nvblox will not start"
+    else ok "driver supports CUDA $drv_cuda; toolkit /usr/local/cuda = $tk (same major: minor-version compatible)"; fi
+  fi
 else warn "nvidia-smi not found"; fi
 if [ -x /isaac-sim/python.sh ]; then
   iv="$(cat /isaac-sim/VERSION 2>/dev/null | cut -d+ -f1)"
   case "$iv" in
-    6.0.1*|6.1.0*) ok "Isaac Sim $iv (verified: 6.0.1, 6.1.0-rc.26)" ;;
+    6.0.1*|6.1.0-rc.26*) ok "Isaac Sim $iv (verified: 6.0.1, 6.1.0-rc.26)" ;;
+    6.1.0*) warn "Isaac Sim $iv: only 6.1.0-rc.26 of the 6.1.0 line was verified (GA/other builds untested) -- run the SETUP.md 5 smoke" ;;
     *) warn "Isaac Sim ${iv:-?} is not a verified version (6.0.1 / 6.1.0) -- run the SETUP.md 5 smoke first" ;;
   esac
 else warn "Isaac Sim not at /isaac-sim (sim stages will not run)"; fi
@@ -60,6 +107,37 @@ for p in realsense2-camera isaac-ros-cumotion isaac-ros-cumotion-moveit \
          isaac-ros-cumotion-robot-segmenter nvblox-ros; do
   apt_installed "ros-$ROS_DISTRO-$p"; opt $? "ros-$ROS_DISTRO-$p (optional: camera / GPU planning)"
 done
+# base_placement/ runs on system python3 (scipy: ur16e_kin.py, matplotlib: place_base.py --plot).
+python3 -c "import scipy, matplotlib" 2>/dev/null; req $? "system python3: scipy + matplotlib importable (base_placement; base stage installs them)"
+
+# Version drift vs the verified apt stack (apt-versions.lock). WARN only: a newer ROS
+# build is usually fine, but when something regresses this is the first place to look
+# (topic_based 0.2.1 vs ros2_control, the diagnostic_updater ABI trap, ...).
+if [ -f "$APT_LOCK" ]; then
+  drift="$(apt_snapshot | awk -F= -v lock="$APT_LOCK" '
+    BEGIN { while ((getline l < lock) > 0) { if (l ~ /^#/ || l == "") continue
+              i = index(l, "="); want[substr(l, 1, i-1)] = substr(l, i+1) } }
+    { i = index($0, "="); have[substr($0, 1, i-1)] = substr($0, i+1) }
+    END { for (p in want) {
+            if (!(p in have)) { print "  missing   " p " (lock " want[p] ")"; continue }
+            if (have[p] != want[p]) {
+              wu = want[p]; hu = have[p]; sub(/-[^-]*$/, "", wu); sub(/-[^-]*$/, "", hu)
+              print (wu == hu ? "  rebuild   " : "  VERSION   ") p " " want[p] " -> " have[p] } } }' | sort)"
+  if [ -z "$drift" ]; then ok "apt stack matches apt-versions.lock ($(grep -vc '^#' "$APT_LOCK") packages)"
+  else
+    nver="$(grep -c '^  VERSION' <<<"$drift")"; nreb="$(grep -c '^  rebuild' <<<"$drift")"; nmis="$(grep -c '^  missing' <<<"$drift")"
+    # One line by default: a FRESH install always drifts (packages.ros.org keeps only the
+    # latest build -- measured 2026-10-21: 64 lines on a stock-image install), and the real
+    # breakage this guards against is tested exactly by the ABI section below. The list is
+    # what to read when something regresses: --verbose.
+    if [ "$((nver + nmis))" = 0 ]; then
+      ok "apt stack = apt-versions.lock up to $nreb same-version rebuild(s)"
+    else
+      warn "apt drift vs apt-versions.lock: $nver upstream version(s), $nreb rebuild(s), $nmis missing -- expected on a newer install; suspect it on regressions (list: $0 --verbose)"
+    fi
+    if [ "$VERBOSE" = 1 ]; then sed 's/^/     /' <<<"$drift"; fi
+  fi
+else warn "apt-versions.lock missing ($APT_LOCK) -- version drift not checked"; fi
 
 step "ABI consistency (ros2_control <-> diagnostic_updater)"
 # Compare UPSTREAM versions only: the Debian revision carries a per-package build
@@ -72,6 +150,18 @@ echo "  controller-manager=$cm  hardware-interface=$hi"
 # diagnostic_updater) leaves controller_manager dying with
 #   undefined symbol: diagnostic_updater::Updater
 echo "  diagnostic-updater=$(dpkg-query -W -f='${Version}' "ros-$ROS_DISTRO-diagnostic-updater" 2>/dev/null)"
+# The real test of that trap: ask the dynamic linker. Cheap (tens of ms) and exact.
+# ROS binaries carry no RUNPATH: without /opt/ros/<distro>/setup.bash in the environment
+# ldd cannot find librclcpp & co. and reports ~56 bogus "undefined symbol"s, so resolve
+# with ROS sourced in a subshell (this script is meant to run from a plain terminal too).
+_ldd_r() { ( set +u; source "/opt/ros/$ROS_DISTRO/setup.bash" >/dev/null 2>&1; ldd -r "$1" 2>&1 ); }
+for bin in "/opt/ros/$ROS_DISTRO/lib/controller_manager/ros2_control_node:req" \
+           "/opt/ros/$ROS_DISTRO/lib/librealsense2_camera.so:opt"; do
+  f="${bin%:*}"; kind="${bin##*:}"
+  [ -e "$f" ] || continue
+  und="$(_ldd_r "$f" | grep -cE 'undefined symbol|not found')"
+  "$kind" "$([ "$und" = 0 ] && echo 0 || echo 1)" "no undefined symbols / missing libs: $(basename "$f") ($und) -- else partial-upgrade ABI mismatch, HARDWARE.md 4"
+done
 
 step "source dependencies"
 tb="$WS/src/topic_based_hardware_interfaces"
@@ -80,6 +170,13 @@ if [ -d "$tb" ]; then
   [ "$v" = "0.2.1" ]; req $? "topic_based_hardware_interfaces = 0.2.1 (got '${v:-none}'; other versions make /joint_states all-NaN)"
 else err "topic_based_hardware_interfaces missing — run setup.sh sources"; FAILED=1; fi
 [ -d "$WS/src/ros2_robotiq_gripper" ]; opt $? "ros2_robotiq_gripper (real gripper only)"
+# The build stage builds these whenever the source is there, so a missing install dir
+# means that build FAILED (it used to be reported as "built"); the real 2F-85 needs them.
+if [ -d "$WS/src/ros2_robotiq_gripper" ]; then
+  for p in serial robotiq_driver robotiq_controllers; do
+    [ -d "$WS/install/$p" ]; req $? "  built: $p (real 2F-85 driver; rebuild: setup/setup.sh build)"
+  done
+fi
 if [ -d "$WS/src/isaac_ros_nvblox" ]; then
   [ -f "$WS/src/isaac_ros_nvblox/nvblox_ros/nvblox_core/CMakeLists.txt" ]
   opt $? "nvblox_core submodule initialised"
@@ -89,6 +186,16 @@ step "GPU architecture vs binaries"
 sm="$(gpu_sm)"
 if [ -n "$sm" ]; then
   echo "  this GPU: sm_$sm"
+  # The apt nvblox_node is sm_75-only (no PTX). When the workspace's source-built nvblox_ros
+  # covers this GPU it is the one that runs -- the overlay registers the same component
+  # (nvblox::NvbloxNode) and shadows /opt/ros once install/setup.bash is sourced -- so the
+  # apt binary's arch list is information, not a problem (it used to WARN on every
+  # correct sm_120 install).
+  ws_nvblox="$WS/install/nvblox_ros/lib/libnvblox_lib.so"
+  ws_nvblox_ok=0
+  [ -e "$ws_nvblox" ] && cuda_archs_of "$ws_nvblox" | grep -qw "sm_$sm" \
+    && [ -f "$WS/install/nvblox_ros/share/ament_index/resource_index/rclcpp_components/nvblox_ros" ] \
+    && ws_nvblox_ok=1
   for bin in "/opt/ros/$ROS_DISTRO/lib/nvblox_ros/nvblox_node:apt nvblox_node" \
              "$WS/install/nvblox_ros/lib/libnvblox_lib.so:workspace nvblox (source build)" \
              "/opt/ros/$ROS_DISTRO/lib/libcumotion.so:cuMotion engine"; do
@@ -97,6 +204,8 @@ if [ -n "$sm" ]; then
     a="$(cuda_archs_of "$f")"
     if [ -z "$a" ]; then warn "$label: could not read archs (cuobjdump missing?)"
     elif grep -qw "sm_$sm" <<<"$a"; then ok "$label supports sm_$sm  [$a]"
+    elif [ "$label" = "apt nvblox_node" ] && [ "$ws_nvblox_ok" = 1 ]; then
+      ok "$label lacks sm_$sm [$a] -- expected and unused: the workspace source build below shadows it"
     else warn "$label does NOT support sm_$sm  [$a]"; fi
   done
   if [ -e "/opt/ros/$ROS_DISTRO/lib/nvblox_ros/nvblox_node" ] \
@@ -132,7 +241,7 @@ except Exception as e:
     err "torch unusable in the ML venv"; FAILED=1
   elif [ -n "$sm" ] && ! grep -q "sm_$sm" <<<"$out"; then
     err "ML torch has NO kernels for sm_$sm -> reinstall from a CUDA index that does:"
-    err "  TORCH_INDEX=https://download.pytorch.org/whl/cu130 setup/setup.sh ml"
+    err "  TORCH_INDEX=https://download.pytorch.org/whl/cu130 setup/setup.sh ml   (keeps torch==2.11.0: lerobot 0.6.1 needs <2.12)"
     FAILED=1
   elif [ -n "$sm" ]; then
     ok "ML torch supports sm_$sm"
@@ -148,6 +257,19 @@ except Exception as e:
   # "--robot.type: invalid choice: 'ur16e_ros'" (HISTORY.md 48.8).
   "$mlpy" -c "import importlib.metadata as m; assert any(d.metadata['Name'].startswith('lerobot_robot_ur16e_ros') for d in m.distributions())" 2>/dev/null
   req $? "LeRobot robot plugin lerobot_robot_ur16e_ros installed in the venv (rollouts need --robot.type=ur16e_ros)"
+  # Drift vs the verified venv (setup.sh installs with it as pip constraints unless
+  # ML_UNLOCKED=1). Local tags (+cu128) and editable installs are ignored. WARN only.
+  if [ -f "$HERE/requirements-ml.lock" ]; then
+    mdrift="$(env -i HOME="$HOME" PATH=/usr/bin:/bin "$mlpy" -m pip freeze 2>/dev/null \
+      | awk -v lock="$HERE/requirements-ml.lock" '
+        function key(n) { n = tolower(n); gsub(/_/, "-", n); return n }
+        function ver(v) { sub(/\+.*/, "", v); return v }
+        BEGIN { while ((getline l < lock) > 0) { if (l !~ /==/ || l ~ /^#/) continue
+                  split(l, a, "=="); want[key(a[1])] = ver(a[2]) } }
+        /==/ { split($0, a, "=="); k = key(a[1]); if ((k in want) && ver(a[2]) != want[k]) print k " " want[k] " -> " ver(a[2]) }')"
+    if [ -z "$mdrift" ]; then ok "ML venv matches requirements-ml.lock (packages present in both)"
+    else warn "ML venv differs from requirements-ml.lock in $(wc -l <<<"$mdrift") package(s):"; head -10 <<<"$mdrift" | sed 's/^/       /'; fi
+  fi
 
   # A container started without --shm-size has a 64 MiB /dev/shm, which cannot be
   # enlarged on a shared machine (a dedicated one: recreate with --shm-size=8g+).
@@ -171,6 +293,14 @@ except Exception as e:
   else
     ok "/dev/shm is ${shm_mb:-?}M (large enough for default DataLoader sharing)"
   fi
+  # Caches stay in deps/ (setup.sh ml: ur_ws_cache_paths.pth + resnet18 pre-fetch). Without
+  # them ACT training/rollouts write ~/.cache/{torch,huggingface} and a rollout DOWNLOADS
+  # resnet18 the first time (needs internet). WARN: functionally fine with a network.
+  th="$(env -u TORCH_HOME -u HF_HOME -u PIP_CACHE_DIR "$mlpy" -c 'import os; print(os.environ.get("TORCH_HOME", ""))' 2>/dev/null)"
+  [ -n "$th" ] && [ "$(readlink -m "$th")" = "$(readlink -m "$WS/deps/torch_home")" ]
+  opt $? "venv caches default into deps/ (TORCH_HOME=${th:-~/.cache/torch}; else: setup/setup.sh ml)"
+  [ -f "$WS/deps/torch_home/hub/checkpoints/resnet18-f37072fd.pth" ]
+  opt $? "ACT backbone resnet18 IMAGENET1K_V1 in deps/torch_home (else every first rollout downloads it: setup/setup.sh ml)"
   # The whole point of the venv: system / Isaac python must stay clean.
   if python3 -c "import torch" 2>/dev/null; then
     err "torch leaked into SYSTEM python (isolation broken)"; FAILED=1
@@ -192,20 +322,28 @@ if [ -x "$mlpy" ] && "$mlpy" -c "import transformers, lerobot.policies.groot.mod
   ok "lerobot[groot] extra importable (transformers $("$mlpy" -c 'import transformers;print(transformers.__version__)' 2>/dev/null))"
   # Offline check of the workspace-local HF cache -- the models are usually copied in by
   # hand on a reproduced PC, and training runs with HF_HUB_OFFLINE=1 (setup/ml_env.sh).
-  if "$WS/src/setup/check_hf_cache.sh"; then ok "deps/hf_cache complete: GR00T-N1.7-3B + Cosmos-Reason2-2B tokenizer (offline)"
-  else warn "deps/hf_cache incomplete -> SETUP.md 2-C-2 (copy by hand or hf download)"; fi
+  if hfout="$(WS="$WS" "$WS/src/setup/check_hf_cache.sh" 2>&1)"; then ok "deps/hf_cache complete: GR00T-N1.7-3B + Cosmos-Reason2-2B tokenizer (offline)"
+  else
+    # The models are an HF-gated user step (CHECKLIST B-2), so this is a WARN; show what
+    # is missing without check_hf_cache's own FAIL wording in an otherwise passing report.
+    warn "deps/hf_cache incomplete -> SETUP.md 2-C-2 (copy by hand or hf download)"
+    sed -E 's/^ *FAIL */       missing: /; s/ missing$//' <<<"$hfout" | grep 'missing:' | head -4
+  fi
   nth="$(nproc)"
   [ "$nth" -gt 12 ] && warn "nproc=$nth: run GR00T training with OMP_NUM_THREADS=8 (ml_env.sh does) — default threads = 2x slower (HISTORY.md 45.4)"
 else
   warn "lerobot[groot] not installed (setup/setup.sh groot). Only needed for the GR00T N1.7 stage."
 fi
 
-step "OMY-L100 teleop leader stack (optional — IL data collection)"
-if [ -d "$WS/install/open_manipulator_description" ]; then
+step "OMY-L100 teleop leader stack (IL data collection; required once its source is imported)"
+# The leader stage builds these whenever src/open_manipulator exists (bootstrap runs it by
+# default). A missing install then means the build FAILED -- it used to print "built" and
+# this section only warned, so a broken leader build still ended in "environment OK".
+if [ -d "$WS/src/open_manipulator" ] || [ -d "$WS/install/open_manipulator_description" ]; then
   for p in open_manipulator_description open_manipulator_bringup dynamixel_hardware_interface \
            om_gravity_compensation_controller om_spring_actuator_controller \
            om_joint_trajectory_command_broadcaster robotis_interfaces; do
-    [ -d "$WS/install/$p" ]; opt $? "built: $p"
+    [ -d "$WS/install/$p" ]; req $? "built: $p (rebuild: setup/setup.sh leader)"
   done
   # The leader URDF is only usable through the xacro: the flat omy_l100.urdf carries
   # NO ros2_control block, and the xacro resolves $(find open_manipulator_bringup).
@@ -221,7 +359,7 @@ if [ -d "$WS/install/open_manipulator_description" ]; then
     dpkg-query -W "$p" >/dev/null 2>&1; opt $? "apt: $p"
   done
 else
-  warn "leader stack not built (run: setup/setup.sh leader). Only needed for OMY-L100 teleop."
+  warn "leader stack source not imported (setup/setup.sh sources leader). Only needed for OMY-L100 teleop."
 fi
 
 step "OMY-L100 real-hardware readiness (skipped unless a U2D2 is plugged in)"

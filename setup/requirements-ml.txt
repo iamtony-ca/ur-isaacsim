@@ -6,9 +6,11 @@
 #
 # torch is NOT listed here: it must come from the PyTorch CUDA index, because the
 # default PyPI wheel is not guaranteed to carry sm_120 (Blackwell / RTX 50) kernels.
-# setup.sh installs it explicitly:
-#     pip install --index-url https://download.pytorch.org/whl/cu128 torch torchvision
-# and then VERIFIES sm_120 is present. Do not "pip install torch" plainly here --
+# setup.sh installs it explicitly, PINNED (lerobot 0.6.1 needs torch<2.12):
+#     pip install --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0+cu128 torchvision==0.26.0+cu128
+# and then VERIFIES sm_120 is present. This file is then installed with
+# requirements-ml.lock as constraints (-c), so transitive deps match the verified venv
+# (ML_UNLOCKED=1 opts out). Do not "pip install torch" plainly here --
 # a silently-replaced torch is exactly the failure mode HISTORY.md 14 describes for
 # nvblox: the GPU is visible, tensors allocate, and kernels never run.
 

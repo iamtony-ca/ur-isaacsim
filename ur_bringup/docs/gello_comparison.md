@@ -41,6 +41,9 @@
   사실은 이 워크스페이스에서 입증되지 않았다.** Isaac 실측(§49.4): 명령이 state 를 앞서는 양은 **1 프레임(33 ms),
   잔차 0.028°** — 프레임당 이동 0.139° 의 20%. 즉 **sim 에서는 topic action ≈ next_state**. 둘이 갈라지는 건 실물의
   추종 지연·접촉으로 팔이 못 따라갈 때이고(ALOHA/GELLO 가 리더 값을 쓰는 이유), 그 효과는 실물에서 재야 한다(§5).
+- **그리퍼는 sim 에서도 예외(2026-10-19, `HISTORY.md` §53.6·§53.7)**: 물리 접촉 파지에선 jaw 가 큐브에 막혀 0.506 에 멈춰 next_state 그리퍼
+  action 이 "쥐는 힘 0" 을 가르친다(용접 데이터 체크포인트 physical 0/10). 그래서 sim 수집은 그리퍼만 명령(`gripper_action_topic:=/isaac_joint_commands`)에서
+  받는다. 리더 경로는 브리지 토픽에 `finger_joint` 명령이 이미 들어 있어 해당 없음.
 
 ### ② [안전] 리더 속도 가드 `max_leader_speed` (기본 20 rad/s)
 

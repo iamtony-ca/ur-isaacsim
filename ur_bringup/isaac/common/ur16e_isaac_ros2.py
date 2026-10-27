@@ -16,9 +16,11 @@
 #
 # Run (uses Isaac Sim's bundled python):
 #     /isaac-sim/python.sh \
-#         /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_isaac_ros2.py [--headless]
+#         /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py [--headless]
 #
-# Make sure ROS_DOMAIN_ID matches the ROS side (default 0) before launching.
+# Make sure ROS_DOMAIN_ID matches the ROS side before launching: any non-zero value,
+# the same in every terminal. This workspace uses `export ROS_DOMAIN_ID=42`, because
+# other containers on the host may occupy domain 0 (unset = 0).
 import argparse
 import math
 import sys
@@ -130,6 +132,22 @@ parser.add_argument("--randomize-object", action="store_true",
                          "only learns that pose.")
 parser.add_argument("--randomize-radius", default="0.10",
                     help="+/- range [m] applied to object x and y when randomizing")
+# Per-axis widening + a band for TOPPING UP an existing set (HISTORY.md 58). With
+# all four at their defaults the RNG draws are exactly the old ones, so a seed
+# reproduces the same layouts as before (rollout seeds 131/171 stay comparable).
+parser.add_argument("--randomize-radius-x", default="",
+                    help="+/- x range [m]; default = --randomize-radius")
+parser.add_argument("--randomize-radius-y", default="",
+                    help="+/- y range [m]; default = --randomize-radius. y is bounded by the "
+                         "other cube and the left marker (0.06 at --object-spacing 0.20)")
+parser.add_argument("--randomize-inner-x", default="0",
+                    help="if > 0, the FIRST object's |dx| is drawn from [inner, radius_x] only "
+                         "(sign random): collect the outer band around an existing inner set")
+parser.add_argument("--randomize-yaw-edge-frac", default="0",
+                    help="probability that the FIRST object's yaw is drawn within "
+                         "--randomize-yaw-edge-deg of a 45 deg fold boundary (square part: the "
+                         "demo's grasp yaw flips by 90 deg there)")
+parser.add_argument("--randomize-yaw-edge-deg", default="10")
 parser.add_argument("--seed", default="0", help="RNG seed for object randomization (reproducibility)")
 # --- D5 fallback: hold the part with a FIXED JOINT instead of contact friction ---
 parser.add_argument("--grasp-attach", action="store_true",
@@ -142,7 +160,8 @@ parser.add_argument("--grasp-attach", action="store_true",
                          "which is all the IL data pipeline needs.\n"
                          "*** Sim-only mechanism. It is INVISIBLE to a policy: the policy sees "
                          "images + joint states, which look the same as on the real robot where "
-                         "real friction does the holding. Never put grasp state in the dataset. ***")
+                         "real friction does the holding. Never put grasp state in the dataset. ***\n"
+                         "Physical contact grasping now works too: --grasp-mode physical (HISTORY.md 53).")
 # The arm approaches, descends and releases FULLY OPEN (0), so these sit low:
 # close above 0 by enough that the attach only arms once the demo really closes,
 # release above 0 so opening back up always crosses it. 0.35/0.32 were needed
@@ -176,8 +195,105 @@ parser.add_argument("--grasp-debug", action="store_true",
                     help="log the finger-pad prim world poses and the resulting TCP every ~2 s. "
                          "Use this to compare Isaac's grasp TCP against the URDF finger-tip TF "
                          "at the SAME instant: the two are different links, and any offset "
-                         "between them aims the whole descent wrong (CLAUDE.md pitfall 7)")
+                         "between them aims the whole descent wrong (USD re-bake: SETUP.md 5-B/5-C)")
+# --- physical grasp: contact friction holds the part, no weld (HISTORY.md 53) ---
+parser.add_argument("--grasp-mode", choices=["none", "attach", "physical"], default=None,
+                    help="attach = the D5 weld (same as --grasp-attach). physical = no weld: the "
+                         "pads hold the part by contact friction, /scene/grasp_active is derived "
+                         "from where the part is, and the gripper physics profile defaults to "
+                         "'soft'. none = neither (the default without --grasp-attach)")
+parser.add_argument("--gripper-profile", choices=["asset", "soft"], default=None,
+                    help="named set of the gripper/solver knobs below. asset = what the USD "
+                         "ships (finger_joint 20/deg, 1/deg, 26 N.m, 146 deg/s; 60 Hz). soft = "
+                         "force- and speed-limited jaw + finer solver, the set physical "
+                         "grasping was validated with. Default: soft in physical mode, else "
+                         "asset. Each knob below overrides its profile value")
+parser.add_argument("--finger-stiffness", type=float, default=None,
+                    help="finger_joint drive stiffness, USD units = N.m PER DEGREE")
+parser.add_argument("--finger-damping", type=float, default=None,
+                    help="finger_joint drive damping, N.m.s PER DEGREE")
+parser.add_argument("--finger-max-force", type=float, default=None,
+                    help="finger_joint drive force cap [N.m]: what the jaw squeezes with "
+                         "once the command is past contact")
+parser.add_argument("--finger-max-vel", type=float, default=None,
+                    help="finger_joint physxJoint:maxJointVelocity [deg/s]")
+parser.add_argument("--gripper-armature", type=float, default=None,
+                    help="physxJoint:armature on all six gripper joints")
+parser.add_argument("--mimic-natural-freq", type=float, default=None,
+                    help="naturalFrequency of the five PhysX mimic joints; 0 = hard constraint "
+                         "(asset), >0 = compliant")
+parser.add_argument("--mimic-damping-ratio", type=float, default=None,
+                    help="dampingRatio of the mimic joints (only used when compliant)")
+parser.add_argument("--pad-friction", type=float, default=None,
+                    help="bind a physics material with this static/dynamic friction and "
+                         "combine mode 'max' to the inner-finger colliders (the asset has none)")
+parser.add_argument("--physics-hz", type=float, default=None,
+                    help="physics steps per SIM second (rendering, /clock and the ROS graph "
+                         "stay at 60 Hz; extra steps are substeps)")
+parser.add_argument("--art-pos-iters", type=int, default=None,
+                    help="articulation solverPositionIterationCount (asset: 32)")
+parser.add_argument("--art-vel-iters", type=int, default=None,
+                    help="articulation solverVelocityIterationCount (asset: 1)")
+parser.add_argument("--object-pos-iters", type=int, default=None,
+                    help="solverPositionIterationCount on the pick objects (PhysX default 16)")
+parser.add_argument("--object-max-depen", type=float, default=None,
+                    help="maxDepenetrationVelocity [m/s] on the pick objects (PhysX default 3)")
+parser.add_argument("--torsional-patch-radius", type=float, default=None,
+                    help="[m] torsional friction patch on the pick objects, so the part does "
+                         "not spin between two point-like pad contacts (default 0)")
+parser.add_argument("--grasp-hold-distance", type=float, default=0.03,
+                    help="physical mode: /scene/grasp_active is true while the jaw is past "
+                         "--grasp-close and an object centre is within this [m] of the pad TCP")
+parser.add_argument("--gripper-guard", choices=["auto", "on", "off"], default="auto",
+                    help="when finger_joint is forced below --gripper-guard-limit, teleport "
+                         "the gripper linkage back open (= /scene/reset_gripper) instead of "
+                         "letting the blow-out reach the arm. auto = on in physical mode")
+parser.add_argument("--gripper-guard-limit", type=float, default=-0.05,
+                    help="[rad] finger_joint below this trips the guard")
+parser.add_argument("--grasp-log", default="",
+                    help="CSV path: one row per rendered step with every DOF position and "
+                         "velocity, finger_joint effort, pad separation, TCP and object poses")
 args, _ = parser.parse_known_args()
+
+# Randomisation knobs are used inside the /scene/reset_episode callback, where an
+# exception ends Isaac mid-collection -- so parse and range-check them here, once.
+try:
+    _rand_r = float(args.randomize_radius)
+    _rand_rx = float(args.randomize_radius_x or _rand_r)
+    _rand_ry = float(args.randomize_radius_y or _rand_r)
+    _rand_inner_x = float(args.randomize_inner_x)
+    _rand_edge_frac = float(args.randomize_yaw_edge_frac)
+    _rand_edge = float(args.randomize_yaw_edge_deg)
+except ValueError as e:
+    parser.error(f"randomisation argument is not a number: {e}")
+if min(_rand_rx, _rand_ry, _rand_edge) < 0 or not 0.0 <= _rand_inner_x <= _rand_rx \
+        or not 0.0 <= _rand_edge_frac <= 1.0:
+    parser.error(f"randomisation out of range: radius x {_rand_rx} y {_rand_ry} "
+                 f"(>= 0), inner x {_rand_inner_x} (0..radius x), yaw edge frac "
+                 f"{_rand_edge_frac} (0..1), edge deg {_rand_edge} (>= 0)")
+_rand_edge = math.radians(_rand_edge)
+
+# ---- grasp mode + gripper physics profile -----------------------------------
+if args.grasp_attach and args.grasp_mode not in (None, "attach"):
+    sys.exit(f"--grasp-attach contradicts --grasp-mode {args.grasp_mode}")
+GRASP_MODE = args.grasp_mode or ("attach" if args.grasp_attach else "none")
+args.grasp_attach = GRASP_MODE == "attach"      # everything below keys off this flag
+# Values that make physical grasping work, measured in HISTORY.md 53. None = leave
+# the asset alone. The asset's own numbers: finger_joint 20/deg (1146 N.m/rad),
+# 1/deg, 26 N.m, 146 deg/s; hard mimics; articulation 32/1 iterations; 60 Hz.
+GRIPPER_PROFILES = {
+    "asset": {},
+    "soft": {"finger_stiffness": 0.5, "finger_damping": 0.02, "finger_max_force": 3.0,
+             "finger_max_vel": 57.0, "physics_hz": 120.0, "art_pos_iters": 64,
+             "object_pos_iters": 32, "object_max_depen": 1.0,
+             "torsional_patch_radius": 0.01, "pad_friction": 1.2},
+}
+GRIPPER_PROFILE = args.gripper_profile or ("soft" if GRASP_MODE == "physical" else "asset")
+for _k, _v in GRIPPER_PROFILES[GRIPPER_PROFILE].items():
+    if getattr(args, _k) is None:
+        setattr(args, _k, _v)
+GRIPPER_GUARD = (args.gripper_guard == "on"
+                 or (args.gripper_guard == "auto" and GRASP_MODE == "physical"))
 
 # The asset's finger_joint uses the SAME convention as the URDF and the real
 # gripper: 0 = open, 0.8 = closed. Verified by photographing the wrist camera at
@@ -209,7 +325,12 @@ from isaacsim.storage.native import get_assets_root_path
 extensions.enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 
-simulation_context = SimulationContext(stage_units_in_meters=1.0)
+# Rendering (and so /clock, OnPlaybackTick and the ROS graph) stays at 60 Hz; a
+# higher --physics-hz just adds physics substeps per rendered step.
+simulation_context = SimulationContext(
+    stage_units_in_meters=1.0,
+    physics_dt=(1.0 / args.physics_hz) if args.physics_hz else None,
+    rendering_dt=(1.0 / 60.0) if args.physics_hz else None)
 
 assets_root_path = get_assets_root_path()
 if assets_root_path is None:
@@ -689,6 +810,113 @@ if args.scene == "pick_place":
         print(f"  place  '{nm}'{'':<12.12} : /World/place_target_{nm} @ {[round(float(v), 3) for v in pos[:2]]}")
     scene_objects["place"] = scene_objects["places"][_plc_names[0]]
 
+# ---- gripper physics profile (authored on the stage, before physics starts) --
+# Physical grasping fails with the asset's numbers. finger_joint saturates at
+# 26 N.m about 0.02 rad past contact (~245 N per pad for a part that needs ~2 N),
+# closes at 2.56 rad/s, and the only thing that carries the pad load back to it is
+# five HARD mimic constraints in an open chain. Under an off-centre or dynamic load
+# that system loses: finger_joint is driven below its own 0 limit and the error
+# reaches the arm in the same articulation -- wrist_2 at -69 rad (HISTORY.md 16),
+# and the "wrist spins when the fingers touch the block" seen in teleop. Every knob
+# is authored here so it can be A/B tested without re-baking the USD.
+_gphys = []
+try:
+    from pxr import PhysxSchema, UsdPhysics as _UP2, UsdShade as _US2
+
+    _st1 = stage.get_current_stage()
+    _gjoints = [p for p in _st1.Traverse()
+                if "Robotiq_2F_85" in str(p.GetPath()) and p.IsA(_UP2.RevoluteJoint)]
+    for _p in _gjoints:
+        _nm = _p.GetName()
+        if _nm == GRIPPER_JOINT:
+            _drv = _UP2.DriveAPI.Get(_p, "angular")
+            for _k, _attr in (("finger_stiffness", _drv.GetStiffnessAttr()),
+                              ("finger_damping", _drv.GetDampingAttr()),
+                              ("finger_max_force", _drv.GetMaxForceAttr())):
+                if getattr(args, _k) is not None:
+                    _attr.Set(float(getattr(args, _k)))
+            if args.finger_max_vel is not None:
+                PhysxSchema.PhysxJointAPI.Apply(_p).CreateMaxJointVelocityAttr().Set(
+                    float(args.finger_max_vel))
+            _gphys.append(f"{_nm}: K={_drv.GetStiffnessAttr().Get()}/deg "
+                          f"D={_drv.GetDampingAttr().Get()}/deg "
+                          f"Fmax={_drv.GetMaxForceAttr().Get()} "
+                          f"vmax={_p.GetAttribute('physxJoint:maxJointVelocity').Get()}deg/s")
+        if args.gripper_armature is not None:
+            PhysxSchema.PhysxJointAPI.Apply(_p).CreateArmatureAttr().Set(float(args.gripper_armature))
+        for _a in _p.GetAttributes():
+            _an = _a.GetName()
+            if not _an.startswith("physxMimicJoint:"):
+                continue
+            if _an.endswith(":naturalFrequency") and args.mimic_natural_freq is not None:
+                _a.Set(float(args.mimic_natural_freq))
+            elif _an.endswith(":dampingRatio") and args.mimic_damping_ratio is not None:
+                _a.Set(float(args.mimic_damping_ratio))
+    if args.gripper_armature is not None:
+        _gphys.append(f"armature {args.gripper_armature} on {len(_gjoints)} gripper joints")
+    if args.mimic_natural_freq is not None:
+        _gphys.append(f"mimics naturalFrequency={args.mimic_natural_freq} "
+                      f"dampingRatio={args.mimic_damping_ratio}")
+
+    _root = _st1.GetPrimAtPath(ARTICULATION_ROOT)
+    if _root and (args.art_pos_iters is not None or args.art_vel_iters is not None):
+        _ra = PhysxSchema.PhysxArticulationAPI.Apply(_root)
+        if args.art_pos_iters is not None:
+            _ra.CreateSolverPositionIterationCountAttr().Set(int(args.art_pos_iters))
+        if args.art_vel_iters is not None:
+            _ra.CreateSolverVelocityIterationCountAttr().Set(int(args.art_vel_iters))
+        _gphys.append(f"articulation iters pos={_ra.GetSolverPositionIterationCountAttr().Get()} "
+                      f"vel={_ra.GetSolverVelocityIterationCountAttr().Get()}")
+
+    if args.pad_friction is not None:
+        # The rigid-body material goes on the inner-finger COLLIDERS (pad + finger
+        # body). Combine 'max' so the pad, not the average with the part, decides.
+        _mpath = "/World/physics_materials/pad_material"
+        _mat = _US2.Material.Define(_st1, _mpath)
+        _mapi = _UP2.MaterialAPI.Apply(_mat.GetPrim())
+        _mapi.CreateStaticFrictionAttr().Set(float(args.pad_friction))
+        _mapi.CreateDynamicFrictionAttr().Set(float(args.pad_friction))
+        _mapi.CreateRestitutionAttr().Set(0.0)
+        _px = PhysxSchema.PhysxMaterialAPI.Apply(_mat.GetPrim())
+        _px.CreateFrictionCombineModeAttr().Set("max")
+        _nb = 0
+        for _p in _st1.Traverse():
+            _ps = str(_p.GetPath())
+            if ("Robotiq_2F_85" in _ps and "inner_finger" in _ps and "inner_finger_" not in _ps
+                    and _p.HasAPI(_UP2.CollisionAPI)):
+                _US2.MaterialBindingAPI.Apply(_p).Bind(
+                    _mat, _US2.Tokens.weakerThanDescendants, "physics")
+                _nb += 1
+        _gphys.append(f"pad material mu={args.pad_friction} (max) on {_nb} colliders")
+
+    for _nm2, _obj2 in scene_objects.get("objects", {}).items():
+        _op = _st1.GetPrimAtPath(_obj2.prim_path)
+        if args.object_pos_iters is not None or args.object_max_depen is not None:
+            _rb = PhysxSchema.PhysxRigidBodyAPI.Apply(_op)
+            if args.object_pos_iters is not None:
+                _rb.CreateSolverPositionIterationCountAttr().Set(int(args.object_pos_iters))
+            if args.object_max_depen is not None:
+                _rb.CreateMaxDepenetrationVelocityAttr().Set(float(args.object_max_depen))
+        if args.torsional_patch_radius is not None:
+            PhysxSchema.PhysxCollisionAPI.Apply(_op).CreateTorsionalPatchRadiusAttr().Set(
+                float(args.torsional_patch_radius))
+    if scene_objects.get("objects") and (args.object_pos_iters is not None
+                                         or args.object_max_depen is not None
+                                         or args.torsional_patch_radius is not None):
+        _gphys.append(f"objects pos_iters={args.object_pos_iters} "
+                      f"max_depen={args.object_max_depen} torsional={args.torsional_patch_radius}")
+except Exception as _e:
+    # Not fatal for scenes without a gripper, but a physical-grasp run must not
+    # silently fall back to the asset numbers.
+    if GRASP_MODE == "physical":
+        raise
+    carb.log_warn(f"gripper physics profile not applied: {_e}")
+print(f"  grasp mode          : {GRASP_MODE}  (gripper profile {GRIPPER_PROFILE}, "
+      f"physics {simulation_context.get_physics_dt() and 1.0 / simulation_context.get_physics_dt():.0f} Hz"
+      f", guard {'ON' if GRIPPER_GUARD else 'off'})")
+for _l in _gphys:
+    print(f"  gripper physics     : {_l}")
+
 # physics must be initialized before the articulation can be driven
 simulation_context.initialize_physics()
 simulation_context.play()
@@ -716,6 +944,23 @@ try:
     print("  initial pose       : home (arm up)")
 except Exception as _e:
     carb.log_warn(f"could not set initial home pose (continuing): {_e}")
+
+# What PhysX actually runs with, not what the stage says: the USD drive is per
+# DEGREE, the physics view reports per radian, and the ArticulationController
+# could in principle overwrite gains. One line answers both.
+try:
+    _av = _art._articulation_view
+    _gi = list(_art.dof_names).index(GRIPPER_JOINT)
+    _kps, _kds = _av.get_gains()
+    _fmax = _av.get_max_efforts()
+    _vmax = _av.get_joint_max_velocities() if hasattr(_av, "get_joint_max_velocities") else None
+    _f = lambda a: float(np.asarray(a).reshape(-1)[_gi])          # noqa: E731
+    print(f"  finger_joint (PhysX): Kp={_f(_kps):.3g} N.m/rad Kd={_f(_kds):.3g} "
+          f"Fmax={_f(_fmax):.3g} N.m vmax={'?' if _vmax is None else f'{_f(_vmax):.3g}'} | "
+          f"physics dt={simulation_context.get_physics_dt():.5f} s "
+          f"device={simulation_context.device if hasattr(simulation_context, 'device') else '?'}")
+except Exception as _e:
+    print(f"  finger_joint (PhysX): unreadable ({type(_e).__name__}: {_e})")
 
 print("=" * 70)
 print("UR16e Isaac Sim ROS2 bridge running.")
@@ -808,13 +1053,22 @@ if args.scene == "pick_place":
             # scene, and the policy would see the same instruction with an
             # inconsistent layout.
             msgs = []
-            for nm, prim in scene_objects["objects"].items():
+            rx, ry, inner_x = _rand_rx, _rand_ry, _rand_inner_x   # checked at startup
+            edge_frac, edge = _rand_edge_frac, _rand_edge
+            for k, (nm, prim) in enumerate(scene_objects["objects"].items()):
                 p = _obj_homes[nm].copy()
                 if args.randomize_object:
-                    r = float(args.randomize_radius)
-                    p[0] += _rng.uniform(-r, r)
-                    p[1] += _rng.uniform(-r, r)
+                    if k == 0 and inner_x > 0.0:
+                        # outer band: uniform over [inner, rx] on a random side
+                        p[0] += _rng.choice([-1.0, 1.0]) * _rng.uniform(inner_x, rx)
+                    else:
+                        p[0] += _rng.uniform(-rx, rx)
+                    p[1] += _rng.uniform(-ry, ry)
                 yaw = _rng.uniform(-np.pi, np.pi) if args.randomize_object else 0.0
+                if args.randomize_object and k == 0 and edge_frac > 0.0 and _rng.uniform() < edge_frac:
+                    # 45 deg + k*90 deg (any quadrant) +/- edge
+                    yaw = np.pi / 4 + _rng.integers(4) * np.pi / 2 + _rng.uniform(-edge, edge)
+                    yaw = (yaw + np.pi) % (2 * np.pi) - np.pi
                 quat = np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])  # w,x,y,z
                 prim.set_world_pose(position=p, orientation=quat)
                 # Kill momentum, else the part keeps the velocity it had when grabbed.
@@ -846,6 +1100,13 @@ if args.scene == "pick_place":
         # instantly undoes a service attach, because the fingers are still open.
         _grasp = {"active": False, "manual": False}
         _grasp_pub = _node.create_publisher(Bool, "/scene/grasp_active", 10)
+        # Which grasp mode this scene runs (latched), so a collector can refuse to
+        # record weld-era settings against a physical scene or the reverse.
+        from std_msgs.msg import String as _Str
+        _mode_pub = _node.create_publisher(
+            _Str, "/scene/grasp_mode",
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        _mode_pub.publish(_Str(data=GRASP_MODE))
 
         def _prim_at(rel):
             """Resolve a prim path given relative to the robot prim. PATHS, not names:
@@ -1130,9 +1391,14 @@ if args.scene == "pick_place":
         # PROVE the TCP is at the pads, do not just assert it. The old check tested
         # prim.IsValid() only: both prims were valid, so it printed "finger pads"
         # while actually reporting the gripper base for both, and that lie is what
-        # kept the real bug invisible. Two distinct pads must be physically APART --
-        # ~135 mm with the gripper open. If they read as one point, the pose source
-        # is broken and no weld can ever land, so say so at start-up.
+        # kept the real bug invisible. What the two readable links ARE matters here:
+        # on this asset every gripper link frame is authored at the gripper base, so
+        # the inner_finger origins COINCIDE (0 mm) with the gripper open and swing
+        # ~85 mm apart as it closes (HISTORY.md 28; --grasp-log pad_sep ~ 0.1 m x
+        # finger_joint). The URDF's ~135 mm open spacing is finger_tip_link, a
+        # different frame. A broken pose source (the old USD-stage read) also gives
+        # 0 mm -- so the open boot pose cannot tell the two apart, and the check
+        # that can is the first CLOSE (_grasp_step_inner, "tcp_verified").
         if args.grasp_debug:
             # Dump every articulation link with its physics-view pose. Guessing which
             # API is "the right one" has now failed twice; this shows what the links
@@ -1177,27 +1443,28 @@ if args.scene == "pick_place":
                   "-- pad poses unreadable, welds will never fire")
         else:
             _sep = float(np.linalg.norm(_pads0[0] - _pads0[1]))
-            # Coincident pads only prove the TCP is broken when the gripper is
-            # OPEN. At boot the articulation sits at its raw zero, which under the
-            # inversion is CLOSED -- pads legitimately touch. Checking blind here
-            # printed "*** BROKEN ***" on a healthy gripper, which is exactly the
-            # kind of lying diagnostic this check was added to replace.
+            # This used to call 0 mm with the gripper open "*** BROKEN ***". That
+            # was written under the since-withdrawn inversion (HISTORY.md 26.1 ->
+            # 28), and after the convention was fixed it fired on EVERY healthy
+            # start (0 mm at finger_joint 0 is the geometry above). What the open
+            # pose CAN catch is the opposite: pads already apart while open means
+            # the reader or the joint convention does not match this asset.
             try:
                 _fj0 = float(_art.get_joint_positions()[_names.index(GRIPPER_JOINT)])
             except Exception:
                 _fj0 = None
-            _shut = _fj0 is not None and _fj0 > 0.4   # rad; 0 = open, ~0.8 = closed
-            if _sep < 0.02 and not _shut:
-                print("  grasp TCP source    : *** BROKEN *** both pads report the same point "
-                      f"(separation {_sep * 1000:.1f} mm) with the gripper open; TCP collapsed "
-                      "onto their common ancestor, welds cannot fire")
+            if _fj0 is not None and _fj0 < 0.1 and _sep > 0.025:
+                print("  grasp TCP source    : *** MISMATCH *** pads "
+                      f"{_sep * 1000:.1f} mm apart with the gripper open (expected ~0 mm "
+                      "on this asset); pad reader or finger_joint convention is wrong")
                 _node.get_logger().error(
-                    f"grasp TCP is not at the finger pads: separation {_sep * 1000:.1f} mm at "
-                    f"finger_joint={_fj0}. pads={[list(np.round(p, 4)) for p in _pads0]}")
+                    f"grasp TCP: pad separation {_sep * 1000:.1f} mm at finger_joint={_fj0:.3f} "
+                    f"(open; expected ~0). pads={[list(np.round(p, 4)) for p in _pads0]}")
             else:
                 print(f"  grasp TCP source    : finger pads, separation {_sep * 1000:.1f} mm "
                       f"at finger_joint={'?' if _fj0 is None else round(_fj0, 3)} "
-                      f"({'closed' if _shut else 'open'}) ({args.grasp_tips})")
+                      f"(open = ~0 mm on this asset; pad reader is verified at the first close) "
+                      f"({args.grasp_tips})")
 
         def _set_collision(enabled):
             """Objects welded to the gripper must stop colliding with it, else the
@@ -1318,7 +1585,7 @@ if args.scene == "pick_place":
             trigger, exactly as on the real robot. Making them call a service
             would distort demo timing and break sim/real parity.
             """
-            if not args.grasp_attach:
+            if GRASP_MODE == "none" and not args.grasp_log and not GRIPPER_GUARD:
                 return
             _grasp["step"] = _grasp.get("step", 0) + 1
             try:
@@ -1349,6 +1616,24 @@ if args.scene == "pick_place":
                         f"grasp DISABLED: cannot read finger_joint ({type(e).__name__}: {e}). "
                         f"articulation DOFs = {_names}")
                 return
+            if fj >= 0.3 and not _grasp.get("tcp_verified"):
+                # The start-up check cannot tell a healthy pad reader from a broken
+                # one (both read 0 mm open). The first close can: healthy pads are
+                # ~30 mm apart at 0.3 rad and only spread further against a part;
+                # a reader stuck on a common ancestor stays at 0. Once per run.
+                _grasp["tcp_verified"] = True
+                pads = _pad_positions()
+                sep = None if pads is None else float(np.linalg.norm(pads[0] - pads[1]))
+                if sep is None or sep < 0.015:
+                    _node.get_logger().error(
+                        f"grasp TCP *** BROKEN ***: pad separation "
+                        f"{'unreadable' if sep is None else f'{sep * 1000:.1f} mm'} at "
+                        f"finger_joint={fj:.3f} (healthy >= ~30 mm); TCP collapsed onto a "
+                        "common ancestor, welds / physical grasp detection cannot fire")
+                else:
+                    _node.get_logger().info(
+                        f"grasp TCP verified at first close: pad separation {sep * 1000:.1f} mm "
+                        f"at finger_joint={fj:.3f}")
             if args.grasp_debug and _rate("dbg"):
                 # Report the SAME source the weld uses. This used to print _world_xf()
                 # (the broken USD path) next to a _tcp() computed another way, which
@@ -1374,6 +1659,41 @@ if args.scene == "pick_place":
                     f"finger forced open: fj={fj:.3f} (limit 0.0), tcp="
                     f"{None if tcp is None else [round(float(v), 3) for v in tcp]}"
                     f"{'' if tcp is None else f' distances={_dists(tcp)}'}")
+            if args.grasp_log:
+                # Diagnostics must never take the weld / guard / grasp state down
+                # with them: a failure here disables the log, not the grasp.
+                try:
+                    _log_row(fj)
+                except Exception as e:
+                    _node.get_logger().error(f"--grasp-log disabled ({type(e).__name__}: {e})")
+                    args.grasp_log = ""
+            if GRIPPER_GUARD and fj < args.gripper_guard_limit:
+                # Stop the blow-out before it reaches the arm. Same teleport as
+                # /scene/reset_gripper: the part is dropped, the arm keeps its pose.
+                _grasp["guard_trips"] = _grasp.get("guard_trips", 0) + 1
+                msg = _zero_gripper()
+                _node.get_logger().error(
+                    f"gripper guard #{_grasp['guard_trips']}: fj={fj:.3f} < "
+                    f"{args.gripper_guard_limit} -> {msg}")
+                return
+            if GRASP_MODE == "physical":
+                # No weld: the part is "held" when the jaw is closed past
+                # --grasp-close and a part sits between the pads. Same topic and
+                # meaning as the weld state, so the state machine's release wait
+                # and still-holding check work unchanged.
+                held = False
+                if fj >= _g_close:
+                    tcp = _tcp()
+                    if tcp is not None:
+                        held = min(_dists(tcp).values()) <= args.grasp_hold_distance
+                if held != _grasp["active"]:
+                    _node.get_logger().info(f"grasp (physical): {'HOLDING' if held else 'released'} "
+                                            f"fj={fj:.3f}")
+                _grasp["active"] = held
+                _grasp_pub.publish(Bool(data=held))
+                return
+            if not args.grasp_attach:
+                return
             if not _grasp["active"] and fj >= _g_close:
                 tcp = _tcp()
                 if _rate("check"):
@@ -1424,34 +1744,79 @@ if args.scene == "pick_place":
             straight back out.
             """
             try:
-                _detach()
-            except NameError:
-                pass
-            try:
-                pos = np.array(_art.get_joint_positions(), dtype=float)
-                vel = np.array(_art.get_joint_velocities(), dtype=float)
-                # ALL gripper joints to the asset's authored zero (= fully OPEN).
-                # That pose is the one configuration the linkage is guaranteed to be
-                # self-consistent in. Teleporting only the driven joint and leaving
-                # the passive ones produced a physically impossible linkage
-                # (measured: finger_joint 0.539 with the pads 91 mm apart).
-                fixed = []
-                for i, nm in enumerate(_names):
-                    if "finger" in nm or "knuckle" in nm:
-                        if abs(pos[i]) > 1e-4 or abs(vel[i]) > 1e-4:
-                            fixed.append(f"{nm}={pos[i]:+.3f}")
-                        pos[i] = 0.0
-                        vel[i] = 0.0
-                _art.set_joint_positions(pos)
-                _art.set_joint_velocities(vel)
+                response.message = _zero_gripper()
                 response.success = True
-                response.message = ("gripper joints zeroed: " + ", ".join(fixed)) if fixed \
-                    else "gripper already inside limits"
             except Exception as e:
                 response.success = False
                 response.message = f"reset_gripper failed: {e}"
             _node.get_logger().info(f"reset_gripper: {response.message}")
             return response
+
+        def _zero_gripper():
+            """Detach and teleport every gripper joint to 0 (open). Raises on failure."""
+            try:
+                _detach()
+            except NameError:
+                pass
+            pos = np.array(_art.get_joint_positions(), dtype=float)
+            vel = np.array(_art.get_joint_velocities(), dtype=float)
+            # ALL gripper joints to the asset's authored zero (= fully OPEN).
+            # That pose is the one configuration the linkage is guaranteed to be
+            # self-consistent in. Teleporting only the driven joint and leaving
+            # the passive ones produced a physically impossible linkage
+            # (measured: finger_joint 0.539 with the pads 91 mm apart).
+            fixed = []
+            for i, nm in enumerate(_names):
+                if "finger" in nm or "knuckle" in nm:
+                    if abs(pos[i]) > 1e-4 or abs(vel[i]) > 1e-4:
+                        fixed.append(f"{nm}={pos[i]:+.3f}")
+                    pos[i] = 0.0
+                    vel[i] = 0.0
+            _art.set_joint_positions(pos)
+            _art.set_joint_velocities(vel)
+            return ("gripper joints zeroed: " + ", ".join(fixed)) if fixed \
+                else "gripper already inside limits"
+
+        # ---- per-step grasp log (--grasp-log) ------------------------------
+        # One CSV row per rendered step. Everything a physical grasp failure needs
+        # to be told apart afterwards: which DOF left its range first, the jaw's
+        # effort, whether the part slid in the hand, and whether the arm moved.
+        _glog = {"f": None}
+
+        def _log_row(fj):
+            if _glog["f"] is None:
+                import csv as _csv
+                import os as _os1
+                _os1.makedirs(_os1.path.dirname(_os1.path.abspath(args.grasp_log)), exist_ok=True)
+                _glog["f"] = open(args.grasp_log, "w", newline="")
+                _glog["w"] = _csv.writer(_glog["f"])
+                hdr = ["t"] + [f"q_{n}" for n in _names] + [f"v_{n}" for n in _names] + \
+                      ["eff_finger", "pad_sep", "tcp_x", "tcp_y", "tcp_z", "grasp_active"]
+                for nm in scene_objects["objects"]:
+                    hdr += [f"{nm}_{a}" for a in ("x", "y", "z", "qw", "qx", "qy", "qz")]
+                _glog["w"].writerow(hdr)
+                _glog["n"] = 0
+            q = np.asarray(_art.get_joint_positions(), dtype=float)
+            v = np.asarray(_art.get_joint_velocities(), dtype=float)
+            try:
+                eff = float(np.asarray(_art_view.get_measured_joint_efforts()).reshape(-1)[
+                    _names.index(GRIPPER_JOINT)])
+            except Exception:
+                eff = float("nan")
+            pads = _pad_positions()
+            sep = float("nan") if pads is None else float(np.linalg.norm(pads[0] - pads[1]))
+            tcp = _tcp()
+            tcp = [float("nan")] * 3 if tcp is None else [float(x) for x in tcp]
+            row = [round(simulation_context.current_time, 4)] + [f"{x:.5f}" for x in q] + \
+                  [f"{x:.4f}" for x in v] + [f"{eff:.4f}", f"{sep:.5f}"] + \
+                  [f"{x:.5f}" for x in tcp] + [int(bool(_grasp["active"]))]
+            for nm, pr in scene_objects["objects"].items():
+                pp, qq = pr.get_world_pose()
+                row += [f"{float(x):.5f}" for x in pp] + [f"{float(x):.5f}" for x in qq]
+            _glog["w"].writerow(row)
+            _glog["n"] += 1
+            if _glog["n"] % 60 == 0:
+                _glog["f"].flush()
 
         _node.create_service(Trigger, "/scene/reset_gripper", _reset_gripper)
         _node.create_service(Trigger, "/scene/reset_episode", _reset_episode)

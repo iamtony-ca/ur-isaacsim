@@ -4346,3 +4346,795 @@ UR16e 와 반대 부호(§21)라 이쪽이 눈에 같아 보인다. 후보 B(FK 
 평균 0.144°**(§48.6-B 0.256° 와 동급). ② 세트3 `pick_place_demo cycles:=1` 새 READY 에서 **1/1 SUCCESS**(part 0.001 m).
 문서: `CLAUDE.md`·`CHECKLIST` E-3 표·`HARDWARE` 4-B ③·`plan_il_vla` §3.5(J5 정정, 할 일 표 2행)·브리지/`reset_pose`/데모 독스트링.
 스크래치의 추종 측정기·`harness/teleop_lag_probe.py` 기본 map 도 갱신(옛 map 이면 332° 오차로 보인다 — 측정기 map 을 먼저 의심할 것).
+
+## 50. 협소 셀 UR16e 베이스 배치 — 기술검토 + `src/base_placement/` 구현 (2026-10-02, 미실행)
+
+질문: TCP 목표 여러 개가 정해진 협소 공간에서 UR16e 베이스 자세를 고르는 방법이 있나. 방법론·도구·UR16e 특이사항·우리 스택
+통합을 병렬 조사(1차 출처, 주장 24개 반박 검증 → 8개 세부 정정, 결론 변경 없음)하고, 스크래치 프로토타입을 한 번 돌린 뒤
+**같은 호스트의 다른 컨테이너가 AMR 롱런으로 CPU 를 ~60 % 쓰고 있어** 이후 빌드·실행은 사용자 요청으로 중단했다.
+정리 내용은 `src/base_placement/README.md`(기술검토 §1~3, 사용법, 한계, 참고문헌).
+
+- **결론**: Jazzy 에서 "TCP 목표 + 셀 벽 → 최적 베이스"를 바로 주는 유지보수되는 오픈소스는 없다(REACH 는 주어진 배치 점수화만,
+  Reuleaux 는 ROS1·환경충돌 없음, cuRobo 는 배치 API 없음). UR 은 닫힌형 IK(8해)가 있어 **해석 IK 전수 탐색**이 협소 셀에 가장 맞다.
+- **핵심 제약 = 단일 IK 가지로 전 목표 도달**(가지 플래그는 특이점에서만 바뀌므로, 가지가 다르면 목표 사이에서 팔이 뒤집힌다).
+- **J1 ±360° 면 베이스 yaw 는 중복 변수**(q1 오프셋과 동치, 하우징 원통). 프로토타입: 장착면 7종 모두 가능여부 yaw 무관, 점수 차 ≤ 0.035.
+- **공칭 1등 ≠ 추천**: 프로토타입 공칭 1등(받침대 15 cm)은 ±2 cm/±3° 설치오차에 약했고(강건 0.30), 받침대 30 cm 후보가 오차 범위 전체에서
+  같은 가지 유지(100 %, 강건 0.41). 도구는 `best`/`recommended` 를 분리 출력한다.
+- UR16e 사실: DH 기준 = `base_link` Rz(π)(=ROS-I `base`), DH6 = `tool0`(URDF 대조 3e-10 m); det J 닫힌식으로 특이점 3종;
+  **현행 PS5 매뉴얼 elbow ±160°**(ur_description ±180°) → 예제는 160; 속도 base·shoulder 120°/s, 나머지 180°/s.
+- 구현: `ur16e_kin.py`(URDF FK + 해석 IK + cuMotion XRDF 구 세트 재사용), `cell.py`(YAML), `evaluator.py`, `place_base.py`(그리드→국소
+  정밀화→강건성, **기본 단일 프로세스·BLAS 1 스레드**), `self_test.py`, `moveit_validate.py`(셀을 `base_link` 기준 충돌객체로 넣어
+  URDF 를 옮기지 않고 FK·상태유효성·plan_only 확인). `COLCON_IGNORE` — ROS 패키지 아님.
+- **미실행**: 이 폴더 코드는 작성만 했다. 첫 사용 시 `self_test.py` → `place_base.py` 순. 반영 경로(URDF `base_joint` origin xacro 인자,
+  Isaac prim 위치 인자, cuMotion 장면 파일)는 `ur_bringup` 변경이라 아직 하지 않았다.
+
+### 50.1 실행 검증 + 결함 수정 (2026-10-16, 호스트 한가할 때 단일 코어)
+
+사용자 요청으로 §50 코드를 실제로 돌리고, 차원별 적대적 검증(검증자 5 + 발견당 독립 재현자 2, 총 37 에이전트)과
+**MoveIt 실가동 대조**를 했다. 실가동 조합: 세트2 sim 제어 스택을 **Isaac 없이** `use_sim_time:=false` 로 띄우고
+`ur16e_2f85_moveit.launch.py`(그리퍼 포함 모델) — 도메인 42, PID 로만 정리.
+
+**확인된 결함과 수정(전부 재현 2/2)**
+| # | 결함 | 수정 |
+|---|---|---|
+| 1 | **자기충돌 누락**: cuMotion XRDF 무시 목록이 forearm↔wrist_2/3 까지 빼서, MoveIt 이 forearm↔wrist 충돌로 보는 fixture 자세를 통과(당시 `recommended` 가 이것) | 자기충돌 쌍을 MoveIt SRDF 기준(인접만 제외)으로 + `self_margin` 10 mm. 무작위 1000 자세 대비 놓침 49→17, 예제 상위 10개 MoveIt 유효 7→9 |
+| 2 | `R_to_quat_wxyz` 가 180° 회전에서 부호를 잃음 → 천장 장착 yaw≠0 의 Isaac 자세·MoveIt 장면이 최대 180° 틀어짐 | Shepperd 방식 + w≥0 |
+| 3 | 세트2/3 xacro 의 `$(find ur_bringup)` — README 대로 Jazzy 만 source 하면 실패 | src 를 가리키는 임시 ament prefix(빌드 불필요) |
+| 4 | URDF 캐시가 최상위 xacro mtime 만 봄(포함 파일·apt 업그레이드 무시) | 매번 xacro(0.1 s), 내용 해시 파일명·원자적 쓰기, results.json 에 sha256 |
+| 5 | 없는 링크 조회가 조용히 0.9 m 틀린 변환(세트1 + `pad`) | 링크 검사, 세트1 + `pad`/`gripper_frame` 은 명확한 오류 |
+| 6 | 발판 판정이 둘레 점만 봐서 베이스 원판 안·받침대 아래 박스를 놓침 | 원통-박스 해석 판정(어댑터 판 포함) |
+| 7 | 별칭 DP 가 동률 2π 이동을 부동소수 잡음으로 선택(q5 −270° 등) → jlim 과소, 점수 yaw 의존 | 이동량 불변 2π 균일 이동 중 여유 최대로 정렬 |
+| 8 | `--no-path` 점수가 직선이동 전부 통과로 가정한 채 순위에 쓰임(Kendall τ 0.41) | 최종 3×K 후보는 항상 직선이동 검사 후 재정렬, 강건성은 플래그를 따름 |
+| 9 | 장착면 이름 중복 시 결과 덮어씀 → 거짓 "해 없음" | 이름·범위·가중치 키·tool.set·order 검증 |
+| 10 | `moveit_validate`: 장면 추가 실패·FK 실패에도 PASS, `--pick N` 불가 | 객체 존재 재확인, FK 실패=FAIL, `--pick N/all`, 상위 후보 전부의 관절값 저장 |
+| 11 | 예제 YAML 주석이 2F-85 손가락을 tool y 로 안내(실제 tool x) | 주석 정정 |
+
+**MoveIt 실가동에서 새로 안 것**
+- 자기충돌 시작 자세를 주면 MoveIt `CheckStartStateCollision` 이 엉뚱한 접촉(bench↔그리퍼)을 보고한다(재현).
+  → 검증 스크립트는 무효 자세로 드나드는 이동을 계획하지 않고 SKIP 으로 보고.
+- 계획 실패 9건 중 7건은 OMPL 경로가 사후 `ValidateSolution` 에서 무효(그리퍼가 천장·고정구 스침), 2건만 진짜 경로 없음.
+  같은 요청을 다시 보내면 대부분 성공 → 이동당 3회 재시도. 계획 궤적이 YAML 관절한계 덮어쓰기(elbow ±160)를 넘으면 FAIL.
+- elbow ±160° 근거 확정: UR16e PolyScope 5 매뉴얼 SW 5.22 기술사양 17쪽 "Joint ranges ±360° for all joints except Elbow ±160°"
+  (데이터시트 사본은 ±360°, ur_description 은 ±180° — 문서 간 불일치).
+- **ur_bringup 영향(미수정, 보고만 → §51 에서 해결)**: 같은 XRDF 를 쓰는 **cuMotion 계획도 forearm↔wrist_2/3 자기충돌을 검사하지 않는다.**
+  `ur_bringup/cumotion/ur16e_2f85.xrdf` 의 `self_collision.ignore.forearm_link` 에서 wrist_2/3 을 빼는 것을 검토할 것.
+
+**당시 수치(예제 셀, 5 cm 그리드, 단일 코어 — §50.2 에서 갱신됨)**: `self_test.py` 21항목 PASS 1.1 s. 기본 62 s(그리드 4 · 정밀화 25 · 재정렬 2 ·
+강건성 30), 경량 4.8 s. 후보 3,877 / 가능 18(받침대15 4 · 받침대30 1 · 천장 4 · ymin 벽 9). best = 받침대15 (0.44, 0.56)
+점수 0.458 강건 0.242, recommended = 천장 (0.91, 0.29) 점수 0.335 강건 0.326. MoveIt(재시도 3회): 상위 10 중 계획까지 통과 7,
+recommended 통과, best 실패(bench→shelf·shelf→tray 3회 모두 실패). 바닥 직접 설치 0 의 원인은 `shelf_place`(손목점이 어깨 축 위
+0.867 m > |a2|+|a3| 0.838 m), 천장 근처 목표가 아니다(§50 의 추정 정정).
+
+### 50.2 2차 검증 + 결함 수정 + 환경 여유 20 mm (2026-10-16, 같은 날 이어서)
+
+§50.1 수정분을 다시 차원별 적대적 검증(44 에이전트; §50.1 수정 11건은 전부 유효 확인)하고, 새로 확인된 결함을 고친 뒤
+**전부 다시 실행**(self_test·기본·`--no-path`·경량·2.5 cm, MoveIt 실가동 `--pick all` 2회). 실가동 조합은 §50.1 과 같음
+(세트2 제어 스택 Isaac 없이 + `ur16e_2f85_moveit.launch.py`, 도메인 42, `nice`, PID 로만 정리 — 끝난 뒤 남은 프로세스 0, 장면 객체 0).
+
+**확인된 결함과 수정**
+| # | 결함 | 수정 |
+|---|---|---|
+| 1 | **[high]** `moveit_validate` 가 `mount_index` 로 장착면을 찾는데, `place_base --mounts` 로 거른 목록의 인덱스라 전체 YAML 에서 **엉뚱한 받침대**를 장면에 넣음 | 이름으로 조회. 후보에 `mount_spec` 저장, YAML 에서 다시 만든 장착 자세와 대조, YAML sha256 이 다르면 경고. `--mounts` 는 전체 목록 인덱스를 유지 |
+| 2 | `--no-path` 순위가 "유지된다"는 문서와 달리 낙관 점수로 군집 대표를 고름(best 가 다른 점), `recommended` 도 낙관 강건 점수로 고름 | 문서·`--help`·report 를 사실대로("탐색용, 결정은 기본 실행"). 강건 점수는 후보 자신의 실측 직선이동 비율로 보정 |
+| 3 | 중복 제거 반경 = 그리드 간격이라 **부동소수 잡음이 이웃 병합 여부를 결정**(u/v 반올림만으로 `recommended` 가 바뀜) | `<= max(4 cm, step) + 1e-6`(동률은 병합). ±1e-12 흔들림 회귀 시험 |
+| 4 | 장애물 이름이 `pedestal`·`wall_xmin` 이면 MoveIt ADD 가 생성 객체를 **덮어씀**(고정구나 벽 하나가 장면에서 사라짐) | 생성 객체 `bp_cell_*`, 장애물 `bp_obs_*` 로 이름공간 분리 + 중복 id 검사 |
+| 5 | 공유 `_src_prefix` 심볼릭링크 하나를 다른 체크아웃의 동시 실행이 바꿔 서로의 xacro 를 읽음 | 호출마다 `mkdtemp` 개인 prefix, 끝나면 삭제(남는 것 없음 회귀 시험) |
+| 6 | 장착면을 YAML 에서 `false`(열림)로 두면 팔이 **자기가 붙은 벽을 통과** | 장착면은 항상 막힌 면(`Cell.walls_for`), 탐색·MoveIt 장면 양쪽. 6자유도 섭동에서 베이스 테두리의 장착면 관통은 기울기만큼 허용 |
+| 7 | "해 없음" 진단이 비거나 엉뚱한 목표를 탓함(실제 원인이 발판이나 가지 불일치일 때) | 장착면별 깔때기 단계 기반 한 줄 진단 + 최선 가지가 덮는 목표 수 |
+| 8 | 그리드가 범위의 위쪽 끝을 빠뜨리고, 간격 > 범위면 한 모서리만 검사 | 끝점을 항상 포함하는 `_axis` |
+| 9 | `walls`·`tool`·`robot`·`cyclic` 의 오타와 문자열 불리언(`"no"`)이 **조용히 무시** | 섹션별 허용 키(오타면 비슷한 키 제안), 불리언 엄격, 관절한계·속도·크기·받침대 높이 범위 검사 |
+| 10 | 문서: 추천·MoveIt 수치가 현재 코드와 불일치, 3단계 전제(`install/setup.bash`·`ROS_DOMAIN_ID`) 누락, "96 % 일치"의 범위(자기충돌만)·출하 설정 수치(놓침 16/과잉 32) 오기, 2.5 cm 수치·"같은 날" 오기, MoveIt 통과를 확률적 결과가 아닌 사실로 서술 | README 전면 정정(아래 수치) |
+
+**이번 실가동에서 새로 확인한 것**
+- **구 모델의 환경 충돌 과소 포함**: UR16e 충돌 메시(STL 표면 표본)가 XRDF 구(+버퍼) 밖으로 최대 shoulder 28 · upper arm 33 ·
+  forearm 39 · wrist_1 17 · wrist_3 11 · wrist_2 9 mm 튀어나온다. env 여유 10 mm 에서 상위 10개 중 2개의 `shelf_place` 자세가
+  MoveIt 에서 무효(upper_arm↔shelf, shoulder/upper_arm↔fixture)였고, STL 로 오프라인 재현하니 메시 여유 **0.2 mm · −9.1 mm**
+  (구 여유는 16 · 11 mm). 같은 오프라인 검사가 MoveIt 의 판정 2건과 정확히 일치.
+  env 여유 스윕(예제, 기본 실행): **10 mm → 가능 18, 상위 10 중 메시 접촉 2 / 20 mm → 15, 0, 추천 동일 / 30 mm → 10, 0, 추천이
+  (0.90, 0.40) 으로 바뀜 / 40 mm → 0**. → **기본값 20 mm**(`evaluator.DEFAULT_CONST`, 예제 YAML). 메시 돌출보다 작으니
+  보수적 값이 아니라 예제에서 맞춘 절충값이다(자기충돌 여유 10 mm 와 같은 방식).
+- **OMPL 은 실제로 무작위**: env 10 mm 상위 10개를 두 번 돌리면 7/10 → 5/10(천장 (0.86, 0.35)·벽 후보가 오감). 한 번의 실행은 표본
+  하나 — README 에 "2~3번 돌려 매번 통과하는 후보" 로 명시.
+- `moveit_validate`: move_group 이 없거나 사라지면 예전엔 "통과 후보 없음(FAIL)" 으로 보고 → 후보별 처리, 나머지 "not checked",
+  **종료 코드 2(INCOMPLETE)**. 요약에 점수 최고 통과 후보와 강건 점수 최고 통과 후보를 함께 출력. 실패한 이동에 시간이 찍히던 것 제거.
+  오프라인 확인: YAML 높이 변경 → 경고 + FAIL, 장착면 삭제 → FAIL, 옛 results.json → 재실행 안내, move_group 없음 → exit 2.
+- 정밀화 시드를 장착면별로 묶어 한 번에 평가(시드 간격 > 2×step) — 같은 여유값에서 정밀화 25 → 19 s. 시드 선택이 바뀐 탓으로
+  보이며 정밀화 지점이 1 cm 달라져, 추천이 §50.1 의 천장 (0.91, 0.29) 에서 **(0.91, 0.28)**(점수 0.335·강건 0.326 로 같은 수준)로.
+
+**최종 수치(예제 셀, 5 cm 그리드, 단일 코어, env 여유 20 mm)**: `self_test.py` **30항목 PASS 1.9 s**. 기본 53 s(그리드 4 · 정밀화 17 ·
+재정렬 2 · 강건성 31), `--no-path` 12 s, 경량 4.2 s, 2.5 cm(yaw 0) 14 s. 후보 3,877 / 가능 **15**(받침대15 3 · 천장 3 · ymin 벽 9;
+받침대30 은 유일 후보가 메시 접촉이라 탈락). best = 받침대15 (0.45, 0.55) 점수 0.418 강건 0.147 (`--no-path`·경량도 같은 best),
+recommended = 천장 (0.91, 0.28) 점수 0.335 강건 0.326 (`--no-path` 도 같음). 2.5 cm(yaw 0): 14,851 / 64.
+**MoveIt 2회**: 목표 자세 60개 전부 유효, FK 오차 0, **두 번 모두 9/10 통과**, recommended 통과, best 는 bench→shelf·shelf→tray 가
+두 번 모두 요청 3번 실패(구 모델에서도 직선이동이 19 cm 깊이로 막힌 두 이동). 장면·프로세스 잔여 0.
+
+**남은 것(미수정)**: §50.1 의 cuMotion XRDF forearm↔wrist_2/3 무시 목록(`ur_bringup`) → §51 에서 해결. 두 여유값(자기 10 mm, 환경 20 mm)은 예제
+셀 하나에 맞춘 값이라 다른 셀에서는 `moveit_validate.py` 결과로 다시 볼 것. `ur_bringup` 반영(베이스 origin 인자, Isaac prim 위치,
+cuMotion 장면 파일)은 여전히 별도 작업.
+
+## 51. cuMotion XRDF 재생성 — 구가 메시를 덮지 못하던 문제 + forearm↔wrist 자기충돌 무시 (2026-10-16)
+
+§50.1 에서 보고만 한 두 가지(`ur_bringup/cumotion/ur16e_2f85.xrdf` 의 forearm↔wrist_2/3 무시 목록, §50.2 의 "메시가 구
+밖으로 최대 39 mm")를 사용자 요청("남은 것들도 진행해줘")으로 cuMotion 쪽에서 직접 확인하고 고쳤다.
+측정 도구: **Isaac Sim 6.1 에 들어 있는 cuMotion 파이썬 모듈**(cumotion 1.1.0a2 = `/isaac-sim/exts/isaacsim.robot_motion.cumotion/pip_prebundle`,
+trimesh 4.11.1 = `omni.pip.compute/pip_prebundle`; 6.1.0-rc.26 에서만 확인) — `RobotWorldInspector` 로 cuMotion 자신의 판정을, `generate_collision_spheres` 로 덮는 구를
+얻는다. 별도 휠 다운로드가 필요 없어 이 컨테이너에서 그대로 재현된다. 기준값은 §50.1 의 MoveIt FCL 판정
+(세트2 모델, 빈 장면, 무작위 1000 자세, 그중 210 개가 충돌).
+
+### 51.1 확인된 것 (옛 XRDF)
+- **세계 충돌**: 메시가 구(+버퍼 5 mm) 밖으로 shoulder 28.5 · upper arm 34–35(표본에 따라; `check_xrdf.py` 34.5) · forearm 39.2 · wrist_1 16.9 · wrist_2 8.8 ·
+  wrist_3 11.0 · 커플링 32.0 · 그리퍼 base 12.5 · knuckle 23 · inner knuckle 19.7 · finger tip 18.5 mm 튀어나옴
+  (메시 표면 표본 vs 구). 베이스 하우징(`base_link_inertia`)은 구가 아예 없음. NVIDIA 템플릿 구(shoulder 등)도 같은 성질 —
+  medial 구는 메시 **안쪽**에 놓인다. nvblox ESDF 장애물은 MoveIt 장면에 없으니 이 차이는 아무도 다시 보지 않는다.
+- **자기충돌**: cuMotion 이 MoveIt 충돌 210 건 중 **49 건을 놓침**(오경보 3). 놓친 쌍 forearm↔wrist_2 21 · forearm↔wrist_3 15 ·
+  forearm↔손가락 11 · base_link_inertia↔forearm 5. **무시 목록만 고치면 49→44** — 나머지는 구가 서로 닿지 않거나
+  (forearm↔wrist·손가락) 베이스에 구가 아예 없어서(base↔forearm 5)다. (base_placement 의 numpy 모델로 같은 수정을 재면 49→39 —
+  그쪽은 그리퍼↔wrist 쌍을 건너뛰는 등 쌍 집합이 달라 숫자가 다르다.)
+- cuMotion 파이프라인(`isaac_ros_cumotion_planning.yaml`)에는 **`ValidateSolution` 응답 어댑터가 없고**, `ur_only:=true`(기본)면
+  MoveIt 모델에 그리퍼도 없다 → cuMotion 이 놓친 충돌을 계획 단계에서 다시 잡는 곳이 없다(실행 중 장면 갱신 시의 경로 재검사는
+  예외). UR 컨트롤러 쪽 자기충돌 보호 여부는 이 워크스페이스에서 확인하지 않았다.
+
+### 51.2 설계 — 구 세트 2개 (XRDF 는 `collision` / `self_collision` 에 다른 geometry 를 허용)
+자기충돌 판정 변형(같은 1000 자세):
+
+| self 구 | 구 수 | 놓침 | 오경보 | 비고 |
+|---|---|---|---|---|
+| 옛 XRDF | 58 | 49 | 3 | |
+| 옛 구 + 무시 목록 수정 + 베이스 구 | 83 | 36 | 4 | |
+| 전부 덮는 구 20 mm | 220 | 0 | 409 | base↔upper arm 255, forearm↔wrist_2 134 |
+| 전부 덮는 구 30 mm | 115 | 0 | 728 | `ready`·XRDF 기본 자세부터 충돌 |
+| 팔 덮는 구 10 mm | 470 | 0 | 129 | |
+| **forearm·wrist_2·wrist_3·커플링만 5 mm + 베이스 20 mm** | **453** | **5** | **48** | 채택 |
+| 전부 5 mm | 1315 | 0 | 51 | 구가 너무 많음 |
+
+- 베이스↔상완은 메시가 수 mm 간격으로 항상 붙어 있어(MoveIt 도 충돌로 본 적 없음) 덮는 구로는 늘 오경보 → 무시.
+- 오경보 48 은 대부분 forearm↔wrist_2(30)·forearm↔커플링(15) 근접 자세(메시 간 거리는 재지 않음). 위 이유(재검사 없음)로
+  놓침을 줄이는 쪽을 택했다. 덮는 구를 전 링크 20/30 mm 로 하면 충돌 없는 790 자세의 52/92 % 를 거부하고, 전 링크 5 mm 는
+  정확하지만(0/51) 구가 1315 개다.
+- **세계 구**: 팔·커플링 `max_overshoot` 20 mm, 그리퍼 10 mm(30~40 mm 는 손가락에 4~5 cm 구 하나 — 파지에 부적합), 195 개.
+  베이스 하우징(`base_link_inertia`, 테이블 위라 세계 구 없음)을 뺀 16 링크 메시가 구+버퍼 5 mm 안(`check_xrdf.py` gap ≤ −2 mm;
+  버퍼 없이 구만으로는 forearm 이 최대 2.9 mm 밖).
+
+### 51.3 cuMotion 실가동 비교 (Isaac 없이 세트3 제어 `use_sim_time:=false` + cuMotion MoveIt, 도메인 42)
+빈 장면(nvblox·장애물 없음), `ready` 에서 25 개 관절 목표(옛·"새 세계 구+옛 self 구"·fw5 변형에서 자기충돌 없고 ground plane 위;
+최종 파일은 fw5 와 상완 medial 구만 다름), plan only:
+
+| XRDF | 성공 | 계획 시간 중앙값 |
+|---|---|---|
+| 옛 | 24/25 | 0.078 s |
+| 새 세계 구 + 옛 self 구 + 무시 목록 수정 + 베이스 | 24/25 | 0.097 s |
+| **현재(재생성)** | **24/25** | **0.182 s** |
+
+실패 1 건(`rand8`)은 세 XRDF 모두 같은 즉시 실패(code 99999)라 구와 무관. robot_segmenter 는 새 XRDF 로 정상 초기화
+(`Robot segmenter initialized`, 오류 0). **nvblox A/B 회피 데모(§12)는 새 XRDF 로 아직 재실행하지 않았다**(실행 스크립트는 준비함).
+
+### 51.4 바뀐 파일
+- `ur_bringup/cumotion/gen_xrdf.py` 재작성(덮는 구/medial 구 생성, 무시 목록: forearm 은 wrist_1 만, base_link_inertia 는
+  shoulder·upper_arm). `/isaac-sim/python.sh` 로 실행, 결정적(고정 시드).
+- `ur_bringup/cumotion/check_xrdf.py` 신규 — 링크별 메시 덮임(≤ 5 mm), 이름 있는 자세 7 개의 자기충돌·ground 검사. 옛 XRDF 는 14 링크 FAIL.
+- `ur_bringup/cumotion/ur16e_2f85.xrdf` 재생성, `ur_bringup/cumotion/README.md` 갱신.
+- `ur16e_2f85_d405_cumotion_moveit.launch.py` 에 `xrdf:=<절대경로>`(기본 = 위 파일) — 배포 파일을 바꾸지 않고 A/B.
+
+### 51.5 함정
+- **cuMotion planner 가 안 뜨는 런치**(이날 여러 번; 실패 런의 로그는 다음 런이 덮어써 보존 안 됨, 아래는 당시 관찰):
+  컨테이너가 static planning scene server 다음에 `failed to send response to /cumotion_container/_container/load_node (timeout)`
+  을 찍고 `cumotion_planner` 는 로드되지 않는다 → move_group 이 나중에 `Action server not available after waiting`. 설정과 무관한
+  DDS 디스커버리 경합으로 보이며(추정) 재기동하면 됐다. 별개로 한 번은 옛 XRDF 로 16 목표를 계획한 뒤 17 번째 결과가 안
+  돌아왔다(`run_final.out`).
+  두 경우 모두 `ros2 launch` 부모가 SIGINT 에 안 죽어 SIGTERM 이 필요했다.
+- `ros2 launch ... xrdf:=` 처럼 **빈 값은 런치 문법 오류**(`malformed launch argument`) — 인자를 아예 빼야 기본값.
+
+### 51.6 base_placement 후속 (진행 중 — 기본값 미확정)
+base_placement 는 같은 XRDF 를 읽으므로 이제 덮는 세계 구로 셀을 판정한다.
+- cuMotion 의 self 구(453 개 — base_placement 는 베이스 하우징 25 개를 빼 428 개, SRDF 쌍 43,492)를 쓰면 최적화 전 코드에서
+  그리드 4→~50 s, 정밀화 17 s→9 분 이상(당시 관찰, 기본 실행 로그는 미보존)이라 중단했다.
+  → **세계 구 하나로 셀과 자기충돌을 모두** 판정(쌍 9,036). 덮는 구라 이웃 링크가 겹쳐도 메시는 안 닿으므로 self_margin 은
+  음수: MoveIt 대비 −20 mm 놓침 2/오경보 62 · **−25 mm 11/17** · −30 mm 24/9 (옛 모델 16/32; cuMotion self 구를 base_placement
+  쌍으로 판정하면 0 mm 5/45 — cuMotion 자체 판정은 5/48).
+- 속도: 박스 거리·자기충돌 쌍을 성분별 계산, 링크별 행렬곱, 자기충돌 gather float32 → 경량 실행(env 10 mm·self −25 mm 셀)
+  16.2 → **4.6 s**(로그 내부 시간), top·feasible 동일. 옛 XRDF 예제 셀 경량은 4.2 s 였다. `self_test.py` PASS.
+- **미완료**: `env_margin` 재선정(0/5/10 mm 스윕이 세션 종료로 중단), 기본값·예제 YAML 갱신, 기본 실행 시간, MoveIt `--pick all`
+  재검증. **현재 기본값(env 20 mm · self +10 mm)으로는 새 XRDF 에서 예제 셀이 모든 장착면 feasible 0** 이다(경량 실행으로 재현 확인) —
+  원인은 self_margin. self −25 mm 에서는 env 20·10 mm 모두 받침대 0, env 0 mm 에서 받침대 15·30 각 2(5 mm 는 스윕 중단 — 바닥·받침대 15 cm 0 까지만 측정). 과잉 거부인지는
+  MoveIt 재검증 전 미확정. 확정 전까지 base_placement 를 쓰지 말 것.
+- 문서 갱신 후 6 개 검증 에이전트가 문서 주장 237 개를 증거와 대조해 57 건을 지적했고, 위 문장들과 각 문서를 그에 맞춰 고쳤다
+  (2026-10-19).
+
+## 52. ACT 체크포인트를 현재 컨테이너(Isaac Sim 6.1.0)로 옮겨 재롤아웃 — 2카메라 9/10 재현, 손목 1대 5/10 (2026-10-19)
+
+사용자가 첫 머신(Isaac 6.0.1)의 산출물을 호스트에서 옮겨 줌: `outputs/act_red_left_100`, `act_wrist_only`(각 1.8 GB,
+`checkpoints/last → 060000`), `lerobot_ds_red_left_100`(100 ep / 43,222 프레임), `lerobot_ds_wrist_only`(49 / 20,996),
+`il_raw_red_left_100`, `il_raw_wrist_only`. `meta/info.json` 수치가 §38·§45 와 일치. 조건은 원래와 동일(하네스 기본값:
+같은 씬, 시드 131 / 151, 10회 × 70 s, `START_POSE=ready_v1`), `ROS_DOMAIN_ID=42`. 시드가 같아 **시행별 시작 위치가 원래와 똑같다**.
+
+| 시행 | 2카메라 원래 §38 | 2카메라 오늘 | 손목 원래 §45.7 | 손목 오늘 |
+|---|---|---|---|---|
+| 1 | 8 mm | 8 | 14 | 21 |
+| 2 | 6 | 8 | FAIL 273 | FAIL 273 |
+| 3 | 5 | 5 | 20 | **FAIL 53** |
+| 4 | 1 | 12 | SKIP | FAIL 262 |
+| 5 | FAIL 53 | FAIL 52 | 성공 | 22 |
+| 6 | 5 | 34 | 성공 | 15 |
+| 7 | 13 | 27 | 성공 | 14 |
+| 8 | 20 | 13 | 성공 | **FAIL 262** |
+| 9 | 2 | 2 | 성공 | 33 |
+| 10 | 8 | 10 | 성공 | **FAIL 37** |
+| 합계 | **9/10**, 7.6 mm | **9/10**, 13.2 mm | **8/9**, 17 mm | **5/10**, 21 mm |
+
+(원래 손목 5~10 의 시행별 오차는 11/25/19/18/16/12 mm 로만 기록돼 순서 대응은 불명.)
+- **2카메라 ACT 는 재현됐다** — 같은 시행(5번)이 같은 거리(52 vs 53 mm)로 실패. 성공 시 오차는 커졌다(7.6 → 13.2 mm, 6·7번 34·27 mm).
+- **손목 1대 ACT 는 나빠졌다** — 원래 성공한 3·8·10번이 실패. 미파지 실패 3건(2·4·8번)은 모두 y ≈ −0.04 ~ −0.05 —
+  무작위 범위의 blue 쪽 가장자리. 원래 실패(2번)도 같은 쪽이고, 50 ep 2카메라 v5 의 가장자리 실패(§36)와 같은 양상.
+- 원인은 확정하지 못했다. 같은 시작 자세에서 카메라 영상을 비교하면 화각·재질·조명은 같고 6.1.0 이 평균 약 3 % 밝다
+  (exterior BGR 130/140/143 → 134/145/150, wrist 119/131/122 → 123/134/126). 외부 카메라가 함께 있는 정책은 버텼고
+  손목만 보는 정책이 흔들린 것은 렌더링 차이에 대한 민감도로 설명될 수 있지만 가설이다. 또 다른 차이: 오늘 Isaac 은 롤아웃
+  중 실시간의 약 1.16배(9.3 s sim / 8 s 벽시계)로 돌았다 — 정책은 벽시계 30 Hz, 첫 머신의 배율은 기록 없음.
+
+**하네스 결함 1건 수정**: `rollout_gui_then_n*.sh` 가 Isaac 의 "scene topics" 출력만 보고 바로 제어 스택을 띄웠다. 이 줄은 첫 물리
+스텝 전에 찍히고, 셰이더 캐시가 빈 첫 기동에서는 Isaac 이 약 3.5 분 CPU 로 컴파일한 뒤에야 `/clock` 이 나온다 → 그사이 spawner 가
+`Switch controller timed out` 으로 전부 죽어 `FAIL: bringup`. 이제 `/clock` 메시지가 실제로 올 때까지(최대 5 분) 기다린다.
+두 번째 롤아웃(손목)은 수정된 래퍼로 한 번에 통과.
+
+**롤아웃 영상 추가**: `scripts/harness/record_rollout.py`(ML venv: rclpy + OpenCV + PyAV/libx264). `RECORD_DIR` 를 주면
+`rollout_n.sh`/`rollout_wrist1.sh` 가 시행마다 외부·손목 카메라를 나란히 H.264 mp4 로 남기고 판정 결과를 파일명에 붙인다
+(`trial_03_SUCCESS.mp4`). 프레임은 Isaac `/clock` 기준(벽시계 아님, 기본 10 fps sim → 30 fps 재생 = 3배속), 녹화는 토픽 구독만
+하므로 롤아웃에 영향 없음. 함정 2개: rclpy `Node` 가 `self._clock` 을 이미 쓰므로 콜백 이름을 `_clock` 으로 하면 가려져
+`callback should be callable with one argument` 로 죽는다(→ `_on_clock`). 결과: `outputs/rollout_videos/act_red_left_100/`
+(3~10번, 앞 2개는 이 버그로 미녹화), `outputs/rollout_videos/act_wrist_only/`(1~10번).
+
+## 53. 물리 접촉 파지(용접 없이) — `--grasp-mode physical` + soft 그리퍼 프로파일, 그리고 텔레옵 손목 회전의 원인 (2026-10-19)
+
+사용자 요청: "범위·조건을 만족하면 빨강 박스가 핑거에 고정(fixed)되는 방식 → 실제 물리 접촉으로 집게" + "리더로 텔레옵 pick 중
+핑거가 박스에 닿으면 가끔 5번 축(wrist_2)이 한계를 넘어 빠르게 뱅글뱅글 돈다".
+
+### 53.1 원인 (조사 + 실측)
+- 그리퍼 물리는 NVIDIA 2F-85 에셋(Physx_Mimic 변형) 그대로이고 바뀐 것은 `build_ur16e_2f85.py` 의 구동 게인뿐:
+  `finger_joint` **20/deg(=1146 N·m/rad), 1/deg, maxForce 26 N·m, 146 deg/s(2.56 rad/s)**. 링키지는 닫힌 4절이 아니라
+  **열린 트리 + 하드 mimic 5개**(naturalFrequency 0)이고, 팔 6 + 그리퍼 6 = **한 articulation**(32/1 iteration, 60 Hz).
+- 그래서 접촉 직후 0.02 rad 만 넘어가도 26 N·m 로 포화(패드당 수백 N 추정, 0.2 kg 큐브는 ~2 N 이면 충분)하고, 손가락이
+  2.56 rad/s 로 부딪힌다. 그 반력이 mimic 을 통해 **같은 articulation 의 손목으로 그대로** 전해진다.
+- **실측 (아래 표 asset 행)**: 용접 없이 원래 게인으로 닫으면 **매 닫힘마다 finger_joint 속도가 상한 ±2.56 rad/s 에 붙고,
+  바로 그 순간 wrist_1/wrist_2 가 위치 기준 2.2~2.8 rad/s 로 튄다**(UR 손목 상한 3.14). 큐브는 짓눌려 튕겨나가 jaw 가
+  0.78 까지 닫힌다 → 0/10. 이것이 텔레옵의 "닿는 순간 5번 축이 빠르게 돈다" 의 기전으로 본다 — 리더가 0.8 을 즉시 보내는 것도
+  같은 slam 이다. **단, 스크립트 30 사이클에서 §16 같은 완전 폭주(wrist_2 −69 rad)는 재현되지 않았다** — 사람의 텔레옵은 지속
+  접촉·비스듬한 닫힘이 더 길어서 누적되는 것으로 추정(미확인).
+- 덤으로 확인: ROS `GripperCommand.max_effort` 는 sim 에서 **무시된다**(position 형 `GripperActionController` 어댑터가 버린다).
+  힘은 USD 구동의 maxForce 로만 정해진다 — §35 의 "max_effort 10 vs 100" 차이는 effort 때문이 아니었다.
+
+### 53.2 바꾼 것
+- `isaac/common/ur16e_isaac_ros2.py`
+  - `--grasp-mode {none,attach,physical}` — `attach` = 기존 `--grasp-attach`(그대로 별칭). `physical` = 용접 없음,
+    `/scene/grasp_active` 는 "jaw 가 `--grasp-close` 이상 + 물체 중심이 패드 TCP `--grasp-hold-distance`(0.03 m) 이내" 로 계산
+    (같은 토픽·같은 의미라 상태머신의 release 대기·still_holding 검사가 그대로 동작).
+  - `--gripper-profile {asset,soft}` + 개별 노브(`--finger-stiffness/-damping/-max-force/-max-vel`, `--gripper-armature`,
+    `--mimic-natural-freq/-damping-ratio`, `--pad-friction`, `--physics-hz`, `--art-pos-iters/-vel-iters`,
+    `--object-pos-iters/-max-depen`, `--torsional-patch-radius`). USD 재베이크 없이 play 전에 stage 에 작성.
+    **soft** = finger 0.5/deg(28.6 N·m/rad), 0.02/deg, **3 N·m**, **57 deg/s(1 rad/s)** · physics **120 Hz**(렌더·`/clock`·ROS 그래프는 60 Hz 유지)
+    · articulation 64 pos iter · 큐브 32 iter, maxDepenetrationVelocity 1.0, torsional patch 0.01 m · 패드(inner_finger 충돌체 4개)에
+    μ 1.2 combine **max** 재질. physical 모드 기본 = soft, 그 외 기본 = asset(**기존 수집·롤아웃 동작 불변**).
+  - 기동 시 PhysX 가 실제로 쓰는 값 출력: `finger_joint (PhysX): Kp=28.6 N.m/rad Kd=1.15 Fmax=3 N.m vmax=0.995 | physics dt=0.00833 s device=cpu`
+    (USD 는 per-degree, 뷰는 per-radian — ArticulationController 가 덮어쓰지 않음을 확인).
+  - `--gripper-guard`(physical 에선 auto=on): finger_joint < `--gripper-guard-limit`(−0.05) 이면 `/scene/reset_gripper` 와 같은
+    텔레포트로 링키지를 되돌려 **폭주가 팔로 번지기 전에 끊는다**(물체는 떨어짐). 이번 실험에서 **트립 0회**.
+  - `--grasp-log <csv>`: 렌더 스텝마다 12 DOF 위치·속도, finger 노력, 패드 간격, TCP, 물체 포즈.
+  - `/scene/reset_gripper` 본체를 `_zero_gripper()` 로 분리(가드와 공유).
+- `scripts/pick_place_demo.py`: `grasp_mode`(attach|physical) — physical 은 **한 번에** `grip_closed` 로 닫고(2단계·attach 대기 없음)
+  LIFT GT 검사로 판정. 남용 시험용 `grasp_bias_x/y`(조준을 중심에서 비켜 한쪽 패드가 먼저 닿게). 설정 묶음
+  `config/common/pick_place_physical.yaml`(`grasp_mode: physical`, `grip_closed: 0.8`).
+- 하네스 `scripts/harness/grasp_physical.sh <tag> <N> [isaac 인자]`(카메라 끔, `DEMO_PARAMS`·`MODE=attach`·`SEED`) +
+  `grasp_log_stats.py`(사이클 결과, 그리퍼 DOF 범위, 가드/forced-open 횟수, **위치 기준** 팔 속도, 홀드별 미끄럼·높이).
+
+### 53.3 결과 (빨강 큐브 35 mm / 0.2 kg, 시드 91, ±60 mm·임의 yaw, 명령 0.8)
+| 실행 | 프로파일 | 시나리오 | 성공 | finger_joint 범위 | 손목 최대 속도(위치 기준) | 미끄럼(홀드 중) |
+|---|---|---|---|---|---|---|
+| soft_main | soft | 정상 | **20/20** | 0.000 ~ 0.506 | 0.29~0.64 rad/s | ≤ 1.6 mm |
+| soft_bias | soft | 조준 y +10 mm 비킴 | **10/10** | 0.000 ~ 0.506 | ≤ 0.63 | ≤ 1.6 mm |
+| soft_placelow | soft | 쥔 채 테이블에 15 mm 눌러 놓기 | **10/10** | −0.008 ~ 0.506 | ≤ 1.10 ¹ | ≤ 1.5 mm |
+| soft_press | soft | `grasp_z_offset 0`(핑거가 테이블에 닿은 채 닫기) | 0/10 ² | −0.014 ~ 0.800 | ≤ 0.63 | — |
+| asset_main | asset | 정상 | **0/10** | 0.000 ~ 0.800 | **2.20~2.52** | 큐브 튕김 |
+| asset_press | asset | 테이블에 닿은 채 닫기 | 0/10 | **−0.023** ~ 0.800 (forced open 3회) | ≤ 0.67 | — |
+| asset_placelow | asset | 15 mm 눌러 놓기 | 0/10 | 0.000 ~ 0.800 | **1.89~2.79** | 큐브 튕김 |
+| attach_regress | asset + 용접 | 기존 경로 회귀 | 3/3 | 0.000 ~ 0.520 | ≤ 0.63 | ≤ 1.3 mm |
+
+¹ 테이블에 눌린 팔이 OPEN 순간 명령 자세로 0.1 rad 내려앉는 것(실물이면 보호정지) — 회전 아님. ² 핑거 끝이 테이블에 먼저 닿아
+jaw 가 0.39 에서 멈추고 큐브 아랫부분만 잡힘 — §34 의 "`grasp_z_offset` < 0.007 은 용접 모드에서도 실패" 와 같은 기하 한계.
+링키지 이탈·손목 튐은 없었다. 정상 파지에서 jaw 는 **0.506** 에서 멈춘다(§33 의 0.599 는 asset 게인 + 다른 조건).
+
+### 53.4 함정
+- **PhysX 가 보고하는 관절 속도는 접촉 중 믿을 수 없다**: soft 에서 jaw 가 0.506 에 정지해 있는데 `finger_joint` 속도가
+  **상한 0.995 rad/s 로 고정** 보고된다(velocity iteration 1→4 무관). 그래서 `GripperActionController` 의 stall 판정이 영원히
+  안 걸려 액션이 끝나지 않고, 상태머신이 **사이클마다 15 s** 를 기다렸다(= 녹화하면 15 s 정지 프레임). → physical 모드에선
+  결과를 기다리지 않고 기존의 **위치 plateau** 판정으로 넘어가되, 시작 위치를 **goal 을 보내기 전에** 읽는다. 처음엔 결과를 0.5 s
+  기다린 뒤 seed 했는데, 그사이 jaw 가 이미 멈춰 "움직인 적 없음" 으로 보여 plateau 출구가 안 열리고 2.5 s 상한을 다 썼다
+  (CLOSE→LIFT 0.33 s / 2.5 s 혼재, 리뷰에서 발견) → 수정 후 6/6, **0.79~0.86 s 일정**. attach 모드의 seed 시점은 그대로 뒀다. 손목도 같은 현상(보고 3~4 rad/s, 실제 위치 변화 0.5 rad/s)
+  이라 `grasp_log_stats.py` 는 위치 차분으로 판정한다. 데이터셋 state 는 위치만 쓰므로 영향 없음(`il_recorder`/`raw_to_lerobot` 확인).
+- soft jaw 에서 `grip_closed 0.52`(용접 시대 값)는 접촉 0.506 바로 앞이라 0.4 N·m 밖에 안 쥔다 — physical 은 **0.8** 로 닫는다.
+- `--grasp-log` 기록이 예외를 내면 같은 스텝의 가드·용접·`grasp_active` 가 함께 죽던 구조(리뷰 발견) → 기록만 끄고 계속한다.
+- 120 Hz 물리라 헤드리스 실시간 배율이 낮아진다(이번 실측 ≈ 1.1배, 60 Hz 일 땐 §49.5 의 3.78배). 20 사이클 6 분.
+
+### 53.5 남은 것 / 쓰는 법
+- **텔레옵(리더)**: Isaac 을 `--grasp-attach` 대신 **`--grasp-mode physical`** 로 띄우면 된다(나머지 인자 동일). 브리지가 보내는 0.8 이
+  그대로 "힘 제한 닫기" 가 된다. 사람 텔레옵으로의 확인은 아직 — 사용자 실측 필요.
+- **IL 파이프라인은 아직 attach 그대로**(수집·롤아웃 하네스 미변경). physical 로 바꾸면 그리퍼 채널(정지값 0.506, 닫힘 타이밍)이
+  달라지므로 **재수집·재학습** 대상이고, attach 데이터와 섞지 말 것. 기존 ACT 체크포인트를 physical 씬에서 롤아웃해 보는 것이
+  가장 싼 다음 실험(정책은 0.52 근처를 명령하므로 쥐는 힘이 약할 수 있음).
+- 다른 크기·질량의 물체는 미검증(정지 각도·필요 마찰이 달라짐). Physx_Loop 변형 재베이크(E6)·mimic 컴플라이언스(E4)는 불필요해서 안 함.
+
+### 53.6 기존 ACT 체크포인트(attach 데이터)를 physical 씬에서 롤아웃 — 0/10 (2026-10-19)
+`GRASP_MODE=physical GRASP_LOG=… RECORD_DIR=outputs/rollout_videos/act_red_left_100_physical rollout_gui_then_n.sh 10 70`
+(래퍼에 `GRASP_MODE`(기본 attach)·`GRASP_LOG` 추가. 시드 131, `ready_v1` — 오늘 attach 9/10 과 시행별 시작 위치 동일).
+- **0/10**. 10번 중 9번은 큐브가 제자리(마커까지 271~361 mm), 7번만 66 mm.
+- 정책은 큐브까지 정확히 간다(TCP–큐브 최소 2~3 mm)·닫는다(fj 0.49~0.52)·들기도 한다(최고 z 0.419, 홀드 중 2~6 mm) — 그런데
+  **쥐는 힘이 0.3~0.9 N·m**(상한 3) 이고 곧 놓친다. 이유: attach 데이터로 배운 정책은 그리퍼를 **~0.52(접촉 0.506 바로 앞)**
+  까지만 명령한다(§53.4 와 같은 함정) — 용접 시대엔 0.25 에서 붙으니 그걸로 충분했다. 또 용접은 대충 닫아도 붙었으므로 정확한
+  파지 자세를 배운 적이 없다. → **physical 은 재수집·재학습이 필수**라는 예측대로.
+- 링키지 이탈 0, 가드 0. 팔 관절 위치 속도 최대 ~3 rad/s 가 있었지만 대부분 **jaw 가 열려 있을 때**(fj≈0) — 정책 스트리밍 명령
+  자체의 속도이고 그리퍼 접촉과 무관. 범위 2π 미만(회전 폭주 없음). attach 롤아웃의 같은 로그가 없어 직접 비교는 못 함.
+- 영상 `outputs/rollout_videos/act_red_left_100_physical/trial_01..10_FAIL.mp4`.
+
+### 53.7 수집 파이프라인을 physical 기본으로 전환 (2026-10-19)
+사용자: "데이터 수집은 다시 할 것" → 수집 파이프라인을 physical 로.
+- **스위치 하나**: `scripts/harness/grasp_mode.sh`(source 용) — `GRASP_MODE=physical`(기본)|`attach`. 수집·변환·학습·롤아웃 하네스
+  18개(`collect_100/_wrist1/240`, `convert_*`, `train_*`, `pipeline_*`, `rollout_*`, `groot_{v8,rollout,train_abs,pipeline}`)가
+  Isaac 인자(`--grasp-mode physical` / `--grasp-attach`), 경로 접미사(`_phys` / 없음; GR00T `V=v4_phys` / `v3`), 롤아웃 시작 자세
+  (`ready` / `ready_v1`)를 여기서 받는다. **용접 시대 산출물 경로는 attach 에서만 나오므로 physical 수집이 그것을 `rm -rf` 할 일이 없다.**
+- **★ 기록 라벨 함정 수정**: `il_recorder` 기본 `action_source=next_state` 는 `action.gripper` = 다음 프레임의 **측정값** — physical 에선
+  jaw 가 0.506 에 멈추므로 정책이 "0.506 을 명령" 하도록 배워 쥐는 힘이 0 이 된다(§53.6 의 0/10 과 같은 기전). → 새 파라미터
+  **`gripper_action_topic`**: 그리퍼 action 만 그 JointState 의 `finger_joint`(sim = 컨트롤러가 Isaac 에 보내는 명령
+  `/isaac_joint_commands`)에서 가져온다. 팔 action 은 그대로 next_state. `meta.json` 에 `gripper_action_topic`·`grasp_mode` 기록.
+- `collect_il_episodes.sh`: `GRASP_MODE`(기본 physical) → physical 이면 상태머신에 `pick_place_physical.yaml`, 기록기에
+  `gripper_action_topic:=/isaac_joint_commands`. Isaac 이 새로 래치하는 **`/scene/grasp_mode`** 와 다르면 **아무것도 지우기 전에** 거부.
+- `raw_to_lerobot.py`: `(grasp_mode, gripper_action_topic)` 이 섞인 에피소드면 변환 거부(필드 없는 옛 에피소드 = attach).
+- 수집 하네스(`collect_*`, `groot_v8`)에도 롤아웃 래퍼와 같은 `/clock` 대기(§52) 추가.
+- **스모크**: `collect_100.sh 3` → 3/3, `meta.json` grasp_mode=physical. 닫힌 구간 `action.gripper` **1.000**(명령 0.8) vs
+  `state.gripper` **0.60~0.63**(정지 0.506). 변환 OK(h264). 섞인 디렉터리 변환 거부 ✓, Isaac=physical 에 `GRASP_MODE=attach` 수집 거부 ✓
+  (출력 디렉터리 생성 전). 스모크 데이터는 삭제.
+- 문서: `PIPELINE.md` 명령·경로를 physical 기준으로(학습·롤아웃 성공률은 아직 없음을 명시), `README.md`, `CLAUDE.md`, 하네스 README.
+- 부분 리뷰(중단됨)로 2건 즉시 수정: `convert240.sh` 의 기본 `OUT`·`groot_train_abs.sh` 의 기본 `OUT` 에 접미사가 빠져 physical 에서
+  **용접 시대 경로를 `rm -rf`/덮어쓸** 수 있었다 → `$GRASP_SFX` 추가. 3task_v3 시작 자세 안내 정정(그것도 `ready_v1`).
+
+### 53.8 다음에 이어서 할 것 (2026-10-19 중단 시점)
+1. **파이프라인 리뷰 마저** — 중단된 워크플로가 남긴 미검증 지적 2건:
+   ① `groot_v8.sh`/`groot_rollout.sh` 기본 `CKPT` 가 physical 에서 `groot_240_v2_rel_phys`(아무 하네스도 안 만드는 경로; 상대
+   액션은 서빙 불가) → 기본값을 `groot_3task_v4_phys_abs` 로 바꿀지 결정. ② `il_recorder` 가 `grasp_mode` 를 스스로 모른다 — 하네스
+   밖에서 기록하면 `""` → 변환기가 attach 로 읽음 → `/scene/grasp_mode` 를 직접 구독하도록. 그 뒤 리뷰 재실행(diff 전체).
+   (이미 있던 불일치: `groot_pipeline.sh` 가 `START_POSE=ready` 를 export — v4_phys 엔 맞고, `GRASP_MODE=attach` 로 v3 를 재현할 땐 틀림.)
+2. **ACT physical 수집 → 변환 → 학습 → 롤아웃**: `ROS_DOMAIN_ID=42 collect_100.sh 100` 후 `pipeline_100.sh`(경로 `*_phys`,
+   시작 자세 `ready`). 수집 후 PIPELINE.md 1-3 합격 기준(정지 프레임 < 15 %, state 그리퍼 최대 ≈ 0.63, 길이 이상치 0) 확인.
+   첫 수집 앞에 `grasp_watch.py` 임계값 0.45 가 physical 정지값(0.506)에서도 의미 있는지 확인.
+3. 사용자 쪽: 리더 텔레옵을 `--grasp-mode physical` 로 실측(손목 회전 재발 여부).
+4. 이전부터 보류: base_placement 기본값 재선정·MoveIt 재검증(§51.6), nvblox A/B 데모 새 XRDF 로 재실행, PIPELINE.md §5 의
+   11 s / 8.6 % 수치 정정, 새 시드 일반화 롤아웃.
+- **커밋 안 함**. 프로세스 전부 종료 상태. 결과물: `outputs/harness_logs/gp_*`(그리퍼 실험), `outputs/rollout_videos/act_red_left_100_physical/`.
+
+## 54. 2026-10-20 후속 — 파이프라인 리뷰 수정, base_placement 재조정, PIPELINE 수치 재측정, ACT physical 재수집·학습·롤아웃, nvblox A/B
+
+PC 재부팅 후 §53.8 목록을 이어서 진행. 모든 실행 `ROS_DOMAIN_ID=42`(IL), 동시 실험은 43.
+
+### 54.1 수집 전 리뷰 (3 차원 + 적대적 검증, 지적 6건 확인)
+§53.8 의 미검증 2건부터 고쳤다.
+- `groot_v8.sh`/`groot_rollout.sh` 기본 `CKPT` 가 physical 에서 존재하지 않는 `groot_240_v2_rel_phys` → physical 이면
+  `groot_3task_v4_phys_abs`(= `groot_pipeline.sh` 산출물), attach 면 예전 그대로.
+- `il_recorder` 가 래치된 `/scene/grasp_mode` 를 직접 구독해 `meta.json` 에 기록(하네스 밖에서 띄워도 라벨이 붙음). `grasp_mode`
+  파라미터를 주면 장면과 다를 때 기록을 막는다(`physical` 인데 토픽이 아직 없으면 대기). 실물엔 토픽이 없어 `""`.
+  변환기는 필드가 **없는** 옛 에피소드만 attach 로 읽고, `""`(실물)는 별도 그룹 → 섞이면 거부.
+그 뒤 전체 리뷰(3 리뷰어 + 검증 6) 에서 확인된 것:
+- **`convert_100.sh` 가 `$LOG/collect_100.log` 를 기다렸는데 `collect_100.sh` 는 그 파일을 쓰지 않는다** — 호출자가 정확히 그
+  이름으로 리다이렉트하지 않으면 60 분 대기 후 exit 1(4 시간 무인 실행이 변환에서 죽을 뻔). → 수집 **프로세스 종료 + 디스크의
+  에피소드**로 판정(`convert_wrist1.sh` 와 같은 방식).
+- `pipeline_100.sh` 는 도메인을 정하지 않는다 → 롤아웃 단계가 도메인 0(다른 컨테이너 공용)으로 떨어질 수 있었다. 실행 명령에
+  `export ROS_DOMAIN_ID=42`, `grasp_mode.sh` 가 미설정이면 경고.
+- **전날 내 수정 하나가 틀렸다**: `groot_pipeline.sh` 의 `export START_POSE=ready` 를 `grasp_mode.sh` 기본값(attach → `ready_v1`)에
+  맡겼는데, 파이프라인은 **방금 `pick_place_demo.py` 로 모은 데이터**(READY = 현재 `ready`)를 롤아웃하므로 모드와 무관하게 `ready`
+  여야 한다. → 되돌리고 `pipeline_100.sh`·`pipeline_wrist1.sh` 에도 같은 이유로 `export START_POSE=ready`.
+- **정지 프레임 판정이 physical 에서 틀린다**: `raw_to_lerobot._thin_idle` 과 PIPELINE 1-3 확인 스크립트가 그리퍼를
+  `|action − state|` 로 봤는데, physical 의 action 은 명령(1.0), state 는 정지값(≈ 0.63)이라 쥐고 있는 동안은 팔이 서 있어도 늘
+  "움직임". → 그리퍼는 **연속 state 의 변화**로 판정. (`--max-idle-run` 기본 0 이라 기존 변환 결과는 무관.)
+- `grasp_watch.py` 임계값 0.45 는 physical 정지값 0.506 보다 아래라 그대로 유효(아래 54.5 에서 사이클당 3장 확인).
+- 덤으로 확인된 함정: `pgrep -f "<패턴>"` 은 그 패턴을 명령줄에 담은 **자기 셸도 잡는다** — 전날 대기 루프가 2 시간 넘게 안 끝난 원인.
+  `collect_100.sh` 와 `pipeline_100.sh` 를 한 셸 명령으로 띄우면 단계 1·2 의 "수집 종료" 대기가 영원히 안 끝난다 → 별도 런처 파일로 실행.
+
+### 54.2 base_placement 여유값 재조정 (§51.6 마무리)
+- 스윕(self −25 mm, 경량 실행): env **0 mm** → 받침대15 2·받침대30 2·천장 3·ymin 벽 8 / 5 mm → 받침대15 0 / 10 mm → 받침대 전부 0.
+- 근거: 새 XRDF 의 world 구는 메시 + 버퍼 5 mm 를 **덮도록** 만들어졌다(`check_xrdf.py`) → 환경 여유를 더 둘 필요가 없다.
+- **MoveIt `--pick all` 3회**(세트2 제어 + move_group, Isaac 없이, 도메인 43): 상위 10 × 목표 6 = **60 자세 매번 메시 충돌 0**.
+  실패는 전부 선반 근처 이동(bench_regrasp → shelf_place → tray_pick) 계획 실패. 결과 5/10 · 6/10 · 5/10, **3회 모두 통과** =
+  #3 받침대15 (0.41, 0.41) · #4·#5 천장 (0.86, 0.35 / 0.29) · #6 받침대15 (0.42, 0.36) · #10 ymin 벽 (0.86, 1.05). 점수 1등(#1 받침대15
+  0.44, 0.56) 0/3, 도구 `recommended`(#8 천장 0.91, 0.30) 1/3 — 옛 XRDF 때와 같은 양상(점수 1등은 선반 쪽 이동이 막힘).
+- → **기본값 `env_margin` 0.000 · `self_margin` −0.025**(`evaluator.py`, `examples/confined_cell.yaml`). 예제 기본 실행 **66 s**(옛 53 s),
+  수정한 예제 YAML 로 다시 돌려 상위 10·recommended 가 검증본과 **동일**함을 확인, `self_test.py` PASS.
+- 함정: 검증 스택을 `pkill -INT -f "<launch 명령>"` 으로 내리려다 그 문자열을 담은 내 셸이 먼저 죽었다 → PID 로 종료. 같은 시각 도메인
+  42 의 수집 스택은 영향 없음(확인).
+
+### 54.3 PIPELINE.md §5 수치 재측정
+§5 의 "사이클 11 s / 정지 8.6 %" 는 인용한 절(§32·§38)에 없던 값이었다(10-19 문서 검증 지적). 이 컨테이너에 옮겨 온
+`il_raw_red_left_100` 을 PIPELINE 1-3 확인 스크립트로 재측정: **100 ep, 43,222 프레임, 에피소드 중앙값 14.3 s(12.4–17.0, 평균 14.4),
+정지 8.6 %, 그리퍼 최대 0.650, 이상치 0** → 정지 8.6 % 는 맞고 "11 s" 는 틀림. §5·README 표를 측정값과 출처로 교체.
+
+### 54.4 nvblox → cuMotion 회피 A/B — 새 XRDF·Isaac 6.1.0 으로 재실행 PASS
+§51.3·§53.8 의 미재실행 항목. ACT 학습과 같은 시간에 도메인 43, 헤드리스 Isaac(`--with-camera --with-static-cam --obstacle`) +
+세트3 제어 + `ur16e_2f85_d405_nvblox.launch.py` + cuMotion MoveIt(`ur_only:=true launch_rviz:=false`), 각 단계를 자기 프로세스
+그룹으로 띄우고 PGID 로 종료(같은 시각 도메인 42 학습에 영향 없음). 로그 `outputs/harness_logs/nvblox_ab_20261020_0129/`.
+
+| 목표점 (gripper_frame) | `read_esdf_world:=true` | `read_esdf_world:=false` |
+|---|---|---|
+| FREE (0.5, −0.3, 0.6) | 성공 (`error_code=1`) | 성공 |
+| OBST (0.5, +0.3, 0.6) 장애물 안 | **거부** (`99999`; 06-22 는 IK 실패로 표시) | **성공** |
+
+→ 06-22 표와 같은 결과: 같은 점이 ESDF 를 켤 때만 막힘 = 새 XRDF 로도 nvblox 가 매핑한 장애물을 cuMotion 이 회피. 플래너가 쓴 XRDF 는
+설치 경로(소스로의 심볼릭 링크)의 재생성본, 계획 요청마다 `Updated ESDF grid successfully`. 데모 스크립트는 OBST 실패만 기대하므로 대조군
+실행엔 `CHECK`(rc 2)를 찍는다 — 대조군에선 그게 정상. 새 XRDF 의 무해한 경고: 자기충돌 마스크에 있는 `attached_object` 에 구가 없음.
+  **→ 2026-10-21 정정(§56)**: 이 PASS 는 nvblox 기동 직후 우연히 통과한 적분 1 회 덕이었다 — 당시 런치는 정상상태 적분 0. 런치 수정 후 재검증 PASS.
+
+### 54.5 ACT 를 physical 데이터로 재수집·재학습 — 롤아웃 8/10 (시드 131) · 9/10 (새 시드 171)
+런처 파일(§54.1 의 pgrep 함정 회피)로 `collect_100.sh 100` → `pipeline_100.sh`, `ROS_DOMAIN_ID=42 GRASP_MODE=physical`,
+00:39 → 02:51 무인(수집 ≈ 40 분, 변환 ≈ 7 분, 학습 60k 1 h 06 m · ≈ 15.8 step/s, 롤아웃 10 회).
+- **수집 100/100**(실패 0, 사이클 ≈ 23 s). PIPELINE 1-3 합격 기준 전부 통과: 정지 **10.0 %**(< 15 %), state 그리퍼 최대 **0.633**,
+  > 0.95 **0 %**, 25 s 초과 **0**, 에피소드 중앙값 **16.6 s**(15.4–18.3; 용접 시대 14.3 s 보다 김 — 120 Hz 물리), 모든 에피소드
+  `meta.json` = (`physical`, `/isaac_joint_commands`), action 그리퍼 최대 1.000(명령). `grasp_watch` 300 장(사이클당 3) — 들어올린
+  순간 사진에 빨강 큐브가 패드 사이에 떠 있다. 데이터셋 `outputs/lerobot_ds_red_left_100_phys`(49,862 프레임, h264, 202 MB).
+- **롤아웃 (`act_red_left_100_phys`, 시작 자세 `ready`)**:
+
+| 시드 | 결과 | 성공 시 오차 | 실패 |
+|---|---|---|---|
+| 131 (§52·§53.6 과 같은 시작 위치) | **8/10** | 1–24 mm (평균 12.0) | 1·7번 — 큐브가 시작 위치 근처(311–314 mm). 이 실행은 단계별 로그 없음(녹화 재실행은 아래 §54.6 정정 참고) |
+| 171 (새 시드, 영상) | **9/10** | 4–24 mm (평균 12.0) | 7번 — 큐브를 2.5 cm 들었다가 놓쳐 시작 위치 근처(314 mm) |
+
+  같은 시드 131 비교: 용접 데이터·용접 씬 9/10(§52) / **용접 데이터 체크포인트를 physical 씬에서 0/10**(§53.6) / **physical 데이터 8/10**.
+  → 그리퍼 action 을 명령으로 기록하는 수정(§53.7)과 재수집으로 물리 접촉 파지에서도 용접 시대와 비슷한 성공률. 실패는 모두 큐브를
+  쥐었다가 놓친 것(§54.6 정정 — 처음엔 "빈 채 닫힘" 으로 잘못 적었다). 용접처럼 대충 쥐어도 붙는 일이 없어져 파지 강건성이 그대로 드러난다.
+- 안전: 시드 171 단계별 로그(`r100_phys_s171.steps.csv`) — 가드 트립 0, forced open 0, finger_joint 0~0.798(범위 내). 팔 관절 위치
+  속도 최대 2–2.9 rad/s 는 §53.6 과 같은 정책 스트리밍·리셋 이동 수준이고 범위 1 회전 미만(회전 폭주 없음).
+- 영상: `outputs/rollout_videos/act_red_left_100_phys_s171/trial_01..10_{SUCCESS,FAIL}.mp4`(10 MB). 시드 131 롤아웃은 파이프라인 안에서
+  돌아 녹화 안 됨 → 래퍼에 `SEED` 덮어쓰기 추가(`rollout_gui_then_n.sh` 기본 131, `_w1` 151).
+  같은 날 시드 131 을 녹화로 재실행: `outputs/rollout_videos/act_red_left_100_phys_s131/`(12 MB) — 다시 **8/10**, 실패도 같은 1·7 번
+  (317–325 mm, 시작 위치 근처), 성공 오차 2–29 mm. 시작 배치가 시드로 재현되고 결과도 재현된다. ★ 이 래퍼는 끝나도 Isaac·제어·MoveIt 을
+  띄워 둔다 — 정리는 PID 로(런치 부모는 SIGINT 를 무시해 SIGTERM 필요했다).
+- **남은 것**: 손목 1대(`collect_wrist1.sh`)·GR00T 3태스크(`groot_pipeline.sh`)의 physical 재수집은 안 함(하네스는 준비됨). 사용자 실측:
+  리더 텔레옵을 `--grasp-mode physical` 로(손목 회전 재발 여부). 커밋 안 함.
+
+### 54.6 ACT physical 이어 학습 60k → 200k — 100k·200k 둘 다 19/20, 성공 오차 절반
+
+60k 에서도 손실이 내려가고 있었고(45k 0.025 → 60k 0.021) 60k 는 38.6 에폭뿐이라 이어 학습했다. 원본(`act_red_left_100_phys`, 롤아웃
+하네스 기본)은 그대로 두고 60k 체크포인트를 `outputs/act_red_left_100_phys_long` 에 복사해 `lerobot-train --resume=true
+--config_path=<copy>/checkpoints/last/pretrained_model/train_config.json --output_dir=<copy> --steps=200000 --save_freq=20000` —
+옵티마이저 상태·데이터 순서까지 이어지고(`Resuming data order at epoch 38`), ACT 는 스케줄러가 없어(lr 1e-5 고정) 스텝만 늘리면 된다.
+140k 스텝 2 h 38 m(15 step/s), 손실 0.021 → 0.012(200k, 128 에폭). 평가: 같은 래퍼, 시드 131·171 각 10 회, 전부 녹화.
+
+| 체크포인트 | 시드 131 | 시드 171 | 합계 | 성공 오차 평균(131/171) | 실패 |
+|---|---|---|---|---|---|
+| 60k (§54.5, 131 은 녹화 재실행) | 8/10 | 9/10 | 17/20 | 12.1 / 12.0 mm | 131 #1·#7, 171 #7 |
+| **100k** | 9/10 | **10/10** | **19/20** | 6.8 / 7.4 mm | 131 #7 |
+| 140k | 8/10 | 8/10 | 16/20 | 7.1 / 8.4 mm | 131 #7·#9(놓지 않음), 171 #8·#10 |
+| **200k** | 9/10 | **10/10** | **19/20** | **5.9 / 6.5 mm** | 131 #7 |
+
+- 판정: 이어 학습은 효과가 있다 — 성공률 17→19/20, **성공 시 놓는 오차가 12 mm → 6–7 mm 로 절반**(이건 20 회 전부에서 보이는
+  일관된 변화라 성공률보다 믿을 만하다). 140k 의 16/20 은 시드당 10 회의 잡음 범위(같은 배치가 체크포인트마다 오간다)로 본다.
+  손실 최저·오차 최저인 **200k 를 권장**(100k 와 성공률 동률).
+- 시드 131 #7(start [0.556, −0.084])은 **모든 체크포인트에서 실패**(185–317 mm) — 학습량으로 안 풀리는 배치. 다음 수단은
+  그 근처 데이터 보강이다(가장자리는 아니다: 기준 (0.60, −0.10) 에서 x −44 mm). 140k 시드 131 #9 는 큐브를 떨어뜨린 뒤 빈 jaw 를 닫은 채
+  시간 종료(grip 0.71).
+- **★ 정정(같은 날, 단계별 로그 `*.steps.csv` 의 큐브 높이)**: 위 §54.5·§54.6 의 "닫았는데 큐브가 패드 사이에 없음 / 제자리 = 파지 실패"는
+  틀렸다. 로그가 있는 실패 9 회(60k 녹화 재실행 3 · 100k 1 · 140k 4 · 200k 1)는 **전부 큐브를 쥐고 약 2–19 cm 들어 올린 뒤 놓쳤다**
+  (`grasp_active`=1, 큐브 z 최대 0.235–0.412, 테이블 위 0.2175). 대부분 시작 위치 근처로 떨어졌고(268–325 mm), 140k 의 두 번은 운반 중
+  낙하(100·185 mm). 즉 남은 실패는 조준이 아니라 **쥐는 힘·위치가 모자라 미끄러지는 것** — 다음 손잡이 후보는 데이터 보강 외에
+  파지 강건성(패드 마찰·닫힘 힘·쥐는 높이)이다.
+- 영상: `outputs/rollout_videos/act_phys_long_{100k,140k,200k}_s{131,171}/`(각 ≈ 10 MB). 단계별 로그 `harness_logs/long_*.steps.csv`.
+- 롤아웃: `bash harness/rollout_gui_then_n.sh 10 70 $PWD/outputs/act_red_left_100_phys_long/checkpoints/200000/pretrained_model`
+  (세 번째 인자 = 체크포인트; 기본값은 여전히 60k 원본). 런처는 끝에 Isaac·스택을 PID 로 정리 — 끝난 뒤 프로세스 0 확인.
+
+## 55. 다른 PC 재현 점검 — 셋업 스크립트·가이드 감사, 수정, 새 워크스페이스 실검증 (2026-10-20)
+
+질문: "다른 PC 의 Isaac 6.1.0 컨테이너에 소스만 옮겨 같은 셋업을 하면 되는가?" → 감사(5 관점 + 각 결과 적대적 재검증) 후
+수정(4 개 작업자, 파일 소유 분리 + 작업자별 리뷰), 그 다음 **소스만 복사한 새 워크스페이스에서 실제로** bootstrap·롤아웃을 돌렸다.
+
+### 55.1 감사에서 확인된 막히는 문제
+- **원격 저장소가 2026-09-22 커밋**(d31169e)에 머물러 있었다. 그 뒤 수정 32 파일(+2643/−293)·새 파일 7 개(`grasp_mode.sh`·
+  `pick_place_physical.yaml`·`check_xrdf.py`·`base_placement/` …)가 미커밋 → 가이드대로 `git clone` 하면 용접 시대 파이프라인 +
+  옛 XRDF. 하네스 17 개가 `grasp_mode.sh` 를 source 하므로 `git commit -a`(새 파일 누락)로 올리면 전부 시작 즉시 사망 →
+  **`git add -A`** 로 커밋할 것(`.gitignore` 가 outputs/deps/build/*.mp4 를 이미 막는다).
+- **§48 의 "새 컨테이너" 는 순정 이미지가 아니었다.** `/var/log/apt/history.log` 2026-09-16 13:23 에 root 로 깐 계층
+  (`sudo curl gnupg2 lsb-release locales acl ca-certificates git vim nano less tree mesa-vulkan-drivers vulkan-tools
+  libgl1-mesa-dri mesa-utils libxkbcommon-x11-0 xauth`) + `/etc/sudoers.d/isaac-sim`(NOPASSWD)이 bootstrap(16:42) 전에 있었다.
+  NVIDIA 이미지 계층(2026-09-04)은 curl·gpgv·GL 만. → 순정 이미지에서 bootstrap 이 첫 단계에서 막힐 수 있었고, 그 경로는
+  **지금도 미검증**(이 컨테이너엔 docker 가 없다). 사용한 이미지 태그·`docker run` 도 기록이 없었다(이 머신 `/isaac-sim/VERSION`
+  = `6.1.0-rc.26+release.49347`).
+
+### 55.2 수정 (커밋 안 함 — 사용자가 직접)
+- **새 `setup/container_prereqs.sh`**(root, 멱등): 위 18 패키지 중 없는 것만 설치 + `--sudo-user NAME` 이면 NOPASSWD sudoers
+  (visudo 검사, 이름 검증은 설치 **전에**). 호스트에서 `docker exec -u 0 -it <컨테이너> bash <WS>/src/setup/container_prereqs.sh --sudo-user isaac-sim`.
+  preflight 는 sudo(`sudo -n true`)·git·gpg·curl·locale 이 없으면 이 명령을 찍고 rc=3.
+- **단계 안 실패가 전파되지 않던 버그**: `"stage_$s" && rc=0 || rc=$?` 로 불러 `set -e` 가 꺼져 있어 colcon/vcs/curl 실패도 `ok … built`
+  로 넘어갔다 → 실패 가능한 명령마다 `|| { err …; return 1; }`, bootstrap 은 `bootstrap STOPPED (rc=N)`. 저장소 추가가 중간에 실패한
+  뒤 재실행해도 "already added" 로 건너뛰던 것 → keyring 확인, `.list` 는 키 설치 **후** 마지막에.
+- 버전: torch 2.11.0 / torchvision 0.26.0 고정(인덱스 태그 자동), `requirements-ml.lock` 을 **pip 제약(-c)** 으로(`ML_UNLOCKED=1` 해제;
+  오늘 그냥 설치하면 32 개가 lock 과 달랐다), get-pip 의 pip 버전 고정, cu130 대안도 2.11.0(lerobot 0.6.1 은 torch<2.12).
+  새 `setup/apt-versions.lock`(448 줄) + `check_env.sh` 가 표류를 WARN(그새 packages.ros.org 는 ur_robot_driver 3.9.0·ros2_control 4.48.1),
+  `check_env.sh --snapshot` 으로 재생성.
+- 그 밖: `setup.sh`·`check_env.sh` 도 자기 위치에서 WS 유추(+심볼릭 링크 해석), `BUILD_JOBS`(기본 2) 로 colcon 병렬 상한,
+  check_env 가 리더/실물 그리퍼 소스가 있으면 빌드를 FAIL 로 요구·드라이버↔CUDA·`ldd -r` 검사, base_placement 의 scipy/matplotlib 를
+  명시 설치, ML·groot 단계는 ROS `PYTHONPATH` 를 빼고 pip 실행(빼지 않으면 성공한 실행에 `ERROR: pip's dependency resolver` 가 찍혔다),
+  `--dry-run groot` 은 실제 pip 계획을 보여 줌, 소스만 있는 dry-run 의 nvblox/리더 경고를 "(would build)" 로.
+- 코드: `il_recorder.py` 가 physical 씬 + `action_source=next_state` + 그리퍼 액션 토픽 없음이면 **시작 거부**(§53.7 함정 —
+  `-p gripper_action_topic:=/isaac_joint_commands`), `collect_il_episodes.sh` 하드코딩 경로 제거 + 도메인 미지정 경고,
+  세트 2/3 의 sim 제어·MoveIt·cuMotion 런치에 `use_sim` 인자(세트 1 과 같은 뜻 — README 의 실물 `use_sim:=false` 가 무시되어
+  실물에서도 sim 시간으로 돌던 문제), `rollout_n.sh`·`rollout_wrist1.sh` 의 없는 기본 체크포인트(`act_red_left_v5`) 수정.
+- 문서: `SETUP.md` §0-B(컨테이너 만들기 `docker run` 틀·root 준비 단계·순정 이미지 미검증 명시)·§0-C(학습 산출물 옮기기 —
+  200k `pretrained_model` 198 MB 만이면 추론 가능, 이어 학습은 training_state + 데이터셋 + `train_config.json` 의 절대경로 수정),
+  CHECKLIST A·B-3·C-4(sim IL 스모크), 모든 가이드 `ROS_DOMAIN_ID=42`, GR00T Cosmos 토크나이저 `hf download` 명령
+  (hf 1.31 은 위치 인자가 더 있으면 `--include` 를 무시 → `config.json` 누락; 패턴마다 `--include`), README 의 깨진 apt 블록·
+  변환 명령(시스템 python3 → venv), COLCON_IGNORE 에 대한 틀린 설명(형제 패키지에 없음 — `--packages-select` 로만 빠진다),
+  `num_workers` 규칙 통일, `../CLAUDE.md` 링크 제거(워크스페이스 CLAUDE.md 는 의도적으로 git 밖).
+
+### 55.3 새 워크스페이스 실검증 (이 컨테이너에서 가능한 범위)
+`git ls-files -co --exclude-standard`(= `git add -A` 후 clone 과 같은 집합)만 scratch 워크스페이스로 복사해 그 안의 스크립트로:
+- `bootstrap.sh`(non-`--fresh`, apt 는 전부 기설치라 0 변경): **rc=0, 12.6 분** — vcs 7 개 고정 SHA·nvblox 서브모듈·nvblox_ros 소스빌드
+  (sm_120, `BUILD_JOBS=2` 로 6 분 5 초)·리더 7 패키지·ML venv(pip 캐시 따뜻해 5.5 분). 두 번째 실행 19 초(멱등), `setup.sh groot` 정상.
+  `check_env.sh` = environment OK(남은 건 HF 게이트 모델 2 건 = 사용자 단계). venv freeze == lock.
+- 실패 주입(PATH 의 가짜 colcon/vcs/curl/gpg/apt-get/sudo): 단계 실패 → setup.sh·bootstrap 비정상 종료, repos 재실행 복구, preflight rc=3,
+  dry-run 은 아무것도 안 바꿈 — 확인.
+- **그 워크스페이스에서** 200k 체크포인트를 §0-C 대로 옮겨 C-4a 롤아웃(시드 171): **5/5**(오차 1~15 mm, 475 s).
+  C-4b(물리 수집 2 → 변환 → 몇백 스텝 학습 → 롤아웃 1): 수집 2/2·변환·학습 정상, 롤아웃 0/1(짧은 학습이라 예상대로).
+- **nvblox→cuMotion A/B 는 결론 못 냄(사용자 결정으로 보류)**: 새 빌드 nvblox 로 여러 번 돌렸는데 판정이 실행마다 달랐다
+  (OBST 목표가 계획 성공 2 회, FREE 목표가 실패 1 회; 기존 워크스페이스 nvblox 로는 1 회 PASS). 빌드 차이인지 데모의 타이밍(ESDF 준비)
+  문제인지 미확정 — §54.4 의 PASS 와 함께 다음에 재검증할 것. 로그는 세션 scratch 에만 있었다.
+  **→ 2026-10-21 해결(§56)**: 빌드 차이 아님 — nvblox depth/camera_info 동기 경합으로 맵이 비어 판정이 거짓이었다. 런치 수정 + 데모 ESDF 게이트, 두 빌드 3/3 PASS.
+- 검증 못 한 것: 순정 Isaac 6.1.0 이미지에서 처음부터(docker 없음), GUI/X 경로(이 검증은 headless 위주), 실물 HW, GR00T 학습(HF 게이트).
+  **→ 2026-10-21 순정 이미지 경로는 사용자가 호스트에서 검증(§57)** — apt 가드 파서 결함 1 건(차단)을 고친 뒤 통과. 나머지 셋은 그대로 남음.
+
+## 56. nvblox→cuMotion A/B 판정이 흔들린 원인 — depth/camera_info ExactTime 동기 경합, 런치 수정 (2026-10-21)
+§55 에서 결론 못 낸 A/B 를 통제된 방식으로 재검증했다: **시행마다 Isaac 부터 MoveIt 까지 스택 전체를 새로 띄우고 내림**(프로세스 그룹·
+사전/사후 점검: 우리 프로세스 0·노드 목록 빈 상태), nvblox 프로세스 1 개 확인, 새 빌드(`fresh_ws`)·기존 빌드를 번갈아 실행.
+
+### 56.1 원인 — 빌드가 아니라 nvblox 입력의 프레임 동기
+- nvblox_ros 4.6 은 depth 와 camera_info 를 **ExactTime 동기(큐 10 고정, `nvblox_node.cpp` `kQueueSize`)** 로 짝짓는다.
+  우리 런치는 depth = **segmenter 출력** `/cumotion/camera_0/world_depth`(카메라보다 약 **220 ms** 늦음),
+  camera_info = **Isaac 원본** `/static_cam/depth/camera_info`(벽시계 기준 약 86 개 stamp/s)를 줬다.
+  masked depth 가 도착할 때쯤엔 그 짝 camera_info 가 이미 새 stamp 10 개 이상에 밀려 큐에서 빠졌다 → **정상상태 적분 0**.
+- 장애물은 기동 직후 같은 잠깐의 정체에 프레임이 우연히 통과할 때만 매핑됐다. 진단 probe 없이 돌린 8 회 중 5 회는 nvblox 기동 후
+  **3.5 분 넘게 적분 0**(`/nvblox_node/save_timings` 의 `ros/depth_image_callback` 0, `Allocating space for last depth view` 0 회,
+  `Last view not set` 약 1370 회). 적분이 됐다면 언제나 같은 장애물(박스 208 음수 복셀)이었다.
+- **빈 맵이 거짓 판정을 만든다**: 새로 뜬 cuMotion 은 첫 요청(`use_aabb=0`)에서 `Failed to initialize ESDF workspace bounds` →
+  `World update failed` 로 **FREE·OBST 둘 다 99999**. 이미 초기화된 cuMotion(스택은 두고 nvblox 만 갈아 끼운 2026-10-20 실행들)은
+  경계가 정해진 AABB 를 요청해 빈 맵도 받고, 미관측=+1000(free)이라 **OBST 를 계획**. §55 의 "OBST 성공 2 회·FREE 실패 1 회" 가 정확히 이 둘.
+  §54.4 의 PASS 도 nvblox 기동 0.09 s 뒤의 운 좋은 적분 1 회였다(로그 `Last view not set` 1 줄).
+- 28 개 실행(오늘 + 10-20 + §54.4) 모두에서 "데모 전에 `Allocating space for last depth view` 가 찍혔나" 가 결과를 완벽히 예측했다.
+- **빌드 차이 없음**: `nvblox_node` 실행파일 md5 동일, 라이브러리는 같은 커밋(dadbe96)·Release·sm_120·nvcc 13.2(차이는 빌드 경로 문자열).
+  probe 없는 실행에서 두 빌드 모두 빈 맵 실패(새 1/4·기존 2/4 만 판정), 수정 후엔 두 빌드 동일. 시행마다 `/proc/<pid>/maps` 로 어느 빌드의
+  `libnvblox_ros_lib.so` 가 올라갔는지 확인. (rosbag 재생 복셀 단위 비교는 안 함.)
+- 기각: 중복 nvblox 노드(오늘은 없었음 — 10-20 엔 추가 교란), 시작자세 충돌(`world collision`/`INVALID_INITIAL` 0 건).
+
+### 56.2 수정
+1. **런치 `ur16e_2f85_d405_nvblox.launch.py`**: 새 노드 `scripts/depth_info_restamp.py`(`ur_bringup`, `install(PROGRAMS)`)가 world_depth
+   프레임마다 마지막 camera_info 를 **그 프레임의 header 로** `/cumotion/camera_0/world_depth_info` 에 재발행, nvblox 의 camera_info 를
+   거기로 remap(segmenter 는 원본 그대로). 고정 내부파라미터 카메라라 의미상 같다. depth 는 raw(직렬화 바이트) 구독 — CDR 헤더만 읽어
+   1.2 MB 이미지를 파이썬에서 역직렬화하지 않는다(CPU ≈ 10.7 %). **실물 정적카메라에도 해당**: camera_info 속도 × segmenter 지연 > 10 이면 같은 손실.
+   `use_robot_segmenter:=false`(디버그) 경로는 depth·info 가 같은 출처라 그대로.
+2. **데모 `nvblox_obstacle_demo.py`**: 계획 전에 `/nvblox_node/get_esdf_and_gradient` 로 OBST 점 ±6 cm 에서 점유 복셀 ≥ 20 을
+   기다린다(`--esdf-timeout`, 기본 180 s, 0 = 생략). 안 되면 `ESDF NOT READY` + 이유(응답 stamp 0 = 적분 없음 등), **rc 3, 계획 안 함**.
+   ESDF 끈 대조는 `--control`(OBST 성공을 기대값으로 → PASS). 독스트링의 장애물 형상도 실제 기본값(중심 (0.5,0.1,0.6), 크기 (0.12,0.5,0.1))으로 정정.
+
+### 56.3 검증 (전부 시행마다 스택 전체 새로, probe 없음)
+| 묶음 | 런치 | 결과 |
+|---|---|---|
+| T01–T14 (probe 있음, 진단) | 원래 | 짧은 대기 PASS 새 1/4·기존 4/4, FREE 까지 거부 3 회(전부 빈 맵) · 장애물 확인 후 PASS 4/4 · 대조 2/2 |
+| V01–V08 (수정 데모) | 원래 | 거짓 판정 **0** · 정답 3 · `ESDF NOT READY` 5(180 s 동안 적분 0) |
+| R1·R2·W01–W08 (스크래치 relay) | relay | 8/8 + ESDF 끈 대조 OBST 성공 · 장애물 없이 띄우면 점유 0·둘 다 계획(가짜 장애물 없음) |
+| **X01–X09 (저장소 런치 그대로)** | **수정** | **ESDF on 새 3/3·기존 3/3 PASS, off 대조 2/2 PASS**, 데모 시점 sync 424–515(수정 전 0–35), 장애물 매번 0 s 에 확인 · 장애물 없이(X09): 게이트가 rc 3 으로 거부, 게이트 끄면 둘 다 계획 |
+
+시행당 ≈ 70 s(데모 2–5 s). X06 의 `ros2 node list` 가 discovery 중 잘려 `/nvblox_node` 0 으로 찍혔으나 프로세스 1 개·ESDF 응답 정상.
+X09 종료 때 control 그룹 프로세스 1 개만 SIGKILL(자기 PGID). 끝난 뒤 우리 프로세스 0, 도메인 42 노드 0, GPU 기준선.
+
+### 56.4 함정 · 하네스
+- `Updated ESDF grid successfully` 나 PASS 한 번은 nvblox 가 **적분 중이라는 증거가 아니다** → nvblox 로그의
+  `Allocating space for last depth view` 또는 `ros2 service call /nvblox_node/save_timings ...` 의 `ros/depth_image_callback` > 0 확인.
+- 스택을 둔 채 nvblox 만 갈아 끼우지 말 것 — cuMotion 이 초기화된 경계를 유지해 빈 맵을 "OBST 계획됨" 으로 가린다.
+- 진단용 파이썬 probe(이미지 구독 + 큰 ESDF 요청)는 정체를 만들어 오히려 적분을 **늘렸다** — 측정이 현상을 가린 사례.
+- 하네스·로그(세션 scratch, 커밋 안 됨): `nvblox_reverify/run_v.sh`(시행 1 회), `run_batch_x.sh`, `trials/`·`trials_v/`.
+
+## 57. 순정 이미지 호스트 재현 — apt 가드 파서 결함(차단) 수정 + 후속 정리 (2026-10-21)
+§55 에서 못 한 "순정 이미지에서 처음부터" 를 사용자가 **호스트에서** 돌렸다: `nvcr.io/nvidia/isaac-sim:6.1.0`(= 이 머신과 같은
+`6.1.0-rc.26+release.49347`) 새 컨테이너, 작업 트리를 `rsync` 로 복사(커밋 전이라 clone 아님), headless, `CHECKLIST.md` 그대로.
+보고(차단 1 · 스크립트 9 · 문서 5)를 받아 이 컨테이너에서 작업자별로 고치고 검증했다(설치·커밋 없음, 문서는 한 작업자만).
+
+### 57.1 호스트 실행 결과
+| 단계 | 결과 |
+|---|---|
+| A-1 ③ `container_prereqs.sh --sudo-user isaac-sim` (root) | 통과 — 단, 시뮬레이션 없이 기존 기반 패키지 ~10 개(`libc6`·mesa·`curl` …) 업그레이드(F7) |
+| B `bootstrap.sh --fresh` 1 차 | **14 s 만에 `ros` 단계 가드 거부**(F1, 아래) |
+| B `bootstrap.sh --fresh` (`lib.sh` 수정 후) | **rc 0, 34 m 59 s**. Ubuntu 출처 업그레이드 23+4 — 09-16 의 14+4 에서 늘었다 |
+| `check_env.sh` | `environment OK` — 단 apt 표류 WARN 64 줄 + "apt nvblox_node 에 sm_120 없음" WARN(둘 다 예상된 것, F9) |
+| B 재실행 | 17 s, 변경 0(멱등) |
+| C-1 sim pick&place · C-2 가짜 리더(추종오차 **0.116°**) · C-3 mock · C-4 | 통과 |
+| 디스크 | apt ≈ 11 GB(CUDA 4.8 + Nsight 2.4 + ROS 2.8 + 나머지), 컨테이너 레이어 +17 GB, venv 7.7 GB, `~/.cache/pip` 1.4 GB |
+
+### 57.2 차단 — F1: apt 가드가 Ubuntu 출처 업그레이드를 외부 출처로 읽음
+- 가드는 `apt-get -s` 의 `Inst pkg [old] (new 출처… [arch])` 에서 출처를 읽는다. noble-security 의 libx11 갱신 뒤로 apt 가 `)` 뒤에
+  **괄호 묶음**을 붙이는 줄이 생겼다: `… [amd64]) [libx11-xcb1:amd64 ]`. 옛 `sed` 는 빈 ` []` 만 지워서 이 줄을 "Ubuntu 아님" 으로 보고
+  `ALLOW_UPGRADES=ubuntu`(`--fresh`)도 거부했다.
+- 이 컨테이너의 `apt-get -s upgrade`(440 줄)에는 그런 줄이 9 개, **묶음이 두 개**인 줄이 1 개 있었다:
+  `Inst libpam-modules-bin […] (… noble-security [amd64]) [libpam-modules:amd64 on libpam-modules-bin:amd64] [libpam-modules:amd64 ]`.
+  옛 파서는 순수 Ubuntu 10 줄을 외부로 판정, 보고서가 제안한 `s/\) \[[^]]*\]$/)/` 도 두 묶음 줄 1 개를 놓친다.
+- 수정(`setup/lib.sh`): 파싱을 `apt_sim_upgrades`/`apt_sim_removes`/`apt_foreign_upgrades` 로 분리(테스트 가능), 업그레이드 줄은
+  `^Inst <pkg> \[` 로만 매칭, 끝 묶음은 `s/\)( \[[^]]*\])+$/)/`(1 개 이상)로 지운 뒤 arch 태그 제거. 줄 모양 세 가지를 주석에 기록.
+  `container_prereqs.sh` 도 같은 파서를 쓴다(파서는 `lib.sh` 한 곳뿐).
+- 검증: 진짜 `lib.sh` 를 source 해 `apt_guarded_install` 을 stub(apt-get·apt_installed·run)으로 15/15 — 순수 추가, `[pkg:arch ]`·두 묶음 Ubuntu 줄은
+  `ubuntu` 에서 수락·기본 가드에서 거부, NVIDIA 출처(묶음 0/1/2 개)·ROS 출처·Ubuntu+NVIDIA 혼합·삭제는 거부, 삭제는 `ALLOW=1` 에서만.
+  기록한 실제 440 줄에서 외부 판정 = 정확히 비 Ubuntu 315 줄, `Ubuntu:` 가 든 줄은 0 개.
+
+### 57.3 설치 스크립트 후속 (F7–F10, D3·D5)
+- **F7** `container_prereqs.sh`: 머리말·`--help` 에 "DEDICATED CONTAINER ONLY". `apt-get update` → 영향도(`install -s --no-install-recommends`:
+  새 패키지 수 + 업그레이드 전부와 출처, Ubuntu 외 출처 경고, 삭제는 `ALLOW_UPGRADES=1` 없으면 거부) → 설치(무인). `--dry-run` 은 apt 목록이
+  있을 때만 영향도를 보여 준다(순정 이미지는 목록이 비어 있고 비 root dry-run 은 갱신 불가).
+- **F8** 워크스페이스 밖 쓰기 줄이기: `ml`·`groot` 단계가 `PIP_CACHE_DIR=deps/pip_cache`, venv 에 `ur_ws_cache_paths.pth`(TORCH_HOME/HF_HOME/
+  PIP_CACHE_DIR 기본값 → `deps/{torch_home,hf_cache,pip_cache}`, 내보낸 값이 우선), ACT 백본 resnet18 `IMAGENET1K_V1`(45 MB, 롤아웃 포함 정책
+  생성마다 필요 — `modeling_act.py:328`)을 `deps/torch_home` 에 해시 검사로 선반입 → ACT 롤아웃이 인터넷 불필요. `ml_env.sh` 도 TORCH_HOME·PIP_CACHE_DIR.
+  `~/.cmake/packages/Eigen3/<md5>` 는 nvblox_core 의 Eigen 3.4.0 ExternalProject `export(PACKAGE)`(CMP0090 OLD, colcon 의
+  `-DCMAKE_EXPORT_NO_PACKAGE_REGISTRY` 가 전달 안 됨)가 쓰므로 막지 못하고, `build` 단계 끝에 `$WS/build` 를 가리키는 항목만 지운다.
+  get-pip·groot dry-run 제약 임시파일 누수 제거. 근거: 이 컨테이너에 `~/.cache/pip` 1.4 G, `~/.cache/torch` resnet18 45 MB,
+  `/tmp/ros2-apt-source_1.3.0.noble_all.deb`(09-16)·`/tmp/ml-constraints-*.txt`(groot dry-run 마다) 가 남아 있었다(지우지 않음).
+- **F9** `check_env.sh`: apt 표류는 WARN 한 줄(개수) + `--verbose` 로 목록, 재빌드만 다른 표류는 ok. apt `nvblox_node` sm_75 줄은
+  `install/nvblox_ros` 의 `libnvblox_lib.so` 가 이 GPU sm 을 갖고 오버레이가 `nvblox_ros` 컴포넌트를 등록하면 ok(없으면 기존대로 FAIL). ML WARN 2 개 신규
+  (venv 캐시 기본값, resnet18). 종료 코드 불변.
+- **F10** `ros2-apt-source`: GitHub "latest" 대신 1.3.0 + sha256 `f31d84ad…5296` 고정, `mktemp -d` 에 받아 검사 후 삭제. 다른 버전은
+  `ROS_APT_SOURCE_VERSION` + `ROS_APT_SOURCE_SHA256`(sha 없으면 거부, `=skip` 은 경고 후 무검증). 09-16 사본과 오늘 받은 파일 sha 동일.
+- **D3** `preflight` 디스크: apt 가 쓰는 **루트 fs**(`df /usr`; ROS 없으면 ≥ 20 GiB, CUDA 만 없으면 10, 아니면 2)와 워크스페이스(≥ 30 GiB)를 따로,
+  같은 디스크(`stat -f` 동일)면 합계. **D5** `preflight` 추가: 드라이버 < 580, `/dev/shm` < 1 GiB, 설치용 호스트 HTTP 도달(`curl` HEAD, 4 s;
+  packages.ros.org 는 https 인증서가 없어 http) — 전부 WARN.
+- `bootstrap.sh`·`setup.sh` 의 문구(업그레이드 개수, 순정 이미지 검증, 디스크, 도메인, 추종오차)도 맞췄다. `bootstrap.sh --dry-run`(± `--with-groot`)
+  rc 0, 전후 상태 스냅샷(dpkg·/etc/apt·sudoers·locale·/tmp·~/.cmake·~/.cache·deps) 동일.
+
+### 57.4 종료 스크립트 판정·범위 (F3·F4)
+- 가이드의 3줄 `pkill -f`(Isaac·`ros2 launch ur_bringup`·RViz)는 런치 부모보다 오래 사는 `robot_state_publisher`·`ros2_control_node`·cuMotion
+  컨테이너·`move_group`·`omy_to_ur16e.py`·`virtual_omy_leader.py` 를 남겼다(PIPELINE §3 은 GPU 를 비우려고 쓰는데 cuMotion 이 남음).
+- 옛 `shutdown_rollout.sh` 는 더 나빴다: OMY 브리지·가상 리더·`teleop_joy`·`il_recorder`·servo/joy·`nvblox_node`·static TF·realsense·ur_robot_driver 보조
+  노드(`trajectory_until_node` 등) 패턴 없음, spawner 패턴 `^/opt/ros/jazzy/lib/controller_manager/spawner` 는 python 스크립트라 argv 가
+  `/usr/bin/python3 <경로>` 여서 **한 번도 안 맞음**, 마지막 줄 "(empty = clean)" 은 항상 rc 0, 모든 도메인의 ros2 daemon 을 죽임.
+- 지금: `/proc/<pid>/cmdline` 의 argv 경로(인터프리터 뒤 스크립트, `-m` 모듈) 매칭, `/opt/ros` 바이너리는 환경 `AMENT_PREFIX_PATH` 에 이 `$WS/install` 이
+  있을 때만, 조상 제외, TERM → `TERM_WAIT`(30 s) → KILL → 재검사, 우리 도메인 daemon 만 정지, `ros2 node list --no-daemon` 로 `CLEAN`(rc 0) /
+  `LEFT: …`(rc 1). `--dry-run`. `shutdown_all.sh` = `--all`(루프 `.sh` 먼저 + ML venv). 가짜 프로세스(`exec -a`)로 죽어야 할 39 · `--all` 전용 4 ·
+  살아야 할 12, SIGTERM 무시(KILL), 재기동기(LEFT rc 1), 같은 도메인의 남의 talker(노드 LEFT, 프로세스는 안 건드림), 실제 유휴 시스템(CLEAN) 확인.
+  함정: 맨 argv[0](`tail`)을 cwd 기준으로 풀면 워크스페이스 안에서 돌린 파이프가 워크스페이스 스크립트로 보인다 — 풀지 않는다.
+
+### 57.5 grasp TCP 기동 진단 오경보 (F11)
+`ur16e_isaac_ros2.py` 가 매 기동 `grasp TCP *** BROKEN ***`(ERROR)을 찍었다(6.0.1/6.1.0 하네스 로그 16/16, 새 컨테이너 15/15). 원인: §26.1 반전
+전제로 쓴 판정("열림인데 패드 0 mm = 고장")이 §28 규약 정정 후 그대로 남았다. 이 에셋은 그리퍼 링크 프레임이 전부 베이스 원점에 저작돼 있어
+inner_finger 원점 간격은 열림(fj=0)에서 0 mm, 닫힘(0.8)에서 ~85 mm 가 정상(§28, `--grasp-log` pad_sep 0.00/39.6/84 mm @ 0/0.4/0.8).
+열린 기동 자세에선 정상/고장(공통 조상으로 붕괴) 모두 0 mm 라 구분 불가 → 판정을 **첫 닫힘(fj ≥ 0.3)** 으로 옮김: 간격 < 15 mm 면 ERROR
+`*** BROKEN ***`, 아니면 INFO `grasp TCP verified at first close: pad separation 30.6 mm at finger_joint=0.315`(세트 2·3 실측). 기동 시엔
+반대 불일치(열림인데 > 25 mm)만 `*** MISMATCH ***`. 음성 대조(`--grasp-tips` 에 같은 링크 두 번)로 BROKEN 재현. 파지 기하·오프셋 무변경 —
+physical 20/20·ACT 19/20 결과에 영향 없음. 정상 기동 로그는 이제 `finger pads, separation 0.0 mm at finger_joint=0.0 (open = ~0 mm …)`.
+
+### 57.6 문서 (F3·F5·F6·F8, D1–D5)
+- 종료 = `shutdown_rollout.sh`(SETUP §7·PIPELINE §3·README §8·CHECKLIST C, 워크스페이스 CLAUDE.md). CHECKLIST C-4 의 "전용 컨테이너 전제" 는 삭제(이제 경로+환경으로만 고른다).
+- **F5** 볼륨 ACL 은 uid 1234 와 **호스트 사용자** 둘 다: `setfacl -R -m u:1234:rwX,u:$(id -u):rwX,d:u:1234:rwX,d:u:$(id -u):rwX "$VOL"` — 1234 만이면
+  컨테이너가 만든 `build/install/deps` 를 호스트에서 못 지운다(되돌리기 `rm -rf` 실패). **F6** 체크포인트는 옮기기 전 컨테이너 안에서 `chmod -R g+rwX`
+  (`model.safetensors` 0600 → ACL 마스크 `---`, 호스트끼리 `rsync -a` 실패).
+- **F8** CHECKLIST B-0 의 "워크스페이스 밖에 쓰는 곳" 을 실제 목록으로(ros2.sources·키·ros-apt-source, NVIDIA 레포·키 이름, locale, sudoers, `~/.cmake`, `~/.ros`, `~/.cache/matplotlib`).
+- **D1** "순정 이미지 미검증" 문구 → 이 절. **D2** 업그레이드 개수 대신 "전부 Ubuntu 출처인가" + 실측(14+4 / 23+4). **D3** 디스크 표를 루트 fs 20 GiB + 볼륨 30 GiB 로.
+  **D4** `ROS_DOMAIN_ID` 는 "0 아님 + 같은 호스트의 컨테이너마다 다른 값(이 워크스페이스 42)", 예시 `VOL` 은 `/path/to/new_volume` + 기존 볼륨 금지 경고
+  (옛 예시는 실제 운영 볼륨 경로라 붙여넣으면 거기에 `setfacl -R`). **D5** dry-run 의 미시뮬레이션 단계는 `base`·`cumotion`·`verify`(`ros` 는 계획만 출력),
+  `safe.directory` 는 rsync 복사본에도, preflight 점검 목록, 추종오차는 현재 문서에서 0.116°(이 문서의 옛 수치 0.14/0.24° 는 그대로), C-2/C-3 전제
+  (어느 스택·`reset_pose.py ready`·앞 단계 종료), headless 면 `launch_rviz:=false`. 이미지 태그 자리표시자 → `nvcr.io/nvidia/isaac-sim:6.1.0`.
+
+### 57.7 남은 것
+- **`git clone` 경로** — 이번 검증은 rsync 복사본. 사용자가 `git add -A` 로 커밋·푸시한 뒤 clone 으로 다시 확인(§55.1).
+- 실물 HW(UR16e·L100·2F-85·D405), GUI/X 경로(검증은 전부 headless), GR00T(HF 게이트 — 사용자 단계, `CHECKLIST.md` B-2).
+- 이 머신의 기존 venv 는 수정 전 상태 — `setup.sh ml` 을 다시 돌리기 전까지 `check_env.sh` 가 새 ML WARN 2 개를 찍는다. 옛 `~/.cache/{pip,torch}`·
+  `/tmp` 잔여물은 지우지 않았다.
+
+## 58. ACT 무작위 범위 확장 — 기존 100 + 바깥 띠 90 재수집, 결과 보고서 정리 (2026-10-21)
+
+사용자: "빨강 큐브 놓이는 범위를 넓혀 다시 학습" → 기존 physical 100 ep(±60 mm 정사각형)를 그대로 쓰고, **x 바깥 띠(|dx| 60–100 mm, y ±60 mm)만 90 ep 추가**.
+같은 밀도를 유지하는 최소량은 67 ep(띠 넓이 = 기존의 2/3), 가장자리가 약한 점을 감안해 90. y 는 넓히지 않았다 — 파랑 큐브(홈 y +0.10)와 최소 80 mm,
+왼쪽 마커 가장자리(y 0.155)와 파랑 최대 y 0.16 이 이미 경계라, y 를 넓히려면 장면(간격·마커)을 바꿔야 하고 그러면 기존 결과와 비교가 끊긴다.
+
+### 58.1 사전 분석 (이 결정의 근거)
+- **남은 실패는 범위 가장자리가 아니다**: 200k 의 유일한 실패(시드 131 #7, 중심에서 x −44 / y +16 mm)는 안쪽. 범위 확장만으로 19/20 이 오를 근거는 없다 — 목적은 일반화.
+- **각도 추종이 절반**: 시연은 wrist_3 = −(접은 큐브 yaw) − 83°(기울기 −1.00, 상관 0.99, 잔차 3.4°). 200k 롤아웃 20회(steps.csv, 큐브 리셋 시점으로 시행 분할)는 기울기
+  −0.39(시드 171)·−0.57(131) — 쥐기 직전 어긋남(90° 접기) 평균 9.4°·13.0°, 최대 35.8°(171 #9, 모서리를 쥐고도 성공)·32.7°(131 #7). 작은 어긋남은 닫힐 때 패드가
+  큐브를 돌려 맞춘다. **131 #7 은 큐브 yaw −44° = ±45° 접기 경계** — 시연의 쥐는 방향이 90° 갈리는 자리라 정책이 두 방향 중간을 배웠을 가능성(미확인).
+  60k 는 어긋남 평균 15.3°(171). 스크립트 `scratchpad/actrep/yaw2.py`(세션 임시).
+- 그래서 새 띠 시연의 30 % 는 큐브 yaw 를 접기 경계 ±10° 안에서 뽑았다(균등이면 22 %, 실제 46/90).
+
+### 58.2 코드
+- `ur16e_isaac_ros2.py`: `--randomize-radius-x/-y`(기본 = `--randomize-radius`), `--randomize-inner-x`(첫 물체만 |dx| ∈ [inner, rx], 부호 무작위),
+  `--randomize-yaw-edge-frac/-deg`(첫 물체 yaw 를 45°+k·90° ± deg 에서). **기본값이면 난수 소비 순서가 예전과 동일** — 시드 91·131·171 의 배치가 그대로
+  (오프라인 재현으로 로그의 시작 위치와 일치 확인). 값은 시작 시 한 번 검사(`parser.error`) — 예전처럼 reset 콜백 안에서 `float()` 하면 잘못된 값이 수집 도중 Isaac 을 죽인다.
+- 하네스 덮어쓰기(기본 동작 불변): `collect_100.sh` `OUT/SEED/TAG/RAND`, `convert_100.sh` `RAW/DS/REPO/TAG`, `train_100.sh` `DS/REPO/CK/STEPS/SAVE_FREQ/TAG`,
+  `rollout_gui_then_n.sh` `RAND`. **안전장치(리뷰 지적)**: 각 스크립트의 삭제 대상 기본값이 원본(`*_100_phys`)이라 덮어쓰기 하나만 빠뜨려도 원본이 지워진다 →
+  다른 덮어쓰기가 있는데 `OUT`/`DS`/`CK` 가 없으면 rc 2, `convert_100.sh` 에 `OUT=`(convert240 식 이름)를 주면 rc 2, 삭제 대상은 `outputs/{il_raw,lerobot_ds,act}_*`
+  만 허용. `pipeline_100.sh` 는 체크포인트 변수를 `CKPT` 로 바꾸고 하위 스크립트를 `env -u ...` 로 불러 덮어쓰기 변수가 새지 않게. lerobot 기본 `save_freq` 는
+  20000 이라 `--save_freq` 를 명시해도 기존 동작과 같다.
+- ★ **함정(이번에 겪음): 실행 중인 bash 스크립트를 고치지 말 것.** bash 는 스크립트를 조금씩 읽는다 — 수집이 도는 동안 `collect_100.sh` 에 안전장치를 넣었더니,
+  수집이 끝난 뒤 bash 가 바뀐 파일의 옛 바이트 위치에서 이어 읽어 엉뚱한 줄(`/clock` 검사)을 실행하고 `FAIL … rc 1` 로 끝났다(꼬리의 grasp_watch 종료도 안 됨).
+  수집 자체(90/90)와 원본 데이터는 무사했지만, 위치에 따라 `rm -rf` 줄이 실행될 수도 있었다. 고칠 때는 실행이 끝난 뒤, 또는 복사본으로 실행.
+
+### 58.3 수집 (`OUT=il_raw_red_left_band_phys SEED=301 TAG=cband`, RAND 위 값)
+- 스모크 3/3(시드 299) → 본 수집 **90/90**(12:42–13:16, 실패 0). 44,712 프레임, 중앙값 16.6 s(14.9–18.6), 정지 11.8 %(< 15 %), state 그리퍼 최대 0.633,
+  > 0.95 0, > 25 s 0, 모드 (physical, /isaac_joint_commands, next_state) 전부 같음, 이미지 수 = 프레임 수. |dx| 0.060–0.100(음 43 / 양 47), dy ±0.059.
+  grasp_watch 270장. 파랑 큐브도 x ±100 mm 로 뽑힌다(띠는 빨강만) — 방해물이라 무해.
+- 합치기: `outputs/il_raw_red_left_190_phys` = 상대 심볼릭 링크 190개(000000–099 → `_100_phys`, 000100–189 → `_band_phys`). 변환기는 이름 순서로 번호를
+  매기고 meta 의 `episode_index` 는 읽지 않는다. dry-run: 190 ep, 94,574 프레임, 태스크 1종.
+
+### 58.4 결과 보고서 (Claude Docs "ACT 물리 접촉 파지 개선 보고")
+고정 조인트 파지 대비 개선만 담은 ACT 보고서: 비교표, 시행별 오차·손목 튐·그리퍼 action 차트, 장면 사진·GIF, 전체 파이프라인 흐름도, 핵심 기법 표.
+독립 검토 2회로 해석을 바로잡음 — **같은 학습량(60k)에서는 physical 8/10·12.1 mm vs attach 9/10·13.2 mm 로 대등, 오차 절반은 60k→200k 학습량 효과**,
+attach 기준선 13.2 mm 는 6.0.1 학습 체크포인트를 6.1.0 에서 돌린 값(원래 7.6 mm). 조사 중 확인한 문서–코드 불일치(미수정):
+il_recorder 는 "30 Hz 리샘플"이 아니라 30 Hz 타이머로 각 스트림의 최신값을 샘플링(zero-order hold); ACT 롤아웃은 CPU 추론(청크당 ≈60 ms);
+async 클라이언트의 청크 혼합(0.7/0.3)은 실제로 거의 안 쓰인다(399 추론 중 390 이 큐가 빈 뒤 — 사실상 50 스텝 개루프 청크);
+KL 손실은 ≈18k 부터 0.000(CVAE 잠재 미사용); PIPELINE.md 의 학습 속도·프레임 수(43,222)는 attach 시대 값; `train_100.sh` 주석의 8 step/s 는 옛 값(실측 14.7).
+
+### 58.5 변환·학습 시작
+- 변환(`RAW=…_190_phys DS=lerobot_ds_red_left_190_phys REPO=tony/ur16e_pick_place_red_left_190_phys TAG=convert_190 convert_100.sh`): 13:18–13:34(약 16 분),
+  190 ep · 94,574 프레임 · fps 30 · 382 MB, 모드 혼합 거부 없음(전부 physical/command).
+- 학습(`CK=outputs/act_red_left_190_phys STEPS=200000 SAVE_FREQ=20000 TAG=train_190 train_100.sh`, 런처가 변환 결과 190/94,574 를 확인한 뒤 시작):
+  13:35 시작, num_workers 4, 초기 ≈ 13 step/s(예상 ≈ 4 h), 파라미터 51.6 M, mem 3.97 GB. 설정은 `act_red_left_100_phys_long` 와 같다(batch 32, lr 1e-5 고정).
+- 평가 계획(학습 후): ① 기존 시드 131·171(±60 mm, 200k 의 19/20 과 직접 비교) ② 넓은 범위 새 시드
+  (`RAND="--randomize-radius-x 0.10 --randomize-radius-y 0.06"`, 예: SEED=211) — 같은 시드로 기존 200k 체크포인트도 돌려 쌍 비교.
+  체크포인트 100k·140k·200k 비교는 §54.6 과 같은 방식.
+
+### 58.6 100k 에서 중단(사용자 요청) → 다음 날 이어 학습
+- 15:47 UTC, 100k checkpoint(`checkpoints/100000`, `last` → 100000)가 training_state 까지 다 써진 것을 확인한 뒤 학습 체인(런처·`train_100.sh`·`lerobot-train`)만 PID 로 종료.
+  100k loss 0.019(l1 0.019, kld 0.000), epoch 33.9, 2 h 12 m 소요(≈ 12.6 step/s). model 234 · optimizer 459 tensor 읽힘 확인.
+- **이어 학습은 `train_100.sh` 로 하면 안 된다** — 시작할 때 `rm -rf "$CK"` 로 지금까지의 checkpoint 를 지운다.
+  대신 `bash outputs/harness_logs/resume_train_190.sh`(LeRobot `--resume=true --config_path=<CK>/checkpoints/last/pretrained_model/train_config.json`;
+  step·optimizer·RNG 를 checkpoint 에서 복원, 남은 100k step, 저장 설정은 원래 train_config 의 200k·20k 그대로; 로그 `harness_logs/train_190_resume.log`, 끝줄 `== resume rc=`).
+  런처는 local checkpoint 파일이 없으면 거부한다 — 경로가 없으면 LeRobot 이 `--config_path` 를 Hub repo id 로 보고 내려받으려 한다.
+  lr 고정이라 scheduler 영향 없음; data 섞는 순서만 끊김 없이 돈 경우와 다르다. 예상 ≈ 2 h 10 m.
+- 2026-10-22 00:29 UTC(PC 재부팅 후) `resume_train_190.sh` 로 재개: `Resuming data order at epoch 33, sample 78464` — data 순서까지 checkpoint 에서 이어진다.
+  첫 로그 step 100K · epoch 33.90 · loss 0.019(중단 직전과 같음), ≈ 13.5 step/s, 남은 100k ≈ 2 h 03 m. torchcodec 로드 실패 traceback 은 기존과 같은 무해 경고(pyav 폴백).
+- 학습 완료 02:40 UTC(재개분 100k 2 h 11 m, 12.7 step/s; 전체 200k 순수 학습 ≈ 4 h 23 m). 200k loss **0.013**(l1 0.013, kld 0.000), epoch 67.7
+  (기존 100-ep 200k 는 0.012 · 128 epoch — 데이터가 1.9 배라 같은 step 에서 epoch 이 절반). checkpoint 20k 간격 200000 까지 전부. 평가는 `outputs/harness_logs/eval_190.sh`(아래 §58.7).
+
+### 58.7 평가 — 넓은 범위에서 새 모델 20/20 vs 기존 13/20 (2026-10-22)
+`outputs/harness_logs/eval_190.sh`(학습 종료를 기다렸다가 12 run 연속; run 당 10 trial × 70 s, 약 15.5 분; 02:41–05:45 UTC).
+넓은 범위 = `RAND="--randomize-radius-x 0.10 --randomize-radius-y 0.06"`(빨강 x ±100 mm, y ±60 mm, 바깥 띠 강제 없음). 같은 seed 는 trial 별 큐브 배치가 같다(로그 start= 로 확인).
+로그 `harness_logs/e190_<tag>.{run.log,steps.csv}`, 영상 `rollout_videos/e190_<tag>/`, 요약 `harness_logs/eval_190_summary.txt`.
+
+| checkpoint | s131 | s171 | 기존 범위 합 | 넓은 w211 | 넓은 w251 | 넓은 범위 합 | 성공 오차 평균(s131/s171 · w211/w251) |
+|---|---|---|---|---|---|---|---|
+| 새 100k | 9/10 | 8/10 | 17/20 | 10/10 | — | — | 11.2/11.8 · 11.0 mm |
+| 새 140k | 10/10 | 10/10 | **20/20** | 10/10 | — | — | 7.1/7.2 · 8.0 mm |
+| **새 200k** | 9/10 | 10/10 | 19/20 | **10/10** | **10/10** | **20/20** | **4.0/6.0 · 4.7/6.0 mm** |
+| 기존 200k (§54.6) | 9/10 | 10/10 | 19/20 | 7/10 | 6/10 | **13/20** | 5.9/6.5 · 11.4/10.5 mm |
+
+- 넓은 범위 20 trial 을 |dx| ≤ 60 mm(학습 범위 안) / > 60 mm(밖)로 나누면: 기존 200k 안 10/10 · **밖 3/10**, 새 200k 안 10/10 · **밖 10/10**.
+  기존 모델의 실패 7 회는 전부 학습 범위 밖 배치였다 — 바깥 띠 데이터가 정확히 그 구멍을 메웠다. 범위 안에서도 놓는 오차가 기존 11 mm → 새 5 mm.
+- 기존 범위에서는 대등(19/20 vs 19/20) — 데이터를 넓혀도 원래 범위 성능은 떨어지지 않았다.
+- 기존 모델이 모든 checkpoint 에서 실패하던 seed 131 #7(start [0.556, −0.084])은 새 모델 100k·140k·200k 모두 성공. 대신 seed 131 #9([0.544, −0.092])가 새 100k·200k 에서 실패(140k 는 성공).
+- checkpoint 별: 140k 가 30/30 으로 가장 좋았지만 200k 도 오차가 가장 작다. 10 trial 당 1 회 차이는 잡음 범위(§54.6 과 같은 판단) — 권장은 200k 또는 140k.
+- **실패 원인 분석**(step 로그 기반, 분석 에이전트 2 + 독립 재검증 2; 스크립트·CSV `scratchpad/actrep/eval190/`, 세션 임시 폴더):
+  - 기존 200k 의 넓은 범위 실패 7 회는 **전부 조준(위치) 실패이고 미끄러짐은 0**. 6 회는 grasp_active 가 한 번도 안 켜졌다
+    (w211 #2 는 0.3 s 모서리 집기 후 빠짐). 처음 닿는 순간 TCP 가 큐브에서 xy 33–53 mm 떨어져 있었다(성공 grasp 중앙값 6 mm).
+    열린 손가락이 큐브를 밀거나(34–151 mm) 넘어뜨리거나 허공에서 닫혔다. 7 회 중 6 회는 x 오차가 home 쪽을 향한다 —
+    학습 범위(±60 mm) 안으로 끌려간다. 판정의 "still holding"(w251 #6·#7)은 빈 jaw 가 닫힌 채 끝난 것이다.
+    같은 배치에서 새 200k 는 offset 3–9 mm 로 쥐고 182–187 mm 들어 올렸다.
+  - 새 모델의 남은 실패는 소수 배치에 몰린 **grasp-then-slip** 이다.
+    - s131 #9([0.544, −0.092], 큐브 yaw −26.6°): 100k·200k 에서 실패, 140k 에서 성공. 세 checkpoint 의 접근 높이·위치·wrist_3 는 같고
+      (wrist_3 −84°, 면에서 ≈ 30° 어긋남) 차이는 쥔 뒤 큐브가 패드 사이에서 면으로 돌아앉았느냐뿐이다 — 140k 성공은 접촉 운.
+    - new100k s171 #10: 닫히며 큐브를 +23 mm 밀고 들다가 빠짐.
+    - new100k s171 #8: 놓기 오차 35.2 mm 로 판정 한계(35 mm)를 겨우 넘음.
+  - 쥔 trial 만 보면 어긋남(|mis|) 구간별 실패율이 ≤ 10° 0/71 · 10–20° 1/64 · 20–30° 3/15 · 30–45° 7/24 이다.
+    다만 실패가 3 개 배치에 몰려 있어 독립 표본이 아니다.
+- **yaw 추종은 개선되지 않았다**(fold 경계 oversampling 의 기대 효과는 확인 못 함).
+  - 모든 run 의 기울기(쥐는 순간 wrist_3 대 큐브 yaw)가 −0.62 ~ +0.05 이다(시연 −1.00). wrist 는 −63 ~ −84° 의 평균값으로 끌린다.
+  - 같은 배치 쌍 비교(200k): 기존 범위 새 15.8° vs 기존 11.2°(+4.6°, CI +1.9 ~ +7.3, 새 모델이 20 쌍 중 3 쌍만 나음).
+    넓은 범위 15.0° vs 19.6°(−4.6°, CI −11.1 ~ +1.9, 유의하지 않음).
+  - 패드가 닫히며 큐브를 jaw 쪽으로 약 20 % 돌려 앉힌다(1 s 뒤 |mis| 15.1 → 10.5°).
+  - fold 경계 배치는 s131 #7(yaw −44.2°) 하나뿐이다. 새 3/3 성공 · 기존 3/3 실패(둘 다 대각선 모서리 집기)지만 n=1 배치라 결론은 아니다.
+- 판단: 넓은 범위 성공은 **위치 일반화** 덕분이다(데이터 범위가 곧 정책 범위). 남은 손잡이는 yaw 추종이다 — 쥐는 순간 어긋남 > 20° 에서 낙하가 몰린다.
+  후보: 320×240 손목 영상에서 yaw 단서가 약한지 확인(해상도·crop), 접근 단계 closed-loop 비중(청크 50 step 개루프), 파지 강건성.
+- 최종 상태 보고서(physical grasp 만, 개조식 문체): Claude Docs "ACT physical contact grasp 최종 보고"(https://claude.ai/artifact/P6pMZ8yxXqZrq2vi2SJ7Hs).
+  attach 대비 비교 보고서(https://claude.ai/artifact/YG27sS5YXViqFteUpe8AuY)는 그대로 둠.
+  정정: 바깥 띠 yaw 는 "절반"이 아니라 30 % 를 fold 경계 ±10° 에서 강제 추출(균일 추출분 포함 46/90 이 ±10° 안).
+
+### 58.8 문서·주석 현행화 (2026-10-25)
+문서 감사(영역 4개 × 감사 + 독립 검증, 수정안 60건 중 accept 54 · 보정 6 · 기각 0)로 §58 최종 상태를 반영. 코드 로직은 바꾸지 않았다(주석·help·문서만, `bash -n`·`py_compile` 통과).
+- README·`CLAUDE.md`(워크스페이스 루트)·PIPELINE(§3-2 "범위 확장 190 ep — 현재 최종" 신설)·CHECKLIST(B-3·C-4a 체크포인트)·SETUP(이식 표·복사 명령)·하네스 README:
+  최종 체크포인트 `act_red_left_190_phys/checkpoints/200000`, 데이터셋 `lerobot_ds_red_left_190_phys`, 평가 19/20 · 넓은 범위 20/20, 덮어쓰기 변수(`OUT`/`DS`/`CK` 필수·rc 2),
+  이어 학습은 `--resume`(`train_100.sh` 는 `rm -rf "$CK"`), 실행 중인 `.sh` 수정 금지.
+- §58.4 에서 적어 둔 불일치 정리: il_recorder = 30 Hz 타이머 + 최신값(zero-order hold, 리샘플 아님), PIPELINE 학습 속도·프레임 수(attach 시대 값 → physical 실측 병기),
+  `train_100.sh` 8 step/s 주석(→ num_workers 4 ≈ 12.5–15.8), `rollout_n.sh`/`rollout_wrist1.sh` "trial 마다 서버 재시작"(→ run 당 1회), `collect_100.sh`/`collect_wrist1.sh` 머리말 시드(21 → 91 / 111).
+- plan_il_vla.md(진행표: 파지 = physical, T4-B 완료, T5 = attach 로만 검증; 최소 기동 `--grasp-mode physical`; 스키마에 physical 그리퍼 action = 명령), plan_groot_n17.md(V8 결과는 attach 데이터 — physical 3태스크 미수집),
+  gello_comparison.md(physical 에선 그리퍼 action 이 명령이라 next_state 와 다름).

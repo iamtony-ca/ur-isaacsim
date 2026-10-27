@@ -30,12 +30,27 @@
 # episodes with untuned grasp values.
 #
 # usage: collect_il_episodes.sh [episodes_per_task] [out_dir]
+#   (workspace root: UR_WS=/path/to/ur_ws, else inferred from this file's location,
+#    like the harness. readlink -f because `ros2 run` goes through install/, which
+#    holds a symlink with --symlink-install and a copy without it.)
+if [ -n "${UR_WS:-}" ]; then
+  WS="$UR_WS"
+else
+  _here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+  case "$_here" in
+    */install/ur_bringup/lib/ur_bringup) WS="${_here%/install/ur_bringup/lib/ur_bringup}" ;;
+    */install/lib/ur_bringup)            WS="${_here%/install/lib/ur_bringup}" ;;   # --merge-install
+    *)                                   WS="$(cd "$_here/../../.." && pwd)" ;;     # src/ur_bringup/scripts
+  esac
+fi
+[ -f "$WS/install/setup.bash" ] || {
+  echo "FAIL: $WS/install/setup.bash not found -- build the workspace or set UR_WS=/path/to/ur_ws"; exit 1; }
 set +u
 source /opt/ros/jazzy/setup.bash
-source /isaac-sim/volume/ur_ws/install/setup.bash
+source "$WS/install/setup.bash"
 set -u
+[ -n "${ROS_DOMAIN_ID:-}" ] || echo "WARN: ROS_DOMAIN_ID unset -> domain 0 (shared host: export ROS_DOMAIN_ID=42)" >&2
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
-WS=/isaac-sim/volume/ur_ws
 LOGS=${LOGS:-/tmp/il_collect}
 mkdir -p "$LOGS"
 N=${1:-20}
@@ -53,6 +68,28 @@ ME=$$
 # the matching --robot.cameras_ros at inference.
 CAM_EXTERIOR=${CAM_EXTERIOR-/static_cam/color/image_raw}
 CAM_WRIST=${CAM_WRIST-/camera/color/image_raw}
+
+# Grasp mode must match the running Isaac scene (HISTORY.md 53):
+#   physical (default) -- state machine closes once to 0.8 (pick_place_physical.yaml)
+#                         and the recorder takes action.gripper from the COMMAND
+#                         (/isaac_joint_commands), not from where the jaw stalled.
+#   attach             -- the weld-era settings, unchanged.
+# Isaac latches its mode on /scene/grasp_mode; a mismatch is refused.
+GRASP_MODE=${GRASP_MODE:-physical}
+live=$(timeout 15 ros2 topic echo --once --field data --qos-durability transient_local \
+         --qos-reliability reliable /scene/grasp_mode 2>/dev/null | head -1)
+if [ "$live" != "$GRASP_MODE" ]; then
+  echo "FAIL: Isaac runs grasp mode '${live:-unknown (no /scene/grasp_mode)}', collector wants '$GRASP_MODE'."
+  echo "      Restart Isaac with the matching flag or set GRASP_MODE=$live."
+  exit 1
+fi
+DEMO_EXTRA=()
+REC_EXTRA=(-p grasp_mode:="$GRASP_MODE")
+if [ "$GRASP_MODE" = physical ]; then
+  DEMO_EXTRA=(extra_params:="$(ros2 pkg prefix ur_bringup)/share/ur_bringup/config/common/pick_place_physical.yaml")
+  REC_EXTRA+=(-p gripper_action_topic:=/isaac_joint_commands)
+fi
+echo "== grasp mode: $GRASP_MODE"
 
 # $TASKS overrides the default set: newline- or semicolon-separated
 # "object|place|instruction" specs. One spec = the ACT rung, three = the VLA rung.
@@ -97,7 +134,7 @@ for spec in "${TASKS[@]}"; do
   # shared and il_recorder continues the episode numbering from what is on disk.
   nohup ros2 run ur_bringup il_recorder.py --ros-args \
     -p use_sim_time:=true -p out_dir:="$OUT" -p task:="$text" -p auto_reset:=false \
-    -p cameras.exterior:="$CAM_EXTERIOR" -p cameras.wrist:="$CAM_WRIST" \
+    -p cameras.exterior:="$CAM_EXTERIOR" -p cameras.wrist:="$CAM_WRIST" "${REC_EXTRA[@]}" \
     > "$LOGS/recorder_${obj}_${plc}.log" 2>&1 &
   for _ in $(seq 1 30); do
     ros2 service list 2>/dev/null | grep -q "/il/start_episode" && break; sleep 2
@@ -120,7 +157,7 @@ for spec in "${TASKS[@]}"; do
     ros2 launch ur_bringup pick_place_demo.launch.py \
       use_sim:=true cycles:="$want" record:=true \
       object_topic:="/scene/objects/${obj}/pose" \
-      place_topic:="/scene/places/${plc}/pose" \
+      place_topic:="/scene/places/${plc}/pose" "${DEMO_EXTRA[@]}" \
       > "$LOGS/collect_${obj}_${plc}_$attempt.log" 2>&1
     grep -E "cycles succeeded" "$LOGS/collect_${obj}_${plc}_$attempt.log" \
       | sed 's/.*pick_place_demo\]: /   /'
@@ -143,4 +180,4 @@ for spec in "${TASKS[@]}"; do
 done
 
 echo "== ALL TASKS DONE: $(ls -1 "$OUT" | wc -l) episodes, $(du -sh "$OUT" | cut -f1)"
-echo "   convert with:  deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py $OUT <dest>"
+echo "   convert with:  deps/.venv-ml/bin/python src/ur_bringup/scripts/raw_to_lerobot.py --raw $OUT --repo-id <id> --root <dest>"

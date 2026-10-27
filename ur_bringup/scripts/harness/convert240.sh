@@ -6,9 +6,10 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(dirname "$0")"
-RAW="${RAW:-$WS/outputs/il_raw_3task_240}"
-OUT="${OUT:-$WS/outputs/lerobot_ds_240}"
-REPO="${REPO:-tony/ur16e_pick_place_3task_240}"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
+RAW="${RAW:-$WS/outputs/il_raw_3task_240$GRASP_SFX}"
+OUT="${OUT:-$WS/outputs/lerobot_ds_240$GRASP_SFX}"
+REPO="${REPO:-tony/ur16e_pick_place_3task_240$GRASP_SFX}"
 COLLECT_LOG="${COLLECT_LOG:-$LOG/collect240.log}"
 TAG="${TAG:-convert240}"
 VCODEC="${VCODEC:-}"

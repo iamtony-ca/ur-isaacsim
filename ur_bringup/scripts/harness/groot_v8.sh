@@ -19,9 +19,14 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(cd "$(dirname "$0")" && pwd)"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
 PER=${1:-3}
 RUN_S=${2:-90}
-CKPT="${3:-$WS/outputs/groot_240_v2_rel/checkpoints/last/pretrained_model}"
+# Default checkpoint follows GRASP_MODE: the physical run groot_pipeline.sh produces,
+# or the weld-era default this harness always had.
+if [ "$GRASP_MODE" = physical ]; then _CK_DEF="$WS/outputs/groot_3task_v4_phys_abs"
+else _CK_DEF="$WS/outputs/groot_240_v2_rel"; fi
+CKPT="${3:-$_CK_DEF/checkpoints/last/pretrained_model}"
 # Scene randomisation MUST match the collection (collect240.sh takes the same two).
 # Defaults = 240_v2 / the 44.3 rollout. v3 (HISTORY.md 46): RADIUS=0.06, a seed
 # different from the collection's so the poses are new, not replayed.
@@ -47,10 +52,14 @@ nohup /isaac-sim/python.sh "$WS/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py"
   --object-pose 0.60,0.0,0.225 --object-size 0.035,0.035,0.035 \
   --place-pose 0.60,0.315,0.0 --object-names red,blue --place-names left,right \
   --object-spacing 0.20 --randomize-object --randomize-radius "$RADIUS" --seed "$SEED" \
-  --camera-res 320x240 --grasp-attach --with-camera --with-static-cam --headless \
+  --camera-res 320x240 "${ISAAC_GRASP[@]}" --with-camera --with-static-cam --headless \
   > "$LOG/${TAG}_isaac.log" 2>&1 &
 for _ in $(seq 1 90); do grep -q "scene topics" "$LOG/${TAG}_isaac.log" && break; sleep 5; done
 grep -q "scene topics" "$LOG/${TAG}_isaac.log" || { echo "FAIL: isaac"; tail -5 "$LOG/${TAG}_isaac.log"; exit 1; }
+# "scene topics" is printed before the first physics step; on a cold shader cache
+# /clock only starts minutes later and controllers spawned meanwhile time out.
+for _ in $(seq 1 60); do timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1 && break; sleep 5; done
+timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1 || { echo "FAIL: isaac never published /clock"; exit 1; }
 grep -E "eye-in-hand camera|static cam  " "$LOG/${TAG}_isaac.log"
 
 echo "== control stack"

@@ -10,7 +10,8 @@ MoveItConfigsBuilder; only the semantic description is overridden.
 
 Use this (NOT the shared ur16e_moveit.launch.py) with the gripper control stack:
     ros2 launch ur_bringup ur16e_2f85.launch.py
-    ros2 launch ur_bringup ur16e_2f85_moveit.launch.py
+    ros2 launch ur_bringup ur16e_2f85_moveit.launch.py                  # Isaac (use_sim:=true default)
+    ros2 launch ur_bringup ur16e_2f85_moveit.launch.py use_sim:=false   # real (no /clock)
 
 (For the camera rig with depth->OctoMap collision avoidance, use the separate
  set: ur16e_2f85_d405.launch.py + ur16e_2f85_d405_moveit.launch.py.)
@@ -93,7 +94,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        DeclareLaunchArgument("use_sim_time", default_value="true"),
+        # use_sim mirrors ur16e_moveit.launch.py (true = Isaac /clock, false = real) and
+        # only sets the DEFAULT of use_sim_time, so `use_sim:=false` and the older
+        # `use_sim_time:=false` both work; an explicit use_sim_time wins over use_sim.
+        DeclareLaunchArgument("use_sim", default_value="true",
+                              description="Use sim time (Isaac /clock) for MoveIt; false on the real robot"),
+        DeclareLaunchArgument("use_sim_time", default_value=LaunchConfiguration("use_sim"),
+                              description="Defaults to use_sim; given explicitly, it wins"),
         DeclareLaunchArgument("launch_rviz", default_value="true"),
         wait_robot_description,
         RegisterEventHandler(

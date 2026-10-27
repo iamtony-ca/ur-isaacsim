@@ -1,9 +1,15 @@
 # pip freeze of deps/.venv-ml on 2026-09-16, FRESH Isaac Sim 6.1.0 container, after
 # `setup.sh ml` + `setup.sh groot` (torch 2.11.0+cu128, lerobot 0.6.1[dataset,training,async,groot]).
 # Taken with `env -i` so no ROS site-packages leak in (the 2026-09-13 lock had 46 of them).
-# REFERENCE ONLY -- the install path is requirements-ml.txt + requirements-groot.txt
-# (setup.sh ml / groot). Use it to diff a reproduced venv when something behaves differently:
+# USED AS PIP CONSTRAINTS (since 2026-10-20): setup.sh ml / groot install
+# requirements-ml.txt / requirements-groot.txt with `-c <this file, filtered>` so every
+# transitive dep resolves to the version below instead of today's latest (without it a
+# 2026-10-20 resolve differed in 32 packages: pyarrow 26, huggingface-hub 1.33, ...).
+# Filtered out and pinned by setup.sh instead: torch / torchvision (==2.11.0 / ==0.26.0 +
+# the TORCH_INDEX tag, default cu128), triton / nvidia-* / cuda-* (torch pins those).
+# ML_UNLOCKED=1 setup.sh ml  -> ignore this file. check_env.sh warns on drift; by hand:
 #     env -i HOME=$HOME PATH=/usr/bin:/bin deps/.venv-ml/bin/python -m pip freeze | diff - src/setup/requirements-ml.lock
+# Regenerate (only after a deliberate, re-verified upgrade) with that same freeze command.
 # Between 2026-09-13 and 2026-09-16 only unpinned transitive deps moved a patch level
 # (accelerate 1.14->1.15, peft 0.20->0.21, grpcio 1.83->1.84, huggingface-hub 1.30->1.31);
 # torch / torchvision / lerobot / transformers / numpy / datasets identical.

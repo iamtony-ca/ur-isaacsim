@@ -9,7 +9,7 @@
 # THE CONSTRAINT is /dev/shm = 64 MiB (shared container, cannot be enlarged).
 # float32 240x320x3 = 0.92 MiB; x2 cameras x batch = per-sample-batch cost, and
 # workers prefetch 2 batches each. ACT died exactly here (HISTORY.md 24).
-# So this sweep does NOT trust the arithmetic -- CLAUDE.md 2-C records that the
+# So this sweep does NOT trust the arithmetic -- SETUP.md 2-C records that the
 # arithmetic predicted failure at 320x240 and was WRONG. It measures, and it
 # watches /dev/shm while measuring.
 #

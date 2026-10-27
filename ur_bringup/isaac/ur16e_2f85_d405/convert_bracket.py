@@ -16,7 +16,7 @@ the bracket sits exactly where the URDF/TF place it.
 
 Run (Isaac Sim bundled python):
     /isaac-sim/python.sh \
-        /isaac-sim/ur_ws/src/ur_bringup/isaac/convert_bracket.py
+        /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/ur16e_2f85_d405/convert_bracket.py
 """
 from __future__ import annotations
 

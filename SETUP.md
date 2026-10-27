@@ -11,8 +11,8 @@
 |---|---|
 | OS | Ubuntu 24.04 (noble) |
 | ROS 2 | **Jazzy** (`/opt/ros/jazzy`) — 없으면 `bootstrap.sh` 의 `ros` 단계가 설치(§0-B 1-B) |
-| Isaac Sim | **6.0.1** 과 **6.1.0-rc.26** (`/isaac-sim`, `isaacsim.ros2.bridge` 확장) — 5.1.0→6.0.1→6.1.0 전부 스크립트 무수정. 6.1.0 은 2026-09-16 **새 컨테이너에서 처음부터 재현**해 검증(`HISTORY.md` §48) |
-| GPU | NVIDIA **RTX 5090 (sm_120 / Blackwell)**, 드라이버 580.x |
+| Isaac Sim | **6.0.1** 과 **6.1.0-rc.26** (이 머신 `/isaac-sim/VERSION` = `6.1.0-rc.26+release.49347`; `/isaac-sim`, `isaacsim.ros2.bridge` 확장) — 5.1.0→6.0.1→6.1.0 전부 스크립트 무수정. 6.1.0 은 2026-09-16 **새 컨테이너에서 처음부터 재현**해 검증(`HISTORY.md` §48), 2026-10-21 **NVIDIA 순정 이미지**(`nvcr.io/nvidia/isaac-sim:6.1.0`, 같은 빌드)로 호스트에서 다시 재현(`HISTORY.md` §57) |
+| GPU | NVIDIA **RTX 5090 (sm_120 / Blackwell)**, 드라이버 **≥ 580**(이 머신 580.178.04 — CUDA 13.2 가 580 계열 요구) |
 | 워크스페이스 | `/isaac-sim/volume/ur_ws` (colcon), git repo = `src/` |
 
 2026-09-16 새 컨테이너(Isaac 6.1.0-rc.26)에서 `bootstrap.sh` 가 실제로 깐 버전 — 재현 시 "이게 맞나" 의 기준:
@@ -29,7 +29,8 @@
 | ML venv | torch 2.11.0+cu128 · lerobot 0.6.1 · transformers 5.5.4 (전체는 `setup/requirements-ml.lock`) | PyPI / PyTorch cu128 |
 
 > 다른 경로를 쓰면 아래 절대경로(`/isaac-sim/volume/ur_ws`, `/isaac-sim/python.sh`)를 본인 환경에 맞게 치환.
-> 문서 곳곳에 남아 있는 `/isaac-sim/volume/ur_ws` 는 같은 워크스페이스의 옛 경로 표기다.
+> **`/isaac-sim/volume/ur_ws` 가 현재 경로다.** 일부 스크립트 사용법 주석에 남아 있는 `/isaac-sim/ur_ws` 와
+> `isaac/<파일>.py`(`isaac/common/` 로 옮기기 전)는 같은 워크스페이스의 **옛 표기**다 — 현재 경로로 바꿔 읽는다.
 
 > **Isaac Sim 5.1.0 → 6.0.1 → 6.1.0 이식**: `ur_bringup` 의 Isaac 스크립트/USD 에셋은 **수정 없이 그대로 동작**한다
 > (`isaacsim.core.api`·`isaacsim.core.nodes`·`isaacsim.ros2.bridge` OmniGraph 노드 이름 전부 유지).
@@ -49,51 +50,127 @@
 
 ## 0-B. ★ 다른 PC 에서 처음부터 — 전체 순서
 
-**한 줄 요약: 컨테이너 띄우고 → clone → `bootstrap.sh --dry-run` → `bootstrap.sh --fresh`.**
+**한 줄 요약: (호스트) clone → 컨테이너 띄우고 → root 로 `container_prereqs.sh` → `bootstrap.sh --dry-run` → `bootstrap.sh --fresh`.**
 아래 §0-A 는 단계별 세부, §1~§4 는 손으로 하는 법이다. 처음이면 이 절만 따라가면 된다.
-이 절차는 **2026-09-16 에 Isaac Sim 6.1.0 기본 이미지(ROS 없음·python3 없음)로 새 컨테이너를 만들어 처음부터 끝까지
+이 절차는 **2026-09-16 에 Isaac Sim 6.1.0 이미지(ROS 없음·python3 없음)로 새 컨테이너를 만들어 처음부터 끝까지
 실제로 돌려 검증**했다(`HISTORY.md` §48) — 그때 발견된 스크립트 결함 4건은 전부 고쳐져 있다.
+그 이미지는 NVIDIA 순정이 아니었다 — NVIDIA 레이어 위에 root 로 `sudo`·`git`·`gnupg2`·locales·GUI 라이브러리와
+`/etc/sudoers.d/isaac-sim`(NOPASSWD)을 넣은 레이어가 이미 있었다(`HISTORY.md` §55.1). 지금은 `setup/container_prereqs.sh` 가
+같은 목록을 깐다(§0-B 1).
+**순정 이미지 경로는 2026-10-21 에 검증했다**(`HISTORY.md` §57): 호스트에서 `nvcr.io/nvidia/isaac-sim:6.1.0`
+(`6.1.0-rc.26+release.49347`)로 새 컨테이너를 만들고 작업 트리를 `rsync` 로 복사해 이 절 그대로(headless) —
+`container_prereqs.sh` → `bootstrap.sh --fresh` **34 분 59 초** → `check_env.sh` `environment OK` → 재실행 17 초(변경 0) →
+`CHECKLIST.md` C-1~C-4 통과. 첫 시도는 apt 가드 파서 결함으로 `ros` 단계에서 멈췄고 고쳤다(§1-B).
+**`git clone` 경로는 사용자 커밋 뒤 다시 확인할 것**(그 검증은 rsync 복사본이었다).
 
 ### 전제 (스크립트의 `preflight` 가 자동 확인한다)
 | 항목 | 필요값 | 없으면 |
 |---|---|---|
 | Isaac Sim 컨테이너 | **6.0.1 또는 6.1.0**(둘 다 검증), `/isaac-sim/python.sh` 존재 | 컨테이너 밖이면 즉시 중단. 다른 버전은 `preflight` 가 경고 — 스크립트가 쓰는 `isaacsim.core.api`·`isaacsim.core.prims`·`isaacsim.core.utils` 는 6.1.0 에서 이미 `extsDeprecated` 라 다음 릴리스에서 없어질 수 있다. §5 스모크를 먼저 돌리고 결과를 `HISTORY.md` 에 적는다 |
 | ROS 2 | **Jazzy** (`/opt/ros/jazzy`) | **`ros` 단계가 공식 절차로 설치한다**(§1-B). Isaac Sim 기본 이미지에는 ROS 도 **`python3` 도** 없다 — 둘 다 이 단계가 가져온다 |
-| GPU | NVIDIA + 드라이버 | sm_89/120(RTX 40/50)이면 **nvblox 소스빌드로 자동 전환** |
-| 디스크 | ≥ 30 GiB | 실측(2026-09-16): apt 약 7 GB + ML venv 7.7 GB + GR00T 모델 6.5 GB |
-| 기타 | `git` `curl` `sudo` | Isaac 기본 이미지에 셋 다 있다(`wget`·`python3` 은 없다) |
-| `/dev/shm` | **≥ 1 GiB 권장**(`--shm-size`) | 64 MiB(Docker 기본)면 학습 DataLoader 워커가 죽는다 → §2-C 의 우회책. `check_env.sh` 가 어느 쪽인지 알려준다 |
+| GPU | NVIDIA + 드라이버 **≥ 580** | sm_89/120(RTX 40/50)이면 **nvblox 소스빌드로 자동 전환**. 드라이버는 CUDA 13.2(cuMotion 의존) 때문에 580 계열 — `preflight` 가 580 미만이면 WARN |
+| 디스크 | 컨테이너 루트 fs **≥ 20 GiB** + 워크스페이스 볼륨 **≥ 30 GiB**(같은 디스크면 합계 ≥ 50 GiB) | 두 곳이다. **루트 fs**(apt 가 쓰는 곳 — 볼륨이 아니다): 2026-10-21 순정 이미지 실측 apt 패키지 ≈ 11 GB(CUDA 4.8 + Nsight 2.4 + ROS 2.8 + 나머지), 컨테이너 레이어 **+17 GB**. **볼륨**: ML venv 7.7~7.9 GB + pip 캐시 ≈ 1.4 GB + build/install ≈ 0.6 GB (+ GR00T 모델 6.5 GB) + 데이터·체크포인트(이 머신 `outputs/` 22 GB). `preflight` 가 둘 다 본다(ROS 가 없으면 루트 fs 20 GiB, CUDA 만 없으면 10 GiB; 같은 디스크면 합계) — 전부 WARN |
+| 기타 | `sudo`(NOPASSWD) `git` `gpg` `curl` + locale | **stock Isaac 이미지엔 `sudo`·`git`·`gpg` 가 없다**(`curl`·`gpgv` 만; `wget`·`python3` 도 없다). 컨테이너 사용자(`isaac-sim`, uid 1234)는 sudo 도 없다 → §0-B 1 의 root 단계 `container_prereqs.sh`. 빠지면 `preflight` 가 FAIL 하며 그 명령을 그대로 찍는다 |
+| 네트워크 | 설치 때 + **Isaac 실행 때도** | `ur16e_isaac_ros2.py` 는 기동 시 `get_assets_root_path()`(Isaac 기본 에셋 루트, NVIDIA 클라우드)를 찾고 **없으면 `--no-env` 여도 종료**한다. 배경 `Simple_Room`·세트1 로봇 USD 가 거기 있다(세트2/3 USD 는 `isaac/assets/` 에 자체 포함). 오프라인/프록시 PC 면 여기서 막힌다. `preflight` 는 **설치에 쓰는 호스트**만 HTTP 로 확인한다(WARN, §0-A 표) — 에셋 서버는 아니다 |
+| `/dev/shm` | **≥ 1 GiB 권장**(`--shm-size`) | 64 MiB(Docker 기본)면 학습 DataLoader 워커가 죽는다 → §2-C 의 우회책. `preflight`(1 GiB 미만 WARN)·`check_env.sh` 가 알려준다 |
 
-### 1) 컨테이너
-지금 이 머신과 **같은 방식으로** Isaac Sim 6.0.1/6.1.0 컨테이너를 띄운다. 필요한 것:
-**GPU 전달**(`--gpus all`), **워크스페이스 볼륨**(`/isaac-sim/volume` 에 마운트),
-**공유 메모리**(`--shm-size=8g` — 안 주면 64 MiB 라 학습 시 §2-C 함정),
-**GUI 를 볼 거면 X 소켓**(`-e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix`).
-GUI 없이 `--headless` 로만 쓸 거면 X 는 생략해도 된다(2026-09-16 검증은 전부 headless).
-컨테이너 안 사용자에게 **NOPASSWD sudo** 가 있어야 한다(apt 설치용; 스크립트는 비대화 모드로 돌린다).
+### 1) 컨테이너 (호스트에서) + root 준비 단계
+**이미지**: 이 머신은 `6.1.0-rc.26+release.49347`(`cat /isaac-sim/VERSION`). 2026-10-21 호스트 검증에 쓴
+**`nvcr.io/nvidia/isaac-sim:6.1.0`** 이 같은 빌드다(NGC 태그가 나중에 다른 빌드를 가리킬 수 있으니 `cat /isaac-sim/VERSION` 으로 확인). `preflight` 는 `6.1.0*` 이면 빌드를 가리지 않고 통과시키므로, rc.26 이 아닌 빌드면 §5 스모크로 직접 확인하고 `HISTORY.md` 에 적는다.
+
+```bash
+# ① src 를 호스트의 볼륨 자리에 (stock 컨테이너엔 아직 git 이 없다 — §2 클론을 여기서 한다)
+VOL=/path/to/new_volume                           # ★ 바꿀 것: 새 볼륨의 호스트 경로 → 컨테이너 /isaac-sim/volume.
+                                                  #   기존 워크스페이스 볼륨을 가리키지 말 것 — 아래 setfacl -R 이 그 볼륨 전체에 돈다
+mkdir -p "$VOL/ur_ws" && git clone <이 저장소> "$VOL/ur_ws/src"   # 또는 옛 PC 에서 rsync -a (2026-10-21 검증은 rsync 복사)
+# 컨테이너 사용자 isaac-sim(uid 1234)과 호스트 사용자 둘 다 rwX, d: = 새로 생길 파일에도 상속(아래 표)
+sudo setfacl -R -m u:1234:rwX,u:$(id -u):rwX,d:u:1234:rwX,d:u:$(id -u):rwX "$VOL"
+
+# ② 컨테이너 생성 (GUI 를 안 볼 거면 DISPLAY·X11 줄을 지운다)
+docker run -d -it --name ur_ws --entrypoint bash -u 1234:1234 \
+  --gpus all --network host --shm-size=8g \
+  -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+  -v "$VOL":/isaac-sim/volume \
+  -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  nvcr.io/nvidia/isaac-sim:6.1.0
+
+# ③ root 준비 단계 (1회, 멱등) — 그 다음부터는 전부 컨테이너 안 isaac-sim 사용자로
+docker exec -u 0 -it ur_ws bash /isaac-sim/volume/ur_ws/src/setup/container_prereqs.sh --sudo-user isaac-sim
+docker exec -it ur_ws bash
+git config --global --add safe.directory /isaac-sim/volume/ur_ws/src   # (컨테이너 안) 호스트에서 clone·rsync 했을 때 — 아래 표
+```
+| 옵션 | 이유 |
+|---|---|
+| `--gpus all` | GPU 전달(드라이버 ≥ 580) |
+| `-e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y` | Isaac Sim 이미지 요구(이 컨테이너 환경에 둘 다 설정돼 있다) |
+| `--shm-size=8g` | 안 주면 Docker 기본 64 MiB → 학습 DataLoader 워커가 죽는다(§2-C) |
+| `--network host` | 실물 UR16e(RTDE)·DDS 가 호스트 네트워크를 그대로 쓴다(`HARDWARE.md` 4-B ⑥, U2D2 는 `--device` 추가). sim 만이면 생략 가능 |
+| `-v "$VOL":/isaac-sim/volume` | 워크스페이스·`deps/`·`outputs/` 가 컨테이너를 지워도 남는다. 문서의 절대경로가 전부 `/isaac-sim/volume/ur_ws` 기준 |
+| `-e DISPLAY -v /tmp/.X11-unix…` | **GUI 를 볼 때만**(호스트에서 `xhost +local:` 가 필요할 수 있다). 2026-09-16 검증과 하네스는 전부 `--headless` |
+| `-u 1234:1234` | 컨테이너 사용자 `isaac-sim`(이 머신 PID 1 = uid 1234). 이미지 기본 사용자가 이미 그거면 있어도 무해 |
+| `safe.directory` | 호스트에서 clone 하거나 `rsync`·복사로 가져온 `src/` 는 소유자가 호스트 사용자라, 컨테이너 안 git(2.43)이 `detected dubious ownership` 으로 `git status`·커밋을 거부한다. 설치 스크립트는 `src/` 자체에 git 을 쓰지 않아 상관없다. 이 머신은 컨테이너 안에서 clone 해서 소유자가 `isaac-sim` 이었다 |
+| `setfacl … u:$(id -u) …` | 컨테이너가 만든 `build/`·`install/`·`deps/`·`outputs/` 는 소유자가 uid 1234 다. **호스트 사용자 항목**(`u:$(id -u)` + 기본 ACL `d:`)이 없으면 호스트에서 읽기·`rm -rf` 가 안 된다(되돌리기 §0-A). 이미 쓰던 볼륨이면 같은 줄을 다시 돌린다(멱등, 기존 파일의 ACL·마스크도 갱신). `$(id -u)` 는 `sudo` 전에 호출한 쉘에서 풀리므로 호스트 사용자다. 0600 으로 저장되는 파일(체크포인트 `model.safetensors`)은 예외 — §0-C |
+
+**이 머신의 실제 컨테이너는 위 템플릿과 조금 다르다**(`docker run` 기록은 없고 `/proc/self/mountinfo`·`/dev` 로 역추적).
+`--privileged`(`/dev` 에 호스트 장치 232 개 — 실물 USB 장치도 `--device` 없이 보이는 구성), 호스트 IPC(`/dev/shm` 32 GiB 에
+size 옵션 없음 → `--ipc=host` 로 추정), X 는 소켓 마운트 없이 `DISPLAY=:0` + `~/.Xauthority`→`/isaac-sim/.Xauthority`
+(`--network host` 라 X 의 abstract 소켓이 보인다), 그리고 NVIDIA 문서식 **캐시 마운트 6 개**
+(`<호스트>/docker/isaac-sim-610/` 의 `cache/main`→`/isaac-sim/.cache`, `cache/computecache`→`/isaac-sim/.nv/ComputeCache`,
+`config`·`logs`→`/isaac-sim/.nvidia-omniverse/{config,logs}`, `data`·`pkg`→`/isaac-sim/.local/share/ov/{data,pkg}`).
+캐시 마운트가 없으면 컨테이너를 새로 만들 때마다 셰이더를 다시 컴파일한다(Isaac 첫 기동 3~4 분 — 하네스가 `/clock` 을 기다리는 이유).
+실물 장치 플래그는 `HARDWARE.md` 4-B ⑥.
+
+`container_prereqs.sh`(root 전용, 멱등, `--dry-run` 은 출력만)는 위 2026-09-16 레이어와 **같은 목록**을
+`apt-get install --no-install-recommends` 로 깔고, `--sudo-user isaac-sim` 이면 `/etc/sudoers.d/isaac-sim`
+(`isaac-sim ALL=(ALL) NOPASSWD:ALL`, 0440, `visudo -c` 검사)을 쓴다. 이후 스크립트는 apt 를 비대화 모드로 돌리므로
+**NOPASSWD sudo** 가 꼭 필요하다. GUI 쪽(`mesa-vulkan-drivers`·`libxkbcommon-x11-0`·`xauth` …)은 이 머신과 맞추려고 같이 깔지만
+GUI 경로 자체는 아직 검증된 적이 없다(2026-10-21 순정 이미지 검증도 headless).
+
+> **★ `container_prereqs.sh` 는 전용 컨테이너 전제다.** 빠진 패키지를 깔면서 이미지에 이미 있는 기반 패키지 **약 10 개**
+> (`libc6`·mesa·`curl` …, Ubuntu 출처)를 **업그레이드한다**. 설치 전에 apt 시뮬레이션(새 패키지 수 + 업그레이드 전부와 출처)을
+> 찍고, Ubuntu 가 아닌 출처의 업그레이드는 경고, 삭제는 거부한다(`ALLOW_UPGRADES=1` 이면 강제). 확인 프롬프트 없이 진행한다.
+> `--dry-run` 은 apt 목록이 있을 때만 영향도를 보여 준다 — 순정 이미지는 목록이 비어 있고 root 가 아닌 dry-run 은 갱신할 수 없어서,
+> 실제 실행이 설치 직전에 찍는다.
+
+> 워크스페이스 루트의 **`CLAUDE.md`(Claude Code 에이전트 가이드)는 git 에 없다**(`src/.gitignore` 가 무시). 새 PC 에서도
+> 에이전트를 쓸 거면 옛 PC 의 `/isaac-sim/volume/ur_ws/CLAUDE.md` 를 같은 자리에 손으로 복사한다. 사람이 볼 사실은 전부
+> `src/` 문서(이 파일·`HARDWARE.md`·`HISTORY.md`)에 있다.
 
 ### 1-B) ROS 2 Jazzy 가 없는 이미지라면 (Isaac Sim 기본 이미지가 그렇다) — `bootstrap.sh` 의 `ros` 단계가 설치한다
 `/opt/ros/jazzy` 가 **없을 때만** 동작하고, 있으면 아무것도 하지 않는다(2026-09-16, `HISTORY.md` §47.6·§48). 내용은 ROS 2 공식
 문서의 데비안 설치 절차(<https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html>) 그대로다:
 **`apt update`(새 컨테이너는 목록이 비어 있어 이게 없으면 시뮬레이션조차 안 된다)** → locale → universe(이미 켜져 있으면
 `software-properties-common` 을 **깔지 않는다** — packagekit 경유로 systemd 계열 11개 업그레이드를 끌고 온다) →
-`ros2-apt-source` .deb(`ros2.sources` + 키) → `apt update` → **`ros-jazzy-desktop` + `ros-dev-tools`**
+`ros2-apt-source` .deb(`ros2.sources` + 키 — **1.3.0 고정 + sha256 검사**, 임시 디렉터리에 받고 지운다) → `apt update` → **`ros-jazzy-desktop` + `ros-dev-tools`**
 (`colcon`·`vcstool`·`rosdep`·**`python3`** 포함). 새 컨테이너에서 검증된 조합(2026-09-16): Ubuntu 24.04.3, `ros2-apt-source`
 **1.3.0**~noble, `ros-jazzy-desktop` 0.11.0, `ros-dev-tools` **1.0.3**(1446 debs).
+`ros2-apt-source` 는 GitHub 의 "latest" 가 아니라 1.3.0(sha256 `f31d84adf5054c7d60ded0e82c0f776a77ea33af53d08f40b9ad7c94cca55296`)을 받는다.
+새 릴리스를 쓰려면 `ROS_APT_SOURCE_VERSION=x.y.z` 와 `ROS_APT_SOURCE_SHA256=<ros2-apt-source_x.y.z.noble_all.deb 의 sha256>` 를 같이
+준다(버전만 주면 거부; `=skip` 은 검증 없이 경고와 함께 설치).
 
-**★ 새 이미지는 기본 라이브러리가 낡아 있다.** `ros-jazzy-desktop` 이 Ubuntu `noble-updates` 의 포인트 릴리스 **14개**
-(`util-linux`·`dpkg`·`zlib1g`·`libsystemd0`·`libudev1`·`liblzma5`·`libbz2` …)를, 이어서 `base` 단계의 `moveit` 이 **4개**
-(`ncurses`·`libtinfo6`)를 요구한다. 가드는 이걸 "기존 패키지 업그레이드" 로 보고 **설계대로 멈춘다.** 답은
+**★ 새 이미지는 기본 라이브러리가 낡아 있다.** `ros-jazzy-desktop` 이 Ubuntu `noble-updates`·`-security` 의 포인트 릴리스
+(`util-linux`·`dpkg`·`zlib1g`·`libsystemd0`·`libudev1`·`liblzma5`·`libbz2` …)를, 이어서 `base` 단계의 `moveit` 이 몇 개 더
+(`ncurses`·`libtinfo6`)를 요구한다. **개수는 Ubuntu 업데이트에 따라 늘어난다**(2026-09-16 14+4, 2026-10-21 23+4) — 볼 것은 개수가
+아니라 가드가 나열한 줄이 **전부 `Ubuntu:24.04/noble-updates`·`-security` 출처인가**다. 가드는 이걸 "기존 패키지 업그레이드" 로 보고 **설계대로 멈춘다.** 답은
 **`bootstrap.sh --fresh`** (= `ALLOW_UPGRADES=ubuntu`): **출처가 Ubuntu 공식 레포(`Ubuntu:24.04/noble-updates`·`-security`)인
 업그레이드만** 받아들이고, NVIDIA 출처 업그레이드나 삭제는 여전히 거부한다. `ALLOW_UPGRADES=1`(전부 수락)은 공유
 컨테이너의 마지막 수단이지 새 컨테이너의 정답이 아니다. 단독 실행: `ALLOW_UPGRADES=ubuntu setup/setup.sh ros`.
+
+> **2026-10-21 순정 이미지에서 `--fresh` 도 거부했던 원인**(`HISTORY.md` §57): 출처는 `apt-get -s` 의 `Inst` 줄 끝 `(… Ubuntu:24.04/noble-security [amd64])`
+> 에서 읽는데, apt 가 그 `)` 뒤에 괄호 묶음을 **1~2 개** 더 붙이는 줄이 있다 — `[libx11-xcb1:amd64 ]`, 한 줄은
+> `[libpam-modules:amd64 on libpam-modules-bin:amd64] [libpam-modules:amd64 ]`. 옛 파서는 빈 ` []` 만 지워서 이런 Ubuntu 줄을
+> 외부 출처로 봤다. 지금 `setup/lib.sh` `apt_sim_upgrades` 는 끝의 묶음을 1 개 이상 지운다(`s/\)( \[[^]]*\])+$/)/`; 처음 제안된
+> 한 묶음용 `s/\) \[[^]]*\]$/)/` 은 두 묶음 줄 1/440 을 여전히 놓친다). 테스트 15/15 + 실제 `apt-get -s upgrade` 440 줄 — NVIDIA·ROS 출처는 여전히 거부.
+
 확인: `ls /opt/ros/jazzy/setup.bash`.
 
 ### 2) 클론
+위 1) ① 에서 호스트 쪽에 이미 했다(★ repo = `src/` 다). ③ 이후라면 컨테이너 안에서 해도 같다:
 ```bash
 mkdir -p /isaac-sim/volume/ur_ws
 git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 ```
+> `git clone` 은 **커밋·푸시된 것만** 가져온다. 옛 PC 에서 옮기기 전에 `git -C src status` 가 깨끗한지 본다(아니면 `rsync -a` 로 src 를 통째로).
 > 다른 경로에 두려면 그대로 두면 된다 — `bootstrap.sh` 가 **자기 위치에서 WS 를 역산**한다.
 
 ### 3) 설치 — 두 줄
@@ -104,12 +181,29 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 ```
 `preflight → ros → pin → repos → base → cumotion → sources → build → leader → ml → verify` 를 순서대로 돈다
 (`ros` 는 `/opt/ros/jazzy` 가 없을 때만 설치, §1-B). 새 컨테이너 실측 소요: `ros` 약 10 분, `base`~`build` 약 15 분
-(nvblox 소스빌드 2.5 분 포함), `ml` 약 10 분(네트워크에 좌우).
+(nvblox 소스빌드는 기본 `BUILD_JOBS=2` 로 약 6 분 — 2026-10-20 실측, 올리면 짧아진다), `ml` 약 10 분(네트워크에 좌우;
+pip 캐시가 따뜻한 이 머신에서 5.5 분). 순정 이미지 전체(2026-10-21 호스트): **34 분 59 초**, 재실행 17 초.
 (`groot` 는 기본에서 제외 — `--with-groot` 또는 나중에 `./setup.sh groot`, §2-C-2. 모델 파일은 HF 게이트라 별도.)
 
-> `--dry-run` 을 새 컨테이너에서 돌리면 `ros`·`base`·`cumotion`·`sources`·`verify` 가 **"could not be simulated"** 로 뜬다.
-> 정상이다 — apt 목록이 비어 있고 ROS 레포도 없어서 시뮬레이션 자체가 불가능하며, 스크립트가 그렇게 설명한다.
-> 실제 실행에서 `ros` 단계가 `apt update` 부터 한다.
+| 환경변수 | 기본 | 뜻 |
+|---|---|---|
+| `BUILD_JOBS` | **2** | 모든 colcon 빌드의 `--parallel-workers` 와 `MAKEFLAGS=-j`. 호스트 CPU 를 다른 컨테이너와 나누므로 낮게 둔다. 전용 PC 면 `BUILD_JOBS=8 …/bootstrap.sh --fresh` |
+| `TORCH_INDEX` | `…/whl/cu128` | torch 를 받을 CUDA 인덱스. 버전은 인덱스와 무관하게 `torch==2.11.0`·`torchvision==0.26.0` 고정(§2-C) |
+| `ML_UNLOCKED` | (없음) | `1` 이면 `setup/requirements-ml.lock` 을 pip constraints 로 쓰지 않는다 — 기본은 **lock 대로** 설치 |
+
+**재현 기준 두 개** — 새 PC 가 이 머신과 "같은 것"을 받았는지는 이걸로 본다:
+- **ML venv**: `setup/requirements-ml.lock`(이 머신 `pip freeze`, `groot` extra 포함)을 `setup.sh` 의 pip 설치가 **constraints(`-c`)** 로 쓴다
+  (editable 플러그인·`pip`·`setuptools`·`wheel` 줄과, 인덱스에서 와야 하는 torch 계열 — `torch`·`torchvision`·`triton`·`nvidia-*`·`cuda-*` — 은 걸러서;
+  torch 는 대신 `2.11.0+<인덱스 태그>` 로 고정). 그래서 추이 의존성까지 이 머신과 같은 버전이 깔린다.
+- **apt**: packages.ros.org 는 최신 빌드만 남기므로 고정할 수 없다. 대신 `setup/apt-versions.lock`(이 머신의 `ros-jazzy-*`
+  — isaac-ros/cuMotion/nvblox 포함 — · CUDA 13.2 툴킷 · VPI 등 `pkg=version` 스냅샷)을 두고, `check_env.sh` 가 **다른 버전 개수를 WARN 한 줄로
+  알린다**(FAIL 아님 — 새로 깐 머신이면 언제나 뜬다; 목록은 `check_env.sh --verbose`). 2026-10 기준으로도 이미 ROS 레포가 움직였다(`ur_robot_driver` 3.9.0, ros2_control 4.48.1 …). 이상 동작이
+  나면 이 목록부터 보고, 옛 버전이 꼭 필요하면 snapshots.ros.org(날짜별 Jazzy 스냅샷)에서 받는다.
+  스냅샷 갱신은 `src/setup/check_env.sh --snapshot`(검증을 마친 머신에서만).
+
+> `--dry-run` 을 새 컨테이너에서 돌리면 `base`·`cumotion`·`verify` 가 **"could not be simulated"**(끝에 `not simulated: …`)로 뜬다.
+> 정상이다 — apt 목록이 비어 있고 ROS·NVIDIA 레포도 없어서 시뮬레이션 자체가 불가능하며, 스크립트가 그렇게 설명한다.
+> `ros` 는 시뮬레이션 대신 할 일(`would …`, 받을 `ros2-apt-source` URL·sha256)만 찍는다. 실제 실행에서 `ros` 단계가 `apt update` 부터 한다.
 
 | 옵션 | 용도 |
 |---|---|
@@ -126,8 +220,9 @@ git clone <이 저장소> /isaac-sim/volume/ur_ws/src      # ★ repo = src/ 다
 ### 4) 검증 (하드웨어 0개로 가능)
 설치가 끝나면 `bootstrap.sh` 가 아래 순서를 화면에 다시 찍어준다.
 ```bash
-source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0
-#   ★ 같은 호스트에 다른 ROS 2 컨테이너가 떠 있으면(ros2 node list 에 모르는 노드) 모든 터미널에서 42 등 다른 값으로 — §9
+source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=42
+#   ★ ROS_DOMAIN_ID: 0 이 아니고 같은 호스트의 컨테이너마다 다른 값, 모든 터미널에서 같은 값. 42 = 이 워크스페이스(호스트의
+#     첫 컨테이너) — 같은 호스트에 두 번째 컨테이너면 다른 값으로 바꾼다(§9)
 # 터미널 1  Isaac  (디스플레이 없으면 --headless)
 /isaac-sim/python.sh src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
     --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
@@ -139,12 +234,62 @@ ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=t
 python3 src/ur_bringup/isaac/common/switch_control_mode.py streaming
 ros2 service call /omy_bridge/enable std_srvs/srv/Trigger
 ```
-✅ **팔이 가짜 리더를 따라 움직이면 성공.** 기대 추종오차 ≈ 0.24°(`HISTORY.md` §22).
+✅ **팔이 가짜 리더를 따라 움직이면 성공.** 기대 추종오차는 1° 의 몇 분의 1 이하(2026-10-21 순정 이미지 호스트 재현 **0.116°**; 이전 측정 0.14~0.24°, `HISTORY.md` §22·§42·§57).
+끝나면 `bash src/ur_bringup/scripts/harness/shutdown_rollout.sh` 로 내린다(§7, 마지막 줄 `CLEAN`).
 언제든 재점검: `src/setup/check_env.sh` (읽기 전용).
 
 ### 5) 실물
 UR16e / 2F-85 / D405 → [`HARDWARE.md`](HARDWARE.md) §1·§2·§3.
 **OMY-L100 리더 → `HARDWARE.md` §4-B** (먼저 `bootstrap.sh --with-udev`).
+
+---
+
+## 0-C. 학습 산출물 옮기기 (선택) — `outputs/` 는 git 에도 설치에도 없다
+
+체크포인트·데이터셋(`outputs/`, 이 머신 22 GB)은 repo 밖이고 어떤 설치 단계도 만들지 않는다. 새 PC 에서 다시 수집·학습하지 않고
+**현재 최고 정책**(ACT physical 190 ep 200k `act_red_left_190_phys` — sim 기존 범위 19/20 · 넓은 범위(x ±100 mm) 20/20, `HISTORY.md` §58.7; 100 ep 판 `act_red_left_100_phys_long` 200k 는 넓은 범위 13/20)을 쓰려면 손으로 옮긴다.
+
+| 목적 | 옮길 것 (`/isaac-sim/volume/ur_ws/` 기준) | 크기 |
+|---|---|---|
+| **추론만** (권장) | `outputs/act_red_left_190_phys/checkpoints/200000/pretrained_model` | ≈198 MB |
+| 이어 학습(200k 이후) | 위 + `…/checkpoints/200000/training_state` + `…/checkpoints/last`(→ `200000` 심볼릭링크) + 데이터셋 `outputs/lerobot_ds_red_left_190_phys` | +394 MB + 382 MB |
+| 처음부터 재학습 | 데이터셋 `outputs/lerobot_ds_red_left_190_phys` 만 | 382 MB |
+| 재변환 | raw `outputs/il_raw_red_left_190_phys`(상대 심볼릭링크 190 개) + 그 실체 `outputs/il_raw_red_left_100_phys`·`outputs/il_raw_red_left_band_phys` | 1.4 GB + 1.3 GB |
+
+GR00T(`lerobot_ds_3task_v3`·`groot_3task_v3_abs`)는 **이 머신에도 없다** — GR00T 는 새로 수집해야 한다.
+
+```bash
+# 옛 PC (컨테이너 안)에서 — ★ 먼저 그룹 권한을 연다: model.safetensors 는 0600 으로 저장돼 ACL 마스크가 --- 라,
+#   호스트 사용자 ACL 이 있어도 호스트에서 못 읽는다(호스트끼리 rsync -a 가 Permission denied)
+cd /isaac-sim/volume/ur_ws
+chmod -R g+rwX outputs/act_red_left_190_phys      # g+ 가 ACL 마스크를 연다 (다른 사용자까지면 a+rX)
+# tar 는 심볼릭링크를 그대로 담는다. safetensors 라 압축은 효과 없음
+tar cf /isaac-sim/volume/act_phys_200k.tar outputs/act_red_left_190_phys/checkpoints/200000/pretrained_model
+#   (볼륨에 쓰므로 호스트의 $VOL/act_phys_200k.tar 로 바로 보인다 — 컨테이너 /tmp 는 호스트에서 안 보인다)
+#   이어 학습까지면 위 경로 대신 세 개:
+#     outputs/act_red_left_190_phys/checkpoints/{200000,last} outputs/lerobot_ds_red_left_190_phys
+# tar 파일을 새 PC 의 볼륨(컨테이너 /isaac-sim/volume)으로 옮긴 뒤, 같은 워크스페이스에서
+cd /isaac-sim/volume/ur_ws && tar xf /isaac-sim/volume/act_phys_200k.tar
+# (또는 호스트끼리, 옛 PC 호스트의 <볼륨>/ur_ws 에서) rsync -a — -a 가 심볼릭링크를 보존한다. 경로 앞부분을 유지하려면 -R:
+#   rsync -aR ./outputs/act_red_left_190_phys/checkpoints/200000/pretrained_model <새 PC>:<볼륨>/ur_ws/
+```
+- 롤아웃은 체크포인트 디렉터리를 **인자로** 준다 — 하네스 기본값(`act_red_left_100_phys/checkpoints/last`, 60k)은 새 PC 에 없다:
+  `bash src/ur_bringup/scripts/harness/rollout_gui_then_n.sh 10 70 $PWD/outputs/act_red_left_190_phys/checkpoints/200000/pretrained_model`
+  (넓은 범위 평가는 앞에 `RAND="--randomize-radius-x 0.10 --randomize-radius-y 0.06" SEED=211`; `HISTORY.md` §58.7)
+  (스모크는 `CHECKLIST.md` C-4a). 추론에는 `pretrained_model/` 안의 절대경로가 쓰이지 않는다.
+- **이어 학습**: `pretrained_model/train_config.json` 에 `dataset.root`·`output_dir`·`checkpoint_path` 가 **절대경로**
+  (`/isaac-sim/volume/ur_ws/outputs/...`)로 박혀 있다(`config.json` 의 `pretrained_path` 도). **같은 경로로 옮기면 고칠 것이 없다.**
+  워크스페이스 경로가 다르면 `sed -i 's#/isaac-sim/volume/ur_ws#<새 WS>#g' …/pretrained_model/{train_config,config}.json`.
+  `last` 링크를 잃었으면 `--config_path` 에 `checkpoints/200000/pretrained_model/train_config.json` 을 직접 준다. 명령(`HISTORY.md` §54.6·§58.6). ★ `train_100.sh` 로 이어 학습하지 말 것 — 시작할 때 `rm -rf "$CK"` 로 기존 체크포인트를 지운다:
+  ```bash
+  source src/setup/ml_env.sh
+  deps/.venv-ml/bin/lerobot-train --resume=true \
+    --config_path=outputs/act_red_left_190_phys/checkpoints/last/pretrained_model/train_config.json \
+    --output_dir=outputs/act_red_left_190_phys --steps=<200000 보다 큰 값> --save_freq=20000
+  ```
+  옵티마이저 상태·데이터 순서까지 이어진다(ACT 는 스케줄러가 없어 스텝만 늘리면 된다).
+- 옮긴 파일이 호스트 사용자 소유면 컨테이너 사용자(uid 1234)가 쓸 수 있어야 한다 — §0-B 1 ① 의 ACL(`d:u:1234`·`d:u:$(id -u)`)이면 새 파일에도 상속된다.
+  단 마스크는 파일을 만든 모드를 따르므로 0600 으로 저장되는 체크포인트는 위처럼 컨테이너 안에서 `chmod -R g+rwX` 한 뒤 옮긴다.
 
 ---
 
@@ -157,7 +302,7 @@ UR16e / 2F-85 / D405 → [`HARDWARE.md`](HARDWARE.md) §1·§2·§3.
 cd <ws>/src/setup
 ./setup.sh --list        # 단계 목록
 ./setup.sh --dry-run     # 아무것도 바꾸지 않고 "무엇을 할지"만 출력  ← 먼저 이걸로 확인
-./setup.sh               # 전체 실행 (preflight → pin → repos → base → cumotion → sources
+./setup.sh               # 전체 실행 (preflight → ros → pin → repos → base → cumotion → sources
                          #            → build → leader → ml → verify).  udev·groot 는 제외됨(실물 전용 / VLA 단계)
 ./setup.sh base build    # 특정 단계만
 ./check_env.sh           # 언제든 환경 점검 (읽기 전용)
@@ -165,18 +310,18 @@ cd <ws>/src/setup
 
 | 단계 | 하는 일 |
 |---|---|
-| `preflight` | **읽기 전용 사전점검** — Isaac(6.0.1/6.1.0)/ROS/GPU/디스크/도구. 아무것도 깔기 전에 먼저 걸러낸다 |
+| `preflight` | **읽기 전용 사전점검**(`--dry-run` 에서도 실제로 돈다) — Isaac 존재 + 버전(6.0.1/6.1.0) · `/opt/ros/jazzy`(또는 `ros` 단계 예정) · GPU sm + 드라이버 ≥ R580 · `/dev/shm` 크기(1 GiB 미만 WARN) · 암호 없는 `sudo`·`git`·`curl`·`gpg`·locales · vcstool · 빈 디스크(컨테이너 루트 fs 와 워크스페이스, 같은 디스크면 합계) · HTTP 도달(`archive.ubuntu.com`·`packages.ros.org`·`github.com`·NVIDIA 레포 3 곳·`gitlab.com`(nvblox 의 Eigen)·`download.pytorch.org`·`pypi.org`/`files.pythonhosted.org`·`bootstrap.pypa.io`) · `src/ur16e.repos`. **FAIL 은 Isaac 없음 · ROS 없는데 `ros` 단계도 없음 · 준비물 없음 · `ur16e.repos` 없음뿐**, 나머지는 WARN. 준비물이 없으면 §0-B 1 ③ 의 `container_prereqs.sh` 명령을 그대로 찍는다 |
 | `ros` | `/opt/ros/jazzy` 가 **없을 때만** ROS 2 Jazzy desktop + dev-tools 를 공식 절차로 설치(§0-B 1-B). 새 컨테이너는 `ALLOW_UPGRADES=ubuntu` 필요 |
 | `pin` | **NVIDIA 레포 격리 핀을 먼저** 넣는다 (§2-B-1) |
 | `repos` | Isaac ROS / CUDA / VPI 레포 + 키 추가, **핀이 실제로 먹는지 검증** |
 | `base` | UR·MoveIt·ros2_control·robotiq_description·moveit_servo·joy 등 |
 | `cumotion` | cuMotion + nvblox **개별 패키지만** (메타패키지 금지) |
 | `sources` | `vcs import` + **nvblox_core 서브모듈 init** |
-| `build` | colcon 빌드. **GPU arch 를 감지해 nvblox 소스빌드 필요 여부를 자동 판단** |
+| `build` | colcon 빌드. **GPU arch 를 감지해 nvblox 소스빌드 필요 여부를 자동 판단**. 병렬도는 `BUILD_JOBS`(기본 2, `leader` 빌드도 같음) |
 | `leader` | **OMY-L100 teleop 리더 스택** (apt 2개·업그레이드 0, 7패키지 빌드, 나머지 COLCON_IGNORE) |
-| `ml` | IL/VLA용 격리 venv (torch sm_120 + lerobot). 약 8 GB |
+| `ml` | IL/VLA용 격리 venv (`torch==2.11.0`·`torchvision==0.26.0` sm_120 + lerobot, `requirements-ml.lock` 을 constraints 로). 약 8 GB |
 | `groot` | `lerobot[groot]` extra + `deps/hf_cache` 준비(§2-C-2). **기본 제외** — `--with-groot` 또는 따로 |
-| `verify` | `check_env.sh` |
+| `verify` | `check_env.sh` (+ `apt-versions.lock` 대비 버전 차이 WARN) |
 | `udev` | **U2D2 udev 규칙 — 실물 리더 전용.** 유일하게 `/etc/udev` 에 쓰므로 **기본 실행에서 제외**되어 있고 명시해야 돈다. udev 는 호스트 데몬이라 **컨테이너 안에서 실행하면 무효** — 호스트에서 규칙을 넣고 `check_env.sh` 로 `latency_timer` 만 확인 |
 
 **★ 공유 머신 안전장치 (스크립트에 내장)**
@@ -189,9 +334,22 @@ cd <ws>/src/setup
 - apt 는 `sudo env DEBIAN_FRONTEND=noninteractive` 로 돈다 — `sudo` 가 환경을 버리므로 이렇게 안 넘기면 새 이미지에서
   debconf 프롬프트(tzdata 등)에 걸려 무한 대기할 수 있다.
 - 소스빌드 산출물은 전부 워크스페이스 `install/` 오버레이 → 워크스페이스를 지우면 원상복구된다.
+- **되돌리기**: `rm -rf $WS/build $WS/install $WS/deps` — `deps/` 에는 venv 외에 `pip_cache`(≈ 1.4 GB)·`torch_home`(resnet18 45 MB)·
+  `hf_cache` 도 있다. 호스트에서 지우려면 볼륨 ACL 에 호스트 사용자 항목이 있어야 한다(§0-B 1 ①). 단 `setup.sh groot` 뒤의 `deps/hf_cache` 는 `chmod 700`(HF 토큰 보호)이라 ACL mask 가 `---` —
+  컨테이너 안에서 지우거나 먼저 `chmod -R g+rwX deps/hf_cache`. 워크스페이스 밖에 남는 것은
+  `CHECKLIST.md` B-0 목록(apt·레포·핀·locale·sudoers·`~/.ros` …).
+- 2026-10-21 이전에 설치한 머신은 `src/setup/setup.sh ml` 을 한 번 다시 돌린다 — venv 캐시 기본값(`ur_ws_cache_paths.pth`)과
+  resnet18 선반입이 생긴다(그 전까지 `check_env.sh` WARN 2 건). 그 뒤 옛 `~/.cache/pip`·`~/.cache/torch`·`~/.cache/huggingface` 는
+  다른 데서 안 쓰면 손으로 지워도 된다.
 
 `check_env.sh` 가 잡아주는 것: apt 핀 무력화, **GPU arch ↔ nvblox 바이너리 불일치**,
-topic_based 버전 오류, ros2_control ABI 불일치, 메타패키지 오설치, 워크스페이스 설정 누락.
+topic_based 버전 오류, ros2_control ABI 불일치, 메타패키지 오설치, 워크스페이스 설정 누락,
+`setup/apt-versions.lock` 과 다른 apt 버전(WARN — 스냅샷 갱신은 `check_env.sh --snapshot`).
+- apt 표류는 **WARN 한 줄**(바뀐/없는 개수) — 새로 깐 머신이면 언제나 뜨는 정상 출력이다. 전체 목록은 `check_env.sh --verbose`.
+- apt `nvblox_node` 의 "sm_120 없음(sm_75 전용)" 줄은 워크스페이스 소스빌드 `nvblox_ros` 가 이 GPU 를 덮으면 **ok**(그 바이너리는 안 쓰인다).
+  소스빌드가 없으면 여전히 FAIL.
+- ML WARN 2 개: venv 캐시 기본값이 `deps/` 인가, `deps/torch_home` 에 resnet18 이 있는가(§2-C).
+- 종료 코드는 그대로 — WARN 은 `environment OK` 에 영향이 없다.
 
 > `WS=/다른/경로 ./setup.sh` 로 워크스페이스 위치를 바꿀 수 있다.
 
@@ -210,6 +368,9 @@ cd /isaac-sim/volume/ur_ws
 
 ## 2. apt 의존성 (바이너리, sudo 필요)
 
+> **정본은 `setup/setup.sh` 의 `stage_base`**(+ `stage_cumotion`·`stage_leader`)다. 아래 목록은 그 `base` 단계와 같게 맞춘
+> 사본이고, 어긋나면 스크립트가 맞다. 손으로 할 때도 `setup/setup.sh base` 가 같은 목록을 영향도 가드와 함께 깐다.
+
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -219,8 +380,14 @@ sudo apt install -y \
     ros-jazzy-ros2-controllers \
     ros-jazzy-ros2-control-cmake \
     ros-jazzy-robotiq-description \
-    python3-vcstool
+    ros-jazzy-moveit-ros-perception \
+    ros-jazzy-moveit-servo \
+    ros-jazzy-joy \
+    python3-vcstool python3-colcon-common-extensions \
+    python3-scipy python3-matplotlib
 ```
+- `moveit-servo`·`joy` = teleop(`teleop_servo`·`teleop_dualsense`·`teleop_omy pad:=true`)의 `servo_node`·`joy_node`. 빠지면 그 런치들이 기동에서 죽는다.
+- `python3-scipy`·`python3-matplotlib` = `base_placement/`(시스템 python3). `ros-jazzy-desktop` 이면 이미 딸려 오지만 `ros-base` 기반이면 없다.
 - `ros-jazzy-ur` = 메타패키지 → `ur_robot_driver`, `ur_description`, `ur_moveit_config`,
   `ur_controllers`, `ur_calibration`, `ur_dashboard_msgs`, `ur_client_library` 포함.
 - `ros-jazzy-robotiq-description` = 2F-85 그리퍼 메시(RViz용) + **`ur_to_robotiq` 커플링(GRP-ES-CPL-077) 매크로/메시**.
@@ -229,10 +396,12 @@ sudo apt install -y \
 - `ros-jazzy-topic-based-ros2-control` 은 **apt 에 없음** → §3 에서 소스로.
 - (옵션, 실물 D405 카메라) `ros-jazzy-realsense2-camera ros-jazzy-librealsense2` — **sim 은 불필요**
   (Isaac 가 카메라를 렌더). 실물 단계에서만 설치. URDF 카메라 프레임은 자작 매크로라 `realsense2-description` 도 불필요.
-- (옵션, 세트3 MoveIt OctoMap 충돌회피) `ros-jazzy-moveit-ros-perception` — `PointCloudOctomapUpdater` 플러그인 제공.
+- (위 목록에 포함, 세트3 MoveIt OctoMap 충돌회피) `ros-jazzy-moveit-ros-perception` — `PointCloudOctomapUpdater` 플러그인 제공.
   `ur16e_2f85_d405_moveit.launch.py use_octomap:=true`(기본) 사용 시 **필수**. 프레임워크
   `moveit_ros_occupancy_map_monitor` 만으로는 부족. octomap 안 쓰면(`use_octomap:=false`) 불필요.
-- (대안) `rosdep install --from-paths src --ignore-src -y` 로도 가능하지만, 위 명시 설치가 확실.
+- **`rosdep install` 은 쓰지 않는다.** `ur_bringup/package.xml` 은 런타임 의존을 다 적지 않았다(`robotiq_description`·cuMotion·
+  `nvblox_ros`·`realsense2_camera`·`rviz2`·`moveit_ros_move_group`·`open_manipulator_bringup` 등 빠짐) — rosdep 로는 불완전하게 깔리고,
+  거꾸로 `open_manipulator_bringup` 의 `gz_*` 의존 때문에 Gazebo 스택이 딸려온다(§2-D). `setup.sh` 단계가 전부 명시 설치한다.
 
 ---
 
@@ -339,8 +508,10 @@ colcon build --symlink-install --packages-select nvblox_ros \
 - `USE_NATIVE_CUDA_ARCHITECTURE=1` = 이 머신의 GPU arch 하나만 컴파일(=sm_120). 빌드도 빨라진다.
 - 빌드 의존성(`libgoogle-glog-dev libgflags-dev libgtest-dev libbenchmark-dev libsqlite3-dev`)은
   §2-B-3 설치 시 함께 들어온다. 없으면 `sudo apt install -y` 로 추가.
-- `nvblox_msgs`/`nvblox_ros_common`/`nvblox_rviz_plugin` 은 **apt 것을 그대로 쓴다**(소스 트리의 동명 패키지는
-  `COLCON_IGNORE` 처리). 워크스페이스 `install/` 이 오버레이라 `nvblox_ros` 만 우리 빌드가 이긴다
+- `nvblox_msgs`/`nvblox_ros_common`/`nvblox_rviz_plugin` 은 **apt 것을 그대로 쓴다**. 소스 트리의 동명 패키지(및
+  `nvblox_examples`·`nvblox_nav2` …)에는 **`COLCON_IGNORE` 가 없다** — 빌드에서 빠지는 건 오직 `--packages-select nvblox_ros`
+  덕분이다. **워크스페이스에서 인자 없는 `colcon build` 를 하지 말 것**(isaac_ros_nvblox 의 14개 패키지 — upstream 이 막아 둔 `realsense_splitter` 만 빠진다 — 를 CUDA 소스빌드해 apt 를 덮는다;
+  `setup.sh` 는 항상 `--packages-up-to`/`--packages-select` 를 쓴다). 워크스페이스 `install/` 이 오버레이라 `nvblox_ros` 만 우리 빌드가 이긴다
   (colcon 이 띄우는 "overriding package" 경고는 **의도된 것**).
 - 검증: `cuobjdump --list-elf install/nvblox_ros/lib/nvblox_ros/nvblox_node | grep -oE 'sm_[0-9]+' | sort -u`
 
@@ -352,16 +523,25 @@ colcon build --symlink-install --packages-select nvblox_ros \
 
 ```bash
 cd <ws>/src/setup
-./setup.sh ml                                     # deps/.venv-ml 생성 + torch + lerobot
-TORCH_INDEX=https://download.pytorch.org/whl/cu130 ./setup.sh ml   # CUDA 인덱스 교체
+./setup.sh ml                                     # deps/.venv-ml 생성 + torch==2.11.0 + lerobot (lock 을 constraints 로)
+TORCH_INDEX=https://download.pytorch.org/whl/cu130 ./setup.sh ml   # CUDA 인덱스만 교체 — 버전은 그대로 2.11.0(+cu130)
 ./setup.sh groot                                  # GR00T 단계에서만: lerobot[groot] + HF 캐시 (§2-C-2)
 ./check_env.sh                                    # sm_120 및 격리 검증 (+ GR00T 캐시 오프라인 검사)
 ```
 
 **ML 명령은 전부 `source src/setup/ml_env.sh` 뒤에** 실행한다(변환·학습·서버·클라이언트). 이 파일이
-`HF_HOME`(워크스페이스 안), `HF_HUB_OFFLINE=1`, `OMP_NUM_THREADS=8`, `UR_WS_TORCH_SHM_FIX=1`,
+`HF_HOME`·`TORCH_HOME`·`PIP_CACHE_DIR`(전부 `deps/` 안), `HF_HUB_OFFLINE=1`, `OMP_NUM_THREADS=8`, `UR_WS_TORCH_SHM_FIX=1`,
 `WANDB_DISABLED` 를 한곳에서 정한다 — 명령마다 환경변수를 손으로 붙이다 하나 빠뜨리면 조용히 느려지거나(§45.4)
-네트워크로 나간다. 실제로 깔린 버전 전체는 `setup/requirements-ml.lock`(참고용, `pip freeze | diff - requirements-ml.lock`).
+네트워크로 나간다. 실제로 깔린 버전 전체는 `setup/requirements-ml.lock` — `setup.sh` 의 pip 설치가 이걸 **constraints(`-c`)** 로
+써서 이 머신과 같은 버전을 깐다(editable 플러그인·`pip`·`setuptools`·`wheel` 과 torch 계열 `torch`·`torchvision`·`triton`·`nvidia-*`·`cuda-*` 줄은 걸러내고 torch 는 인덱스 태그를 붙여 다시 고정). 풀어서 최신으로 받으려면 `ML_UNLOCKED=1`
+(이 경우 2026-10 기준 32 개 패키지가 lock 과 다르게 풀린다 — 메이저 버전 차이 포함). 비교는 `pip freeze | diff - requirements-ml.lock`.
+
+**캐시도 워크스페이스 안이고, ACT 는 아무것도 내려받지 않는다.** `setup.sh ml` 이 venv 에 `ur_ws_cache_paths.pth` 를 넣어
+venv 의 모든 프로세스(`lerobot-train`·정책 서버/클라이언트·`raw_to_lerobot.py`)가 `ml_env.sh` 없이도 `TORCH_HOME`/`HF_HOME`/`PIP_CACHE_DIR`
+기본값을 `deps/{torch_home,hf_cache,pip_cache}` 로 쓴다(내보낸 값이 있으면 그게 이긴다). ACT 백본 resnet18(`IMAGENET1K_V1`, 45 MB)은
+정책을 만들 때마다(롤아웃 포함) 필요해서 `ml` 단계가 `deps/torch_home` 에 미리 받는다(해시 검사) — 그래서 **ACT 학습·롤아웃은 인터넷이
+필요 없다**(전엔 첫 롤아웃이 `~/.cache/torch` 로 받았다). GR00T 는 `ml_env.sh` 의 `HF_HUB_OFFLINE=1` 로 오프라인 — 모델 파일 자체는 여전히
+사용자의 HF 게이트 단계(§2-C-2).
 
 ### ★ 격리 — 반드시 워크스페이스 로컬 venv
 ```
@@ -387,12 +567,15 @@ deps/.venv-ml/bin/python /tmp/get-pip.py
 없으면 GPU 는 보이고 텐서도 올라가는데 **커널이 안 도는** — `HISTORY.md` §14 의 nvblox 와 똑같은 실패다.
 ```bash
 deps/.venv-ml/bin/python -m pip install \
-    --index-url https://download.pytorch.org/whl/cu128 torch torchvision
+    --index-url https://download.pytorch.org/whl/cu128 torch==2.11.0 torchvision==0.26.0
 ```
-| 인덱스 | torch (2026-09 기준) |
-|---|---|
-| `cu128` | 2.11.0 |
-| `cu130` | 2.14.0 (설치된 CUDA 툴킷 13.2 와 정렬) |
+**버전은 반드시 고정한다.** lerobot 0.6.1 이 `torch<2.12`·`torchvision<0.27` 을 요구하므로, 인덱스의 최신판을 받으면
+다음 `pip install lerobot…` 이 그것을 **PyPI 빌드로 바꿔치기**한다(= sm_120 보장 상실, 아래 두 번째 검사가 못 잡을 수도 있다).
+
+| 인덱스 | 고정 버전 | 인덱스의 최신 (2026-10) |
+|---|---|---|
+| `cu128` (기본) | `torch==2.11.0`·`torchvision==0.26.0` → `+cu128` | 2.11.0 |
+| `cu130` (폴백 — cu128 이 이 GPU 를 못 덮을 때만) | 같은 `2.11.0`·`0.26.0` → `+cu130`(인덱스에 있다, CUDA 툴킷 13.2 와 정렬) | 2.14.x — **쓰면 안 된다**(lerobot 0.6.1 범위 밖) |
 
 **검증(설치 직후 반드시)**:
 ```bash
@@ -557,6 +740,7 @@ gated 가 아니지만, 백본 **토크나이저**가 gated `nvidia/Cosmos-Reaso
    deps/.venv-ml/bin/hf auth login          # → deps/hf_cache/token (600)
    ```
 4. 확인: `HF_HOME=... deps/.venv-ml/bin/python -c "from huggingface_hub import hf_hub_download as d; d('nvidia/Cosmos-Reason2-2B','tokenizer_config.json')"`
+   — 이건 **게이트가 열렸는지**만 본다. 캐시가 다 찼는지는 다운로드 후 `src/setup/check_hf_cache.sh`(필수 파일 전부 + 오프라인 로드).
 
 다른 Qwen3-VL 토크나이저로 대체하는 우회는 **하지 않는다** — vocab 이 어긋나면 조용히 틀린 학습이 된다.
 
@@ -599,8 +783,18 @@ deps/.venv-ml/bin/lerobot-train \
   `["joint"]` 은 6축 전부 절대/그리퍼만 상대로 **뒤집힌다**(경고 없음).
 - **롤아웃은 `--policy_device=cuda` 필수.** 기본값 `cpu` 에서 bf16 체크포인트가 `mixed dtype` 으로 죽는데,
   서버가 예외를 삼키고 관측을 계속 받아 **"아무것도 안 하는 정책"으로 보인다**(§43.6).
-- **캐시 재현 — 두 가지 길.** (a) 게이트 절차 1~4 후 `HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download ...`
-  (`setup.sh groot` 가 정확한 명령을 출력), (b) **파일을 손으로 옮기기** — 아래.
+- **캐시 재현 — 두 가지 길.** (a) 게이트 절차 1~4 후 다운로드, (b) **파일을 손으로 옮기기** — 아래. (a) 는:
+  ```bash
+  source src/setup/ml_env.sh
+  HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/GR00T-N1.7-3B
+  HF_HUB_OFFLINE=0 deps/.venv-ml/bin/hf download nvidia/Cosmos-Reason2-2B \
+      --include config.json --include 'tokenizer*' --include vocab.json --include merges.txt \
+      --include '*preprocessor_config.json'
+  src/setup/check_hf_cache.sh            # Cosmos 7개 파일 + GR00T 7개 파일 + 오프라인 로드 → rc 0
+  ```
+  ★ **`--include` 는 패턴마다 하나씩.** 예전 문서처럼 `--include 'config.json' 'tokenizer*' …` 로 쓰면 hf 1.31 은 두 번째부터를
+  **파일명 인자**로 받고 `Ignoring --include since filenames have been explicitly set` 경고와 함께 `--include` 를 버린다 —
+  결과적으로 Cosmos `config.json` 만 빠져 `check_hf_cache.sh` 가 FAIL 한다(2026-10-20, CLI 파서를 직접 돌려 재현·수정 확인).
 
 **★ HF 캐시 수동 배치 (다른 PC 에서 직접 다운로드/복사할 때, 2026-09-13 검증)**
 
@@ -709,7 +903,7 @@ ros2 topic hz /leader/joint_trajectory                        # 300 Hz
 > `Waiting for data on 'robot_description' topic` 에서 멈춘다 — `robot_state_publisher` 가 같이 떠야 한다
 > (공식 런치는 이미 그렇게 되어 있다).
 
-### UR16e 로 연결 — `omy_to_ur16e` 브리지 (sim 검증 완료, 추종오차 0.24°)
+### UR16e 로 연결 — `omy_to_ur16e` 브리지 (sim 검증 완료, 추종오차 0.116° — 2026-10-21 재측)
 ```bash
 # 하드웨어 없이 sim 으로 먼저 돌려볼 것 (virtual_leader 가 /leader/joint_states 를 합성)
 ros2 launch ur_bringup teleop_omy.launch.py use_sim_time:=true virtual_leader:=true
@@ -801,14 +995,17 @@ ros2 service call /omy_bridge/sync_to_leader std_srvs/srv/Trigger   # 대안: UR
 
 ```bash
 cd /isaac-sim/volume/ur_ws
-vcs import src < src/ur16e.repos        # topic_based @ 0.2.1 + ros2_robotiq_gripper + serial 클론
+vcs import src < src/ur16e.repos        # topic_based @ 0.2.1 + robotiq·serial·nvblox·open_manipulator… (SHA 고정) 클론
 vcs validate src < src/ur16e.repos      # (선택) 버전 일치 확인
 ```
 > `src/ur16e.repos` 가 다음을 고정·클론한다:
 > - `topic_based_hardware_interfaces` @ **0.2.1** (sim 백엔드, **왜 0.2.1 인지는 §8 참고**)
-> - `ros2_robotiq_gripper` @ `main` + `serial` @ `ros2` — **실물 2F-85 그리퍼 드라이버**용
->   (apt 에 `robotiq_driver` 없음; `robotiq_description`/`robotiq_controllers` 만 apt). 팔 단독이면 불필요.
->   소스 트리의 `robotiq_description`/`robotiq_hardware_tests` 는 `COLCON_IGNORE` 로 빌드 제외(apt 것 사용).
+> - `ros2_robotiq_gripper` @ `3b6cf8f`(main, 2026-05-18) + `serial` @ `d8d1606`(ros2 브랜치, 2022-02-13) — **SHA 고정**,
+>   **실물 2F-85 그리퍼 드라이버**용(apt 에 `robotiq_driver` 없음; `robotiq_description`/`robotiq_controllers` 만 apt). 팔 단독이면 불필요.
+>   소스 트리의 `robotiq_description`/`robotiq_hardware_tests` 에는 `COLCON_IGNORE` 가 **없다** — `--packages-select serial robotiq_driver
+>   robotiq_controllers`(§4) 로만 빌드해야 apt `robotiq_description` 0.0.1 이 소스판에 덮이지 않는다.
+> - `isaac_ros_nvblox` @ `dadbe96`(release-4.6, §2-B-4), `open_manipulator` @ `1b741c0` · `dynamixel_hardware_interface` @ `3375b3d` ·
+>   `robotis_interfaces` @ `9231cb1`(§2-D) — 전부 SHA 고정. 브랜치 이름이 아니라서 다른 PC·다른 달에 받아도 같은 트리다.
 > 이 디렉터리들은 `src/.gitignore` 로 무시되어 src 저장소에 박히지 않고 vcs 가 관리.
 
 ---
@@ -818,9 +1015,10 @@ vcs validate src < src/ur16e.repos      # (선택) 버전 일치 확인
 ```bash
 cd /isaac-sim/volume/ur_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install --packages-up-to ur_bringup \
-    --cmake-args -DBUILD_TESTING=OFF
+MAKEFLAGS=-j2 colcon build --symlink-install --packages-up-to ur_bringup \
+    --parallel-workers 2 --cmake-args -DBUILD_TESTING=OFF
 #   -DBUILD_TESTING=OFF : 0.2.1 의 ros_testing 빌드 의존(미설치) 회피
+#   MAKEFLAGS=-j2 / --parallel-workers 2 : setup.sh 의 BUILD_JOBS 기본값(2)과 같게 — 호스트 CPU 공유
 ```
 정상 시: `joint_state_topic_hardware_interface`, `ur_bringup` 2개 빌드 완료.
 
@@ -836,7 +1034,7 @@ colcon build --symlink-install --packages-select serial robotiq_driver robotiq_c
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /isaac-sim/volume/ur_ws/install/setup.bash
-export ROS_DOMAIN_ID=0
+export ROS_DOMAIN_ID=42    # 0 이 아니고 같은 호스트의 컨테이너마다 다른 값, 한 셋업의 모든 터미널에서 같은 값. 이 워크스페이스는 42 — 같은 호스트에 두 번째 컨테이너를 만들면 바꾼다(§9 도메인 충돌)
 ```
 
 ---
@@ -988,10 +1186,11 @@ python3 /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/ur16e_2f85/gripper_demo.py 
 
 ## 7. 종료
 ```bash
-pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib/rviz2/rviz2"
+bash /isaac-sim/volume/ur_ws/src/ur_bringup/scripts/harness/shutdown_rollout.sh   # 마지막 줄 CLEAN(rc 0) 이어야 한다
 ```
-> 같은 머신에서 다른 GPU/ROS 작업이 돌 수 있으니 광범위한 `pkill`(`python3`, `ros2_control_node` 등) 금지,
-> 위 워크로드 전용 패턴만 사용.
+> Isaac · `ros2 launch|run ur_bringup` 부모와 그 노드 전부(ros2_control_node·spawner·robot_state_publisher·move_group·cuMotion/nvblox 컨테이너·servo/joy·`omy_to_ur16e.py`·`virtual_omy_leader.py`·`il_recorder.py`·ur_robot_driver 보조 노드·RViz) + 정책 서버/클라이언트 + 우리 도메인의 ros2 daemon 을 내리고, 남은 프로세스와 `ros2 node list`(`ROS_DOMAIN_ID`)를 다시 봐서 `CLEAN` 또는 `LEFT: …`(rc 1)를 찍는다. 학습·변환(ML venv)은 건드리지 않는다 — 그것까지 내리려면 `shutdown_all.sh`. `--dry-run` 은 대상만 보여준다.
+> 광범위한 `pkill`(`python3`, `ros2_control_node` 등)은 쓰지 않는다: 스크립트는 **실행 파일 경로**로 고르고, `/opt/ros/jazzy` 바이너리는 **이 워크스페이스 install 이 source 된 프로세스만** 죽인다(다른 워크스페이스의 같은 바이너리는 'not ours' 로 보고만). 예전 3줄 `pkill -f` 는 런치 부모보다 오래 사는 자식(ros2_control_node·move_group·cuMotion 컨테이너·OMY 브리지)을 남겼다.
+> `LEFT: nodes(domain N): …` 인데 우리 프로세스는 없다고 나오면 같은 도메인을 쓰는 다른 컨테이너다 — 도메인을 바꿀 것.
 
 ---
 
@@ -1015,19 +1214,21 @@ pkill -f ur16e_isaac_ros2.py ; pkill -f "ros2 launch ur_bringup" ; pkill -f "lib
 | 증상 | 원인/조치 |
 |---|---|
 | (새 컨테이너) `setup.sh` 가 `E: Unable to locate package software-properties-common` / `ros-jazzy-ur` 로 즉사 | `apt-get update` 가 한 번도 안 된 이미지(목록 비어 있음). `ros` 단계가 이제 먼저 갱신한다(`apt_lists_refresh`). `--dry-run` 에선 "could not be simulated" 로 뜨는 게 정상 |
-| (새 컨테이너) `refusing: this would change packages ...` 에 `util-linux`·`libsystemd0`·`ncurses` 등 Ubuntu 출처 목록 | 새 이미지의 낡은 기반 라이브러리 vs `ros-jazzy-desktop`/`moveit` 의존. 전용 컨테이너면 `bootstrap.sh --fresh`(`ALLOW_UPGRADES=ubuntu`). 목록에 `Ubuntu:` 아닌 출처가 섞이면 그건 다른 문제 — 핀 확인 |
+| (새 컨테이너) `refusing: this would change packages ...` 에 `util-linux`·`libsystemd0`·`ncurses` 등 Ubuntu 출처 목록 | 새 이미지의 낡은 기반 라이브러리 vs `ros-jazzy-desktop`/`moveit` 의존. 전용 컨테이너면 `bootstrap.sh --fresh`(`ALLOW_UPGRADES=ubuntu`). 목록에 `Ubuntu:` 아닌 출처가 섞이면 그건 다른 문제 — 핀 확인. **`--fresh` 인데도 전부 Ubuntu 출처인 목록을 거부**하면 2026-10-21 이전 `setup/lib.sh`(줄 끝 `[pkg:amd64 ]` 괄호 묶음 파서 결함, §1-B·`HISTORY.md` §57) — 최신 `src/` 로 |
 | (롤아웃) `robot_client.py: error: argument --robot.type: invalid choice: 'ur16e_ros'` | LeRobot 로봇 플러그인이 ML venv 에 미설치 → `setup.sh ml`(또는 §2-C 의 `pip install -e`). `check_env.sh` 가 REQUIRED 로 잡는다 |
 | (기록) `not ready: action topic '...' has no UR arm joints` / 변환기 `None + None` | `action_topic` 에 리더 원토픽(`/leader/joint_states`, 이름 `joint1..6`)을 줌. **`/omy_bridge/command_joint_states`** 로, 브리지 engaged 후 기록 시작(§49.1) |
 | (teleop) 브리지가 스스로 `leader_jump` 로 끊김 | 리더 샘플 간 속도 > `max_leader_speed`(20 rad/s) 이고 스텝 > 0.1 rad — 케이블/엔코더 글리치. 원인 확인 후 `enable`(게이트가 판단). 정상 동작에서 반복되면 `max_leader_speed` 를 올리되 사람 속도(≤ 5 rad/s) 이상으로 |
 | (teleop) 팔로워가 리더보다 느리다 | 브리지 로그 `slew capped N%` 가 있으면 `max_joint_speed`(기본 1.0) 가 병목 → 재기동으로 올림(UR16e 는 ≤ 2.0). 없으면 PolyScope 안전 한계/하드웨어 120°/s. `HARDWARE.md` 4-B ⑤ |
 | (실물, 컨테이너) U2D2 발행률이 60 Hz 근처 / `latency_timer` 가 16 | udev 를 컨테이너 안에서 실행함 — 호스트에서 규칙 적용 또는 `echo 1 > .../latency_timer`, `HARDWARE.md` 4-B ⑥ |
 | (하네스) 재기동 시 `A controller named ... was already loaded` / `can not be configured from 'active' state` | 이전 스택의 `ros2_control_node` 가 아직 종료 중인데 새 spawner 가 붙음. `bringup.sh` 가 이제 0개까지 대기(§48.8). 손으로는 `ps` 로 `ros2_control_node` 가 사라진 걸 확인한 뒤 재기동 |
+| (새 컨테이너) `preflight` 가 `container prerequisites missing` 으로 FAIL(`sudo`/`git`/`gpg`/`curl`/locale 없음, 또는 sudo 가 암호를 묻는다) | stock Isaac 이미지 — root 준비 단계를 안 했다. 호스트에서 `docker exec -u 0 -it <컨테이너> bash /isaac-sim/volume/ur_ws/src/setup/container_prereqs.sh --sudo-user isaac-sim` (§0-B 1 ③) |
+| Isaac 이 기동 직후 `Could not find Isaac Sim assets folder` 로 종료 | 런타임에 Isaac 에셋 서버(NVIDIA 클라우드)에 못 닿음 — `--no-env` 여도 같다. 네트워크/프록시 확인(§0-B 전제) |
 | (새 컨테이너) `python3: command not found` | Isaac 기본 이미지엔 python3 이 없다. `ros` 단계(`ros-dev-tools`)가 가져온다 — `ml` 단계만 따로 돌리지 말 것 |
 | Isaac 6.1.0 에서 `isaacsim.core.api` 등 import 경고 | `extsDeprecated` 로 이동했지만 동작함(§0). 6.1.0 초과 버전에서 ImportError 가 나면 `ur16e_isaac_ros2.py` 의 import 를 새 API 로 옮겨야 한다 |
 | (하네스) `bringup.sh` 가 `FAIL: move_group not ready` 인데 로그엔 `You can start planning now!` | 옛 대기 문자열 `Ready to take commands for planning group` 은 **RViz** 가 찍는 것 → 디스플레이 없는 컨테이너에선 절대 안 나옴. 2026-09-16 부터 두 문자열 모두 허용 |
 | `/joint_states` 가 전부 NaN | topic_based 가 0.2.1 아님 → §3 재확인 후 재빌드 |
 | `Switch controller timed out` | Isaac `/clock` 없음/느림 → Isaac 먼저 띄우거나 `use_sim_time:=false` |
-| `controller_manager` 가 `no 'ros2_control' tag found in the URDF` 로 즉사, move_group `Link 'tool0' … not known` | 같은 호스트의 **다른 컨테이너**가 도메인 0 에 `/robot_description` 을 발행(`ros2 node list` 에 모르는 노드). Isaac 부터 `export ROS_DOMAIN_ID=42` 로 기동 — 하네스는 환경의 `ROS_DOMAIN_ID` 를 따른다(§47.4) |
+| `controller_manager` 가 `no 'ros2_control' tag found in the URDF` 로 즉사, move_group `Link 'tool0' … not known` | 같은 호스트의 **다른 컨테이너**가 도메인 0 에 `/robot_description` 을 발행(`ros2 node list` 에 모르는 노드). Isaac 부터 0 이 아니고 **이 호스트의 다른 컨테이너와 겹치지 않는** `ROS_DOMAIN_ID`(이 워크스페이스는 42; 두 번째 컨테이너면 다른 값)로 기동 — 하네스는 환경의 `ROS_DOMAIN_ID` 를 따른다(`HISTORY.md` §47.4). 종료 스크립트가 `LEFT: nodes(domain N)` 만 찍을 때도 이것 |
 | spawner `Failed to acquire lock in 20 seconds` ×5 → `No controllers are currently loaded!` | 죽은 controller_manager 의 고아 spawner 가 `~/.ros/locks/` 락 보유 → `pgrep -f controller_manager/spawner` 종료(`harness/bringup.sh` 가 자동) |
 | RViz 가 떴다 바로 꺼짐(SIGSEGV) | NaN TF 렌더링 → 위 NaN 원인 해결 / 기동 순서 |
 | Isaac 창이 검정 | `--no-env` 로 조명 없음 → 환경 포함으로 재기동 |

@@ -7,8 +7,8 @@ scaled_joint_trajectory_controller -> (sim) Isaac. Verifies the arm reached the
 target by reading /joint_states before and after.
 
 Run (with the ur16e + ur16e_moveit stack already up):
-    source /opt/ros/jazzy/setup.bash && source /isaac-sim/ur_ws/install/setup.bash
-    python3 .../isaac/moveit_plan_execute_demo.py
+    source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash
+    python3 /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/common/moveit_plan_execute_demo.py
 """
 import math
 

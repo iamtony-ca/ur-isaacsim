@@ -1,6 +1,10 @@
 # Source dependencies for the UR16e sim+real stack (vcstool).
 # Import into the workspace src/ with:
-#     cd /isaac-sim/ur_ws && vcs import src < src/ur16e.repos
+#     cd /isaac-sim/volume/ur_ws && vcs import src < src/ur16e.repos
+# (setup/setup.sh sources does this; build ONLY with the --packages-select /
+#  --packages-up-to lines in setup.sh. Several of these trees contain packages we do
+#  NOT build -- see the per-repo notes -- and no COLCON_IGNORE hides them except the 6
+#  open_manipulator ones setup.sh writes, so a bare `colcon build` builds them too.)
 #
 # Only deps that must be built from SOURCE are listed here. Everything else is apt:
 #   - core: ros-jazzy-ur, -moveit, -moveit-ros-perception, -ros2-control, -ros2-controllers
@@ -29,7 +33,10 @@ repositories:
     # No Jazzy tag exists; main is the Jazzy-compatible branch (tag 0.0.1 is the
     # old Humble-era release). Provides robotiq_driver (RobotiqGripperHardwareInterface)
     # + robotiq_controllers (RobotiqActivationController). robotiq_description comes
-    # from apt; we use our own robotiq_2f85_macro for the URDF.
+    # from apt; we use our own robotiq_2f85_macro for the URDF. The tree ALSO holds
+    # robotiq_description + robotiq_hardware_tests: NOT built (setup.sh builds only
+    # --packages-select serial robotiq_driver robotiq_controllers) and NOT
+    # COLCON_IGNOREd -- a bare `colcon build` would overlay the apt robotiq_description.
     # PINNED to the SHA that was actually verified here, not to `main`. A branch
     # name makes `vcs import` non-deterministic: another PC cloning next month gets
     # different code than the one these docs describe. To move deliberately, bump
@@ -48,8 +55,10 @@ repositories:
   # apt Isaac ROS packages (nvblox_msgs / nvblox_ros_common come from apt).
   # NOTE: nvblox_core is a git SUBMODULE -- vcs import does not fetch it:
   #     cd src/isaac_ros_nvblox && git submodule update --init --recursive --depth 1
-  # Only nvblox_ros is built; every other package in the tree carries COLCON_IGNORE.
-  # See SETUP.md 2-B-4.
+  # Only nvblox_ros is built (setup.sh: --packages-select nvblox_ros). The other ~14
+  # packages of this tree (nvblox_msgs, nvblox_ros_common, nvblox_examples_bringup, ...)
+  # carry NO COLCON_IGNORE (only upstream's realsense_splitter does): a bare `colcon build`
+  # would source-build them all over the apt copies. See SETUP.md 2-B-4.
   isaac_ros_nvblox:
     type: git
     url: https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_nvblox.git

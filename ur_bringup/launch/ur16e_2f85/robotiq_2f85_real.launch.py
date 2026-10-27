@@ -26,7 +26,7 @@ Validate with no hardware attached (mirrors the arm's use_mock_hardware):
     ros2 launch ur_bringup robotiq_2f85_real.launch.py use_fake_hardware:=true
 
 Control it with the same demo, pointed at the namespaced action:
-    python3 .../isaac/gripper_demo.py \
+    python3 .../isaac/ur16e_2f85/gripper_demo.py \
         --action /gripper/gripper_controller/gripper_cmd \
         --joint-states-topic /gripper/joint_states
 """

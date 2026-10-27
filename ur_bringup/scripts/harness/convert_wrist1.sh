@@ -9,8 +9,9 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(dirname "$0")"
-RAW="$WS/outputs/il_raw_wrist_only"
-OUT="$WS/outputs/lerobot_ds_wrist_only"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
+RAW="$WS/outputs/il_raw_wrist_only$GRASP_SFX"
+OUT="$WS/outputs/lerobot_ds_wrist_only$GRASP_SFX"
 
 # Do NOT wait for the collector's "ALL TASKS DONE". The caller stops it as soon
 # as it has TARGET episodes, so that line never appears -- this loop sat 34 min
@@ -27,7 +28,7 @@ echo "== collection: $n episodes, $(du -sh "$RAW" | cut -f1)"
 
 rm -rf "$OUT"
 "$WS/deps/.venv-ml/bin/python" "$WS/src/ur_bringup/scripts/raw_to_lerobot.py" \
-  --raw "$RAW" --repo-id tony/ur16e_pick_place_wrist_only --root "$OUT" \
+  --raw "$RAW" --repo-id tony/ur16e_pick_place_wrist_only$GRASP_SFX --root "$OUT" \
   > "$LOG/convert_w1_run.log" 2>&1
 # Judge by the artefact, not by log text: the torchcodec traceback is the
 # documented harmless one and matching on "Error" has cried wolf before.

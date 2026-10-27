@@ -1,0 +1,82 @@
+# Confined machine-tending cell (toy, dimensioned like a real cabinet).
+# Every pose below is in ONE "cell" frame: origin at a floor corner, z up.
+# Run:  source /opt/ros/jazzy/setup.bash      # xacro + ur_description (+ apt robotiq_description for set 2/3)
+#       python3 place_base.py examples/confined_cell.yaml --out out/confined
+#       (ur_bringup's xacros are read straight from this source tree -- no colcon build needed)
+
+cell:
+  bounds:                       # interior of the enclosure [m]
+    lo: [0.0, 0.0, 0.0]
+    hi: [1.40, 1.00, 1.30]
+  walls:                        # false = open side (e.g. a light-curtain opening): not an obstacle
+    xmin: true
+    xmax: true                  # door at x = 1.40
+    ymin: true
+    ymax: true
+    zmin: true                  # floor
+    zmax: true                  # ceiling
+  obstacles:                    # axis-aligned boxes in the cell frame
+    - {name: tray,    lo: [0.95, 0.05, 0.00], hi: [1.35, 0.45, 0.10]}   # low parts tray
+    - {name: bench,   lo: [0.98, 0.66, 0.00], hi: [1.38, 0.98, 0.40]}   # regrasp bench
+    - {name: camera,  lo: [1.30, 0.50, 0.74], hi: [1.40, 0.60, 0.86]}   # inspection camera on the door wall
+    - {name: fixture, lo: [0.55, 0.86, 0.45], hi: [0.85, 1.00, 0.75]}   # machine fixture on the y = 1 wall
+    - {name: shelf,   lo: [0.00, 0.30, 0.68], hi: [0.32, 0.80, 0.72]}   # output shelf on the x = 0 wall
+    - {name: chute,   lo: [0.00, 0.08, 0.14], hi: [0.10, 0.32, 0.30]}   # reject chute mouth
+    - {name: labeler, lo: [0.45, 0.20, 1.22], hi: [0.75, 0.40, 1.30]}   # label applicator under the ceiling
+
+# The fixed TCP poses. Orientation: approach (= tool z, the direction the fingers point)
+# + xaxis (= tool x = the 2F-85 jaw open/close direction: the pads face +-x and the finger
+# width runs along tool y; holds for tcp tool0/gripper_frame/pad), OR rpy_deg, OR quat_xyzw.
+# e.g. tray_pick xaxis [1,0,0]: the jaws close along cell x; bench_regrasp [0,1,0]: along y.
+targets:
+  - {name: tray_pick,      xyz: [1.15, 0.25, 0.17], approach: [0, 0, -1], xaxis: [1, 0, 0]}   # top-down above the tray
+  - {name: camera_inspect, xyz: [1.02, 0.55, 0.80], approach: [1, 0, 0],  xaxis: [0, 0, 1]}   # part held in front of the camera
+  - {name: ceiling_label,  xyz: [0.60, 0.30, 1.06], approach: [0, 0, 1],  xaxis: [1, 0, 0]}   # tool up, under the labeler
+  - {name: fixture_insert, xyz: [0.70, 0.79, 0.60], approach: [0, 1, 0],  xaxis: [0, 0, -1]}  # horizontal insertion
+  - {name: bench_regrasp,  xyz: [1.15, 0.82, 0.47], approach: [0, 0, -1], xaxis: [0, 1, 0]}   # top-down above the bench
+  - {name: shelf_place,    xyz: [0.17, 0.55, 0.79], approach: [0, 0, -1], xaxis: [1, 0, 0]}   # top-down above the shelf
+order: [tray_pick, camera_inspect, ceiling_label, fixture_insert, bench_regrasp, shelf_place]
+cyclic: true                    # the cycle returns from the last target to the first
+
+robot:
+  base_radius: 0.095            # UR16e footprint dia 190 mm
+  base_height: 0.0993
+  pedestal_radius: 0.15         # floor pedestal column (height set per mount below)
+  mount_plate: 0.02             # adapter plate thickness for wall / ceiling mounts
+  joint_limits_deg:             # symmetric overrides of the URDF limits
+    elbow_joint: 160            # UR16e PolyScope 5 manual (SW5.22) tech spec p.17: "Elbow +-160";
+                                # ur_description uses +-180, some datasheet copies say +-360
+  # joint_velocity_deg: {shoulder_pan_joint: 120}
+
+tool:
+  set: 2                        # 1 = bare arm (tool0), 2 = + 2F-85, 3 = + D405 bracket + 2F-85
+  tcp: pad                      # tool0 | gripper_frame | pad | custom
+  pad_offset: 0.032             # pad centre beyond the finger-tip link origin (pick_place_demo.py)
+  # custom: {xyz: [0, 0, 0.15], rpy_deg: [0, 0, 0]}
+  extra_spheres: []             # tool0-frame spheres not in the cuMotion XRDF (no env buffer added).
+  # Set 3: the D405 body sits at camera_link = tool0 + [0, -0.067, 0.0185] (23x42x42 mm), e.g.
+  #  - {name: d405, xyz: [0.0, -0.067, 0.0185], r: 0.037}
+  # plus one for the bracket plate (camera_adapter_link) if your cell is tight.
+
+mounts:                         # candidate mounting surfaces; (u, v) ranges in that surface's axes
+  - {name: floor,        kind: floor,     height: 0.00, u: [0.05, 1.35], v: [0.05, 0.95]}   # (x, y)
+  - {name: pedestal_15,  kind: floor,     height: 0.15, u: [0.05, 1.35], v: [0.05, 0.95]}
+  - {name: pedestal_30,  kind: floor,     height: 0.30, u: [0.05, 1.35], v: [0.05, 0.95]}
+  - {name: ceiling,      kind: ceiling,                 u: [0.05, 1.35], v: [0.05, 0.95]}   # (x, y)
+  - {name: wall_ymin,    kind: wall_ymin,               u: [0.05, 1.35], v: [0.05, 1.25]}   # (x, z)
+  - {name: wall_ymax,    kind: wall_ymax,               u: [0.05, 1.35], v: [0.05, 1.25]}   # (x, z)
+  - {name: wall_xmin,    kind: wall_xmin,               u: [0.05, 0.95], v: [0.05, 1.25]}   # (y, z)
+
+search:
+  grid_step: 0.05               # m; 0.025 is finer but ~4x the work
+  yaw_step_deg: auto            # auto: yaw is redundant while J1 is +-360 deg (see README)
+  refine_seeds: 3               # distinct spots per mount refined on a 5x finer local grid
+  top_k: 10
+  robustness: {dxy: 0.02, dyaw_deg: 3.0, n_random: 200}   # installation tolerance
+
+scoring:                        # all optional; defaults in evaluator.py (unknown keys are rejected)
+  weights: {manip: 0.25, ur: 0.10, jlim: 0.10, time: 0.20, path: 0.25, clear: 0.10}
+  # margins for the regenerated (covering) XRDF, re-tuned against MoveIt 2026-10-20 (HISTORY.md 54.2)
+  env_margin: 0.000             # m, on top of the XRDF 5 mm buffer (covering spheres already contain the mesh)
+  self_margin: -0.025           # m, sphere-sphere self clearance (negative: covering spheres of neighbours overlap)
+  t_cycle_max: 15.0             # s, cycle time that scores 0

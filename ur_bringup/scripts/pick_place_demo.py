@@ -95,7 +95,7 @@ READY = [3.1217, -0.0276, -2.6534, -0.3559, 1.5263, -0.0276]
 
 # The finger pads. Used to MEASURE the tool0 -> TCP offset from TF rather than
 # hardcoding it: the coupling standoff differs per set (+11 mm set 2, +18 mm set 3)
-# and changing it is an explicit, documented operation (CLAUDE.md pitfall 7). A
+# and changing it is an explicit, documented operation (USD re-bake, SETUP.md 5-B/5-C). A
 # hardcoded number would silently aim 7 mm off after such a change.
 FINGER_TIPS = ["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"]
 
@@ -189,6 +189,18 @@ class PickPlace(Node):
         # grasp-moment wrist frames, not by the arithmetic.
         p("grip_preclose", 0.28)
         p("grip_open", 0.0)
+        # attach   = Isaac welds the part on close (--grasp-attach, D5): close in two
+        #            stages and wait for /scene/grasp_active before squeezing on.
+        # physical = Isaac started with --grasp-mode physical: friction holds the
+        #            part, so close ONCE to grip_closed (a force-limited jaw stalls
+        #            on the part, like the real 2F-85) and let the LIFT check judge.
+        #            grip_closed should then be past contact (0.8), not the 0.52
+        #            stall the weld needed. HISTORY.md 53.
+        p("grasp_mode", "attach")
+        # Abuse tests for the physical grasp (0 = off): aim the descent this far
+        # off the part centre [m, base frame], so one pad touches first.
+        p("grasp_bias_x", 0.0)
+        p("grasp_bias_y", 0.0)
         # Jaw opening for the approach, the descent and the release (NOT the final
         # close, and not the recovery open). Fully open, on both backends.
         #
@@ -289,6 +301,10 @@ class PickPlace(Node):
                   "grasp_z_offset", "table_sink"):
             setattr(self, k, float(g(k)))
         self.plan_attempts = int(g("plan_attempts"))
+        self.grasp_mode = str(g("grasp_mode"))
+        if self.grasp_mode not in ("attach", "physical"):
+            raise ValueError(f"grasp_mode must be attach or physical, got {self.grasp_mode!r}")
+        self.grasp_bias = (float(g("grasp_bias_x")), float(g("grasp_bias_y")))
         self.record = bool(g("record"))
         self.pipeline_id, self.planner_id = str(g("pipeline_id")), str(g("planner_id"))
 
@@ -424,7 +440,7 @@ class PickPlace(Node):
 
         1. gripper_frame -> robotiq_85_*_finger_tip_link, read from TF so it
            follows the URDF instead of duplicating it (the coupling standoff
-           differs per set -- CLAUDE.md pitfall 7).
+           differs per set -- SETUP.md 5-B/5-C).
         2. that link's ORIGIN is not the pad. It sits at the proximal end of the
            fingertip: the collision mesh (robotiq_description
            meshes/collision/left_finger_tip.stl) spans z = -6..+51 mm from it, and
@@ -735,7 +751,7 @@ class PickPlace(Node):
 
         A systematic offset here means the model and the simulator disagree (the
         gripper is described twice -- URDF for planning, USD for physics -- and
-        CLAUDE.md pitfall 7 is exactly about keeping them in sync). Without this
+        SETUP.md 5-B/5-C re-bake the USD to keep them in sync). Without this
         the only symptom is the part being nudged during a descent that the
         planner reports as a perfect straight line.
         """
@@ -753,6 +769,11 @@ class PickPlace(Node):
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = self.grip_effort
+        # Where the jaw was BEFORE the goal: motion made while we wait on the
+        # action must count as motion, or a jaw that already stalled on the part
+        # looks like one that never moved and the plateau exit below never fires.
+        # (attach mode keeps its measured behaviour: seeded after the result.)
+        start_fj = self.finger_joint() if self.grasp_mode == "physical" else None
         send = self.grip.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, send)
         handle = send.result()
@@ -760,7 +781,15 @@ class PickPlace(Node):
             self.get_logger().error(f"{what}: gripper goal rejected")
             return False
         res_fut = handle.get_result_async()
-        rclpy.spin_until_future_complete(self, res_fut, timeout_sec=15.0)
+        # Physical grasp in Isaac: the action never finishes on a stall. PhysX
+        # reports finger_joint velocity pinned at its maxJointVelocity cap while
+        # the jaw sits still on the part (measured 0.995 rad/s at a constant
+        # position, any velocity-iteration count), so the controller's stall
+        # detector never fires and the 15 s timeout became 15 s of recorded
+        # stillness per cycle. Do not wait on it at all: the position plateau
+        # below judges the close instead.
+        if self.grasp_mode != "physical":
+            rclpy.spin_until_future_complete(self, res_fut, timeout_sec=15.0)
         # Deliberately NOT checking reached_goal: the 2F-85 stalls on the part,
         # which is exactly what a successful grasp looks like. Whether the part
         # actually came up is judged from GT after LIFT instead.
@@ -780,7 +809,6 @@ class PickPlace(Node):
         # (0.010 ok, 0.007 fail, 0.005 ok, 0.003 fail) that looked like a depth
         # effect and was not. So: require observed motion before allowing it.
         end = time.monotonic() + 2.5
-        start_fj = None
         best, best_t = None, time.monotonic()
         moved = False
         while time.monotonic() < end:
@@ -1059,11 +1087,27 @@ class PickPlace(Node):
             if not self.move_linear(xyz, q, "RECENTRE"):
                 return False, "plan_failed_recentre"
 
+        if any(self.grasp_bias):
+            gx, gy = ox + self.grasp_bias[0], oy + self.grasp_bias[1]
+            self.get_logger().warn(f"grasp aimed off-centre by {self.grasp_bias} m (abuse test)")
+            xyz, q = self.tool0_pose_for_tcp(gx, gy, oz + self.approach_height, gyaw)
+            if not self.move_linear(xyz, q, "BIAS"):
+                return False, "plan_failed_recentre"
+        else:
+            gx, gy = ox, oy
+
         # GRASP: descend onto the part, TCP grasp_z_offset ABOVE its origin so the
         # fingertips clear the surface it is standing on.
-        xyz, q = self.tool0_pose_for_tcp(ox, oy, oz + self.grasp_z_offset, gyaw)
+        xyz, q = self.tool0_pose_for_tcp(gx, gy, oz + self.grasp_z_offset, gyaw)
         if not self.move_linear(xyz, q, "GRASP"):
             return False, "plan_failed_grasp"
+
+        if self.grasp_mode == "physical":
+            # One close, straight past contact: the jaw is force-limited in Isaac
+            # and stalls on the part. No attach to wait for.
+            if not self.gripper(self.grip_closed, "CLOSE"):
+                return False, "gripper_failed"
+            return self._after_close(index, ox, oy, oz, px, py, pz, gyaw)
 
         # CLOSE, in two stages (see grip_preclose). Isaac attaches the part
         # automatically (D5) -- do NOT call /scene/attach_object here: the
@@ -1082,7 +1126,11 @@ class PickPlace(Node):
             return False, "attach_failed"
         if not self.gripper(self.grip_closed, "CLOSE"):
             return False, "gripper_failed"
+        return self._after_close(index, ox, oy, oz, px, py, pz, gyaw)
 
+    def _after_close(self, index, ox, oy, oz, px, py, pz, gyaw):
+        """LIFT -> TRANSFER -> PLACE -> OPEN -> RETRACT -> judge, shared by both
+        grasp modes."""
         xyz, q = self.tool0_pose_for_tcp(ox, oy, oz + self.lift_height, gyaw)
         if not self.move_linear(xyz, q, "LIFT"):
             return False, "plan_failed_lift"

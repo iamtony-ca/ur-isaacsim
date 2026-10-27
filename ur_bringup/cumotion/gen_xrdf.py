@@ -1,41 +1,70 @@
 #!/usr/bin/env python3
 """Generate a UR16e + Robotiq 2F-85 (+GRP-ES-CPL-077 coupling) XRDF for cuMotion.
 
-Strategy (see README/HISTORY): UR16e shares shoulder/wrist1-3/base + the whole
-2F-85 collision meshes with UR10e, so we take NVIDIA's hand-tuned
-ur10e_robotiq_2f_85.xrdf as the base and only REGENERATE the links whose mesh
-differs or is new:
-  - upper_arm_link, forearm_link  (UR16e-specific meshes, shorter than UR10e)
-  - ur_to_robotiq_link            (the coupling; not present in the UR10e template)
-The UR10e template puts spheres on `tool0`; our rig has the coupling there, so we
-rename tool0 -> ur_to_robotiq_link in the collision/self_collision sections.
+Strategy (see README/HISTORY 51): start from NVIDIA's ur10e_robotiq_2f_85.xrdf (c-space,
+self-collision ignore lists, buffers, tool frames) and build TWO sphere sets from the
+UR16e collision meshes:
 
-Spheres come out in each mesh's frame; we transform them into the link frame using
-the URDF <collision><origin> (link_center = R(rpy) @ mesh_center + xyz).
+  world spheres (`collision`, obstacles / nvblox ESDF / robot_segmenter): COVER every link
+    mesh with cuMotion's covering generator (`generate_collision_spheres`, `max_overshoot`
+    20 mm arm + coupling, 10 mm gripper). The template's spheres sit inside the meshes:
+    the meshes stuck out of spheres + 5 mm buffer by up to 39 mm (forearm), 34 (upper
+    arm), 32 (coupling), 28 (shoulder), 23 (knuckles) -- an obstacle could be that deep
+    in the arm while cuMotion called the path free. Covered: every link's mesh inside spheres
+    + 5 mm buffer (check_xrdf.py gap <= 0; the base housing has no world spheres -- it sits on
+    the table). Writes ONLY the shipped OUT_XRDF; copy the script to make an A/B candidate.
+  self spheres (`self_collision`): inner (template / medial) spheres where links never
+    touch, COVERING spheres (5 mm overshoot) on the links that do -- forearm, wrist_2,
+    wrist_3, coupling -- and the base housing (20 mm, self only: it sits on the table).
+    Covering every link at 20/30 mm would refuse 52/92 % of the 790 collision-free
+    configurations (mostly base housing <-> upper arm, then forearm <-> wrist_2); covering
+    every link at 5 mm is accurate (0 missed / 51) but needs 1315 spheres; inner spheres
+    everywhere missed 49 of 210 MoveIt
+    self-collisions in 1000 random configurations. This mix: 5 missed / 48 false alarms.
 
-Run with the venv that has cumotion + trimesh:
-  deps/.venv-cumotion/bin/python deps/cumotion_gen/gen_xrdf.py
+Self-collision ignore list = MoveIt's SRDF where it matters: the template also skipped
+forearm <-> wrist_2 / wrist_3, which MoveIt checks and which do collide. Base housing
+ignores shoulder (adjacent) and upper arm (its proximal housing turns inside the base
+housing's envelope; MoveIt never reports that pair, the covering spheres always would).
+
+Needs `cumotion` (python) + trimesh. Isaac Sim 6.1 ships both (checked on 6.1.0-rc.26 only):
+  /isaac-sim/python.sh src/ur_bringup/cumotion/gen_xrdf.py      # writes ur16e_2f85.xrdf here
+  /isaac-sim/python.sh src/ur_bringup/cumotion/check_xrdf.py    # coverage + named poses
+(or a venv with the standalone cumotion wheel + trimesh, see README). Deterministic: the
+covering generator samples with a fixed seed.
 """
+import copy
 import os
+import sys
 import xml.etree.ElementTree as ET
 
 import numpy as np
 import trimesh
 import yaml
-import cumotion
+
+try:
+    import cumotion
+except ImportError:                       # Isaac Sim's bundled copy
+    sys.path.insert(0, "/isaac-sim/exts/isaacsim.robot_motion.cumotion/pip_prebundle")
+    import cumotion
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 URDF = os.path.join(HERE, "ur16e_2f85.urdf")
 BASE_XRDF = "/opt/ros/jazzy/share/isaac_ros_cumotion_robot_description/xrdf/ur10e_robotiq_2f_85.xrdf"
 OUT_XRDF = os.path.join(HERE, "ur16e_2f85.xrdf")
-GEOM_NAME = "ur16e_robotiq_2f_85_collision_spheres"
+WORLD_GEOM = "ur16e_robotiq_2f_85_world_spheres"
+SELF_GEOM = "ur16e_robotiq_2f_85_self_spheres"
 
-# Links to (re)generate from the UR16e URDF meshes: name -> (#spheres, radius_offset)
-REGEN = {
-    "upper_arm_link": (12, 0.0),
-    "forearm_link": (10, 0.0),
-    "ur_to_robotiq_link": (4, 0.0),
-}
+ARM = ["shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wrist_2_link",
+       "wrist_3_link", "ur_to_robotiq_link"]
+OV_ARM, OV_GRIPPER = 0.020, 0.010            # world: max overshoot of the covering spheres [m]
+# self: links that collide with each other in practice get covering spheres
+SELF_COVER = {"forearm_link": 0.005, "wrist_2_link": 0.005, "wrist_3_link": 0.005,
+              "ur_to_robotiq_link": 0.005}
+SELF_BASE = ("base_link_inertia", 0.020, ["shoulder_link", "upper_arm_link"])
+# self: medial (inside-the-mesh) spheres for the UR16e-specific upper arm; the rest of the
+# arm and the gripper keep the template's hand-tuned spheres (shared UR10e meshes)
+SELF_MEDIAL = {"upper_arm_link": 12}
 
 
 def rpy_to_matrix(rpy):
@@ -77,42 +106,48 @@ def resolve_mesh(fname):
     return fname
 
 
-def link_collisions(urdf):
-    """link name -> (mesh_path, xyz, rpy) for links with a collision mesh."""
-    root = ET.parse(urdf).getroot()
+def link_meshes(urdf):
+    """link name -> trimesh in the LINK frame (collision <origin> applied)."""
     out = {}
-    for link in root.findall("link"):
+    for link in ET.parse(urdf).getroot().findall("link"):
         col = link.find("collision")
-        if col is None:
-            continue
-        mesh = col.find("./geometry/mesh")
+        mesh = None if col is None else col.find("./geometry/mesh")
         if mesh is None:
             continue
         o = col.find("origin")
         xyz = [float(v) for v in ((o.get("xyz") if o is not None else None) or "0 0 0").split()]
         rpy = [float(v) for v in ((o.get("rpy") if o is not None else None) or "0 0 0").split()]
-        out[link.get("name")] = (resolve_mesh(mesh.get("filename")), np.array(xyz), np.array(rpy))
+        tm = trimesh.load(resolve_mesh(mesh.get("filename")), force="mesh")
+        T = np.eye(4)
+        T[:3, :3] = rpy_to_matrix(rpy)
+        T[:3, 3] = xyz
+        tm.apply_transform(T)
+        out[link.get("name")] = tm
     return out
 
 
-def gen_spheres(mesh_path, xyz, rpy, n, offset):
-    m = trimesh.load(mesh_path, force="mesh")
-    verts = np.asarray(m.vertices, dtype=np.float64)
-    tris = np.asarray(m.faces, dtype=np.int32)
-    generator = cumotion.create_collision_sphere_generator(verts, tris)
-    spheres = generator.generate_spheres(int(n), float(offset))
-    R = rpy_to_matrix(rpy)
-    out = []
-    for s in spheres:
-        c = R @ np.array([s.center[0], s.center[1], s.center[2]]) + xyz
-        out.append({"center": [round(float(c[0]), 4), round(float(c[1]), 4),
-                               round(float(c[2]), 4)], "radius": round(float(s.radius), 4)})
-    return out
+def _spheres(sph):
+    return [{"center": [round(float(v), 4) for v in np.asarray(s.center).ravel()],
+             "radius": round(float(s.radius), 4)} for s in sph]
+
+
+def cover(tm, overshoot):
+    """Spheres covering the mesh, each poking out of it by at most ~`overshoot`."""
+    return _spheres(cumotion.generate_collision_spheres(
+        [v for v in np.asarray(tm.vertices, float)], [f for f in np.asarray(tm.faces, np.int32)],
+        max_overshoot=float(overshoot)))
+
+
+def medial(tm, n):
+    """n spheres inside the mesh (medial-axis selection)."""
+    gen = cumotion.create_collision_sphere_generator(
+        [v for v in np.asarray(tm.vertices, float)], [f for f in np.asarray(tm.faces, np.int32)])
+    return _spheres(gen.generate_spheres(int(n), 0.0))
 
 
 def main():
     cumotion.set_log_level(cumotion.LogLevel.ERROR)
-    cols = link_collisions(URDF)
+    meshes = link_meshes(URDF)
     with open(BASE_XRDF) as f:
         xrdf = yaml.safe_load(f)
 
@@ -126,26 +161,30 @@ def main():
         xrdf["default_joint_positions"][j] = 0.0
     print(f"  locked gripper joints: {movable_gripper_joints(URDF)}")
 
-    old_geom = xrdf["collision"]["geometry"]            # ur10e_robotiq_2f_85_collision_spheres
-    spheres = xrdf["geometry"][old_geom]["spheres"]
+    template = copy.deepcopy(xrdf["geometry"][xrdf["collision"]["geometry"]]["spheres"])
+    template.pop("tool0", None)               # our coupling sits where the template had tool0
+    gripper = [l for l in meshes if l.startswith("robotiq_85_")]
 
-    # tool0 -> ur_to_robotiq_link (the coupling sits where the UR10e template used tool0)
-    if "tool0" in spheres:
-        del spheres["tool0"]
+    world = {l: cover(meshes[l], OV_ARM) for l in ARM}
+    world.update({l: cover(meshes[l], OV_GRIPPER) for l in gripper})
 
-    # regenerate the size-specific arm links + the coupling
-    for link, (n, off) in REGEN.items():
-        if link not in cols:
-            print(f"WARN: {link} has no collision mesh in URDF; skipping")
-            continue
-        mesh_path, xyz, rpy = cols[link]
-        spheres[link] = gen_spheres(mesh_path, xyz, rpy, n, off)
-        print(f"  {link:22s} {len(spheres[link])} spheres  <- {os.path.basename(mesh_path)}")
+    selfs = {}
+    for l in ARM + gripper:
+        if l in SELF_COVER:
+            selfs[l] = cover(meshes[l], SELF_COVER[l])
+        elif l in SELF_MEDIAL:
+            selfs[l] = medial(meshes[l], SELF_MEDIAL[l])
+        else:
+            selfs[l] = template[l]
+    base, base_ov, base_ignore = SELF_BASE
+    selfs[base] = cover(meshes[base], base_ov)
+    for name, s in (("world", world), ("self", selfs)):
+        print(f"  {name:5s} spheres: {sum(map(len, s.values()))}  "
+              + ", ".join(f"{l.replace('robotiq_85_', 'rq_')} {len(v)}" for l, v in s.items()))
 
-    # rename geometry + fix references
-    xrdf["geometry"][GEOM_NAME] = xrdf["geometry"].pop(old_geom)
-    xrdf["collision"]["geometry"] = GEOM_NAME
-    xrdf["self_collision"]["geometry"] = GEOM_NAME
+    xrdf["geometry"] = {WORLD_GEOM: {"spheres": world}, SELF_GEOM: {"spheres": selfs}}
+    xrdf["collision"]["geometry"] = WORLD_GEOM
+    xrdf["self_collision"]["geometry"] = SELF_GEOM
 
     # collision/self_collision buffer + ignore: swap tool0 -> ur_to_robotiq_link
     def swap_tool0(d):
@@ -162,10 +201,15 @@ def main():
     sc = xrdf["self_collision"]
     swap_tool0(sc.get("buffer_distance", {}))
     swap_tool0(sc.get("ignore", {}))
+    # MoveIt checks forearm <-> wrist_2 / wrist_3 (only adjacent pairs are disabled)
+    sc["ignore"]["forearm_link"] = [l for l in sc["ignore"]["forearm_link"]
+                                    if l not in ("wrist_2_link", "wrist_3_link")]
+    sc["ignore"][base] = list(base_ignore)
 
     with open(OUT_XRDF, "w") as f:
         f.write("# Auto-generated by gen_xrdf.py (UR16e + 2F-85 + coupling) for cuMotion.\n")
-        f.write("# Base: ur10e_robotiq_2f_85.xrdf; regenerated upper_arm/forearm/coupling spheres.\n")
+        f.write("# Base: ur10e_robotiq_2f_85.xrdf. World spheres COVER the UR16e collision meshes;\n")
+        f.write("# self spheres cover the links that touch (forearm/wrist_2/wrist_3/coupling/base).\n")
         yaml.safe_dump(xrdf, f, sort_keys=False, default_flow_style=None, width=120)
     print(f"wrote {OUT_XRDF}")
 

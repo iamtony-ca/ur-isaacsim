@@ -5,7 +5,7 @@ Generic one-shot converter (meters, so it references 1:1 into the metre-based
 Isaac scene — the converter default is centimetres, which would scale 100x).
 
 Usage (Isaac Sim bundled python):
-    /isaac-sim/python.sh isaac/convert_dae_to_usd.py <src_mesh> <dst.usd>
+    /isaac-sim/python.sh isaac/common/convert_dae_to_usd.py <src_mesh> <dst.usd>
 """
 from __future__ import annotations
 

@@ -8,7 +8,7 @@ depth->OctoMap pipeline. Reuses config/ur16e_2f85_controllers.yaml unchanged.
 
 Isaac must run the composed Set-3 scene (coupling + PickNik bracket baked) WITH
 the camera graph:
-    /isaac-sim/python.sh .../isaac/ur16e_isaac_ros2.py \
+    /isaac-sim/python.sh .../isaac/common/ur16e_isaac_ros2.py \
         --asset-path .../isaac/assets/ur16e_2f85_d405.usd --with-camera
 
 Then:
@@ -33,7 +33,12 @@ def generate_launch_description():
     joint_states_topic = LaunchConfiguration("joint_states_topic")
 
     declared_args = [
-        DeclareLaunchArgument("use_sim_time", default_value="true",
+        # use_sim mirrors the *_moveit launches (docs and the harness pass use_sim:=true).
+        # This launch is sim-only (topic_based hardware), so use_sim only sets the DEFAULT
+        # of use_sim_time; an explicit use_sim_time wins.
+        DeclareLaunchArgument("use_sim", default_value="true",
+                              description="true = Isaac /clock; sets the use_sim_time default"),
+        DeclareLaunchArgument("use_sim_time", default_value=LaunchConfiguration("use_sim"),
                               description="Sim nodes use /clock from Isaac. Set false to test the "
                                           "controller stack without Isaac running."),
         DeclareLaunchArgument("launch_rviz", default_value="false"),

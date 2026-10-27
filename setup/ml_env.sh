@@ -9,6 +9,11 @@ WS_ML_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # HuggingFace cache INSIDE the workspace -- never the shared ~/.cache/huggingface.
 # GR00T-N1.7-3B (6.5 GB) and the Cosmos-Reason2-2B tokenizer live under deps/hf_cache/hub.
 export HF_HOME="$WS_ML_ROOT/deps/hf_cache"
+# Same rule for torchvision weights (ACT's resnet18 backbone; setup.sh ml pre-fetches it, so
+# rollouts download nothing) and pip's cache (1.4 GB in ~/.cache/pip otherwise). The venv
+# itself defaults to these three paths too (ur_ws_cache_paths.pth, setup.sh ml).
+export TORCH_HOME="$WS_ML_ROOT/deps/torch_home"
+export PIP_CACHE_DIR="$WS_ML_ROOT/deps/pip_cache"
 
 # Offline by default: on a reproduced PC the models are COPIED into deps/hf_cache by
 # hand (SETUP.md 2-C-2 "hand-placed cache"), and lerobot loads the Cosmos tokenizer by

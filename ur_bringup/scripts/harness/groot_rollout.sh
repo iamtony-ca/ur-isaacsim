@@ -42,15 +42,20 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(cd "$(dirname "$0")" && pwd)"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
 PER=${1:-3}                    # trials per task
 RUN_S=${2:-90}
-CKPT="${3:-$WS/outputs/groot_240_v2_rel/checkpoints/last/pretrained_model}"
+# Default checkpoint follows GRASP_MODE: the physical run groot_pipeline.sh produces,
+# or the weld-era default this harness always had.
+if [ "$GRASP_MODE" = physical ]; then _CK_DEF="$WS/outputs/groot_3task_v4_phys_abs"
+else _CK_DEF="$WS/outputs/groot_240_v2_rel"; fi
+CKPT="${3:-$_CK_DEF/checkpoints/last/pretrained_model}"
 T="${ROLL_TAG:-gr}"           # log-file prefix (two rollouts in one pipeline must not overwrite each other)
 ME=$$
-# Every trial starts where the demonstrations started. Datasets/checkpoints from
-# before 2026-09-16 start at the old pose (HISTORY.md 47): default ready_v1;
-# START_POSE=ready for anything collected with the new READY.
-START_POSE="${START_POSE:-ready_v1}"
+# Every trial starts where the demonstrations started: START_POSE comes from
+# grasp_mode.sh -- ready for physical-mode data, ready_v1 for the weld-era
+# checkpoints collected before 2026-09-16 (HISTORY.md 47; red_left_100,
+# wrist_only and 3task_v3 alike -- see reset_pose.py).
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 cd "$WS"

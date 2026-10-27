@@ -2,7 +2,7 @@
 # Restart the sim control stack + MoveIt cleanly, leaving Isaac alone.
 #
 # Kills by PID, never by broad pattern:
-#   * CLAUDE.md forbids broad pkill on this shared machine, and
+#   * broad pkill is off limits on this shared machine (README.md 8), and
 #   * `pkill -f <pattern>` has twice matched THIS script's own command line.
 # Also verifies there is exactly ONE robot_state_publisher afterwards: a stale RSP
 # survived a launch-parent kill once and re-published an OLD /robot_description,

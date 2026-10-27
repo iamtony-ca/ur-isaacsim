@@ -10,7 +10,7 @@
 # Files may be real files or symlinks; snapshot_download() resolves refs/main -> snapshot
 # dir when HF_HUB_OFFLINE=1 (verified with a hand-built copy, HISTORY.md 45.8).
 set -u
-WS="$(cd "$(dirname "$0")/../.." && pwd)"
+WS="${WS:-$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)}"
 py="$WS/deps/.venv-ml/bin/python"
 export HF_HOME="$WS/deps/hf_cache" HF_HUB_OFFLINE=1
 rc=0

@@ -10,10 +10,10 @@ matic, self-verifying), but for the gripper.
 
 Prereqs (3 terminals, in order):
   1. Isaac:    /isaac-sim/python.sh \
-                 /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_isaac_ros2.py \
-                 --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
+                 /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
+                 --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
   2. Control:  ros2 launch ur_bringup ur16e_2f85.launch.py
-  3. Demo:     python3 /isaac-sim/ur_ws/src/ur_bringup/isaac/gripper_demo.py
+  3. Demo:     python3 /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/ur16e_2f85/gripper_demo.py
 
 Run with --cycles N to repeat the open/close cycle.
 """

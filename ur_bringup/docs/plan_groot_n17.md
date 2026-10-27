@@ -498,3 +498,7 @@ WRONG_OBJECT 0 · WRONG_PLACE 0 — 언어는 여전히 맞다. 합산 17/38 (45
 성공↔실패가 양방향으로 뒤집힘(9↓ 4↑), 실패 종류·배치 오차 불변, 지연 80→160 ms. §4.2 의 "추론 전용 손잡이"는 지연용이지
 정지 해결책이 아니다. 남은 것: 정지 관측 직접 검사 → 상대 액션 청크 후처리 구현.
 
+> **2026-10-19 이후(`HISTORY.md` §53.7·§54.1)**: 위 V8 결과(`3task_v3`·`groot_3task_v3_abs`)는 전부 **용접(attach) 데이터·씬**이다. 하네스 기본은 이제
+> `GRASP_MODE=physical`(경로 `v4_phys`, `groot_v8.sh`/`groot_rollout.sh` 기본 `CKPT` = `groot_3task_v4_phys_abs`)이고 physical 3태스크는 아직 수집·학습하지 않았다.
+> v3 데이터셋·체크포인트는 이 머신에 없다(`SETUP.md` §0-C). attach 로 돌리면 기본 `CKPT` 가 `groot_240_v2_rel`(상대 액션, 서비스 불가)이고 시작 자세도 `ready_v1` 이어야 하므로, 체크포인트(3번째 인자)와 `START_POSE` 를 명시할 것.
+

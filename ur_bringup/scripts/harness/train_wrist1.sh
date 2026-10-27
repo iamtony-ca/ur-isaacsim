@@ -14,14 +14,15 @@
 # task?" is a question the setup can actually answer -- the wide randomisation
 # means a memorised trajectory will not score well.
 #
-# 60000 steps at the measured ~8 step/s = ~2 h. ALOHA trained ACT for 100k+ on
+# 60000 steps at the measured ~25 step/s = ~40 min (wrist-only, HISTORY.md 45.5). ALOHA trained ACT for 100k+ on
 # 50 episodes/task; 60k is the point where the loss curve has usually flattened,
 # and the checkpoint is what gets rolled out, not the loss.
 set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(dirname "$0")"
-DS="$WS/outputs/lerobot_ds_wrist_only"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
+DS="$WS/outputs/lerobot_ds_wrist_only$GRASP_SFX"
 cd "$WS"
 for _ in $(seq 1 160); do
   [ -f "$DS/meta/info.json" ] && ! ps -eo args --no-headers | grep -q "[r]aw_to_lerobot" && break
@@ -46,20 +47,20 @@ PY
 # depends on what else holds shared memory: Isaac's ROS stack alone parks ~14 MiB
 # of Fast-DDS segments in the 64 MiB /dev/shm, which is what pushed an earlier
 # num_workers=2 run over the edge. Stop Isaac before training.
-rm -rf "$WS/outputs/act_wrist_only"
+rm -rf "$WS/outputs/act_wrist_only$GRASP_SFX"
 for W in 4 2 0; do
   echo "== num_workers=$W"
   UR_WS_TORCH_SHM_FIX=1 deps/.venv-ml/bin/lerobot-train \
     --policy.type=act --policy.push_to_hub=false \
-    --dataset.repo_id=tony/ur16e_pick_place_wrist_only --dataset.root="$DS" \
+    --dataset.repo_id=tony/ur16e_pick_place_wrist_only$GRASP_SFX --dataset.root="$DS" \
     --steps=60000 --batch_size=32 --num_workers="$W" \
-    --output_dir="$WS/outputs/act_wrist_only" > "$LOG/train_w1_w$W.log" 2>&1
-  if find "$WS/outputs/act_wrist_only" -path "*pretrained_model/config.json" 2>/dev/null | grep -q .; then
+    --output_dir="$WS/outputs/act_wrist_only$GRASP_SFX" > "$LOG/train_w1_w$W.log" 2>&1
+  if find "$WS/outputs/act_wrist_only$GRASP_SFX" -path "*pretrained_model/config.json" 2>/dev/null | grep -q .; then
     echo "   DONE (workers=$W)"
     grep -oE "[0-9]+/60000 \[[0-9:]+<[0-9:]+, *[0-9.]+s/step\]" "$LOG/train_w1_w$W.log" | tail -1
     grep -oE "loss:[0-9.]+" "$LOG/train_w1_w$W.log" | tail -1
     break
   fi
   echo "   failed: $(grep -oE '(RuntimeError|OSError|ValueError).*' "$LOG/train_w1_w$W.log" | tail -1 | cut -c1-70)"
-  rm -rf "$WS/outputs/act_wrist_only"
+  rm -rf "$WS/outputs/act_wrist_only$GRASP_SFX"
 done

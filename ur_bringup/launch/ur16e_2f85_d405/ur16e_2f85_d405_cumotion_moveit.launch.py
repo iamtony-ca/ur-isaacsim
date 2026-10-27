@@ -27,7 +27,7 @@ Two robot-model modes (ur_only):
 Bring up on top of the control stack:
     ros2 launch ur_bringup ur16e_2f85_d405.launch.py            # (or ur16e_2f85 / *_real)
     ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py   # RViz: drag marker -> Plan
-    #   real: add use_sim_time:=false
+    #   real: add use_sim:=false (or use_sim_time:=false)
 
 Requires the Isaac ROS cuMotion apt packages + CUDA 13 + VPI (see HARDWARE.md §4).
 UR16e cuMotion robot config (URDF/XRDF): cumotion/ (gen_xrdf.py).
@@ -94,7 +94,8 @@ def launch_setup(context, *args, **kwargs):
 
     # cuMotion planner node (always the full UR16e+2F-85 model for correct collision).
     cumotion_urdf = os.path.join(ur_share, "cumotion", "ur16e_2f85.urdf")
-    cumotion_xrdf = os.path.join(ur_share, "cumotion", "ur16e_2f85.xrdf")
+    cumotion_xrdf = (LaunchConfiguration("xrdf").perform(context)
+                     or os.path.join(ur_share, "cumotion", "ur16e_2f85.xrdf"))
     cumotion_container = ComposableNodeContainer(
         name="cumotion_container", namespace="", package="rclcpp_components",
         executable="component_container_mt", output="screen",
@@ -164,8 +165,13 @@ def launch_setup(context, *args, **kwargs):
 
 def generate_launch_description():
     return LaunchDescription([
-        DeclareLaunchArgument("use_sim_time", default_value="true",
+        # use_sim mirrors ur16e_moveit.launch.py (true = Isaac /clock, false = real) and
+        # only sets the DEFAULT of use_sim_time, so `use_sim:=false` and the older
+        # `use_sim_time:=false` both work; an explicit use_sim_time wins over use_sim.
+        DeclareLaunchArgument("use_sim", default_value="true",
                               description="true for Isaac sim (/clock); false for the real robot."),
+        DeclareLaunchArgument("use_sim_time", default_value=LaunchConfiguration("use_sim"),
+                              description="Defaults to use_sim; given explicitly, it wins"),
         DeclareLaunchArgument("launch_rviz", default_value="true"),
         DeclareLaunchArgument(
             "ur_only", default_value="true",
@@ -175,5 +181,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "read_esdf_world", default_value="false",
             description="Let cuMotion pull a world ESDF from nvblox (D405 depth). Needs nvblox."),
+        DeclareLaunchArgument(
+            "xrdf", default_value="",
+            description="cuMotion XRDF to load (absolute path). Empty = cumotion/ur16e_2f85.xrdf. "
+                        "For A/B tests of a regenerated sphere set without replacing the shipped file."),
         OpaqueFunction(function=launch_setup),
     ])

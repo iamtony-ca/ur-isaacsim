@@ -40,13 +40,14 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(cd "$(dirname "$0")" && pwd)"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
 cd "$WS"
 source "$WS/src/setup/ml_env.sh"
 
 # Overrides (v3 recollection, HISTORY.md 46): DS= REPO= OUT= TAG=.
-DS="${DS:-$WS/outputs/lerobot_ds_240_v2}"
-REPO="${REPO:-tony/ur16e_pick_place_240_v2}"
-OUT="${OUT:-$WS/outputs/groot_240_v2_abs}"
+DS="${DS:-$WS/outputs/lerobot_ds_240_v2$GRASP_SFX}"
+REPO="${REPO:-tony/ur16e_pick_place_240_v2$GRASP_SFX}"
+OUT="${OUT:-$WS/outputs/groot_240_v2_abs$GRASP_SFX}"
 TAG="${TAG:-groot_train_abs}"
 
 [ -f "$DS/meta/info.json" ] || { echo "FAIL: no dataset at $DS"; exit 1; }

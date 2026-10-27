@@ -81,22 +81,26 @@ def summarise(eps):
 def _thin_idle(frames, max_run, eps):
     """Per-frame keep mask that caps runs of near-stationary frames.
 
-    Idle is measured from the recorded pair itself: action[t] = state[t+1] by the
+    Arm idle is measured from the recorded pair: action[t] = state[t+1] by the
     recording convention, so |action - state| IS the motion that frame commands.
-    No differencing across frames, so a dropped neighbour cannot change the label
-    of the frames around it.
+    The gripper is measured from consecutive STATES instead: in a physical-grasp
+    episode action.gripper is the command (0.8 -> 1.0) while the jaw stalls on
+    the part (~0.63), so command - state never reaches zero while holding and a
+    still arm with a closed jaw would never count as idle (HISTORY.md 54.1).
+    Labels are computed on the full episode before anything is dropped.
     """
     if not max_run:
         return [True] * len(frames)
     keep, run = [], 0
-    for fr in frames:
+    for i, fr in enumerate(frames):
         st = fr["state.single_arm"]
         ac = fr["action.single_arm"]
         moving = max(abs(a - b) for a, b in zip(ac, st)) > eps
         # The gripper is the point of several pauses (it opens while the arm holds
         # still), so a frame where only the gripper moves is NOT idle.
         if not moving:
-            moving = abs(fr["action.gripper"][0] - fr["state.gripper"][0]) > eps
+            nxt = frames[min(i + 1, len(frames) - 1)]
+            moving = abs(nxt["state.gripper"][0] - fr["state.gripper"][0]) > eps
         run = 0 if moving else run + 1
         keep.append(moving or run <= max_run)
     return keep
@@ -191,6 +195,15 @@ def main():
     print(f"video encoder: {rgb_encoder.vcodec}  options={rgb_encoder.get_codec_options()}")
 
     meta0 = eps[0][1]
+    # A weld-grasp and a physical-grasp episode label the gripper differently
+    # (stall value vs command, HISTORY.md 53): never mix them in one dataset.
+    # Episodes from before the field existed read as "attach" (all of them were);
+    # an empty value (real hardware, no sim scene) is its own group.
+    mixed = {(m.get("grasp_mode", "attach"), m.get("gripper_action_topic") or "")
+             for _, m, _ in eps}
+    if len(mixed) > 1:
+        print(f"refusing: episodes differ in (grasp_mode, gripper_action_topic): {sorted(mixed)}")
+        return 3
     fps = args.fps or int(round(meta0.get("rate_hz", 30)))
     video_keys = meta0["video_keys"]
 

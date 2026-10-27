@@ -8,7 +8,8 @@
 # --max-idle-run stops being load-bearing and the same pipeline works on real
 # hardware, where there is no post-hoc thinning of a teleop session.
 #
-# Different seed (21, was 11) so this is not a re-run of the same object poses.
+# Seed 111 (21 was the 2-camera v3 run, 11 before it) so this is not a re-run of
+# the same object poses.
 #
 # Single-task collection for the ACT rung: 50 episodes of "red -> left".
 #
@@ -26,9 +27,10 @@ set -uo pipefail
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
 S="$(dirname "$0")"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
 ME=$$
 N=${1:-50}
-OUT="$WS/outputs/il_raw_wrist_only"
+OUT="$WS/outputs/il_raw_wrist_only$GRASP_SFX"
 set +u; source /opt/ros/jazzy/setup.bash; source "$WS/install/setup.bash"; set -u
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"   # shared machine: another project may occupy domain 0 (HISTORY.md 47)
 
@@ -41,10 +43,14 @@ nohup /isaac-sim/python.sh "$WS/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py"
   --object-pose 0.60,0.0,0.225 --object-size 0.035,0.035,0.035 \
   --place-pose 0.60,0.315,0.0 --object-names red,blue --place-names left,right \
   --object-spacing 0.20 --randomize-object --randomize-radius 0.06 --seed 111 \
-  --camera-res 320x240 --grasp-attach --with-camera --with-static-cam --headless \
+  --camera-res 320x240 "${ISAAC_GRASP[@]}" --with-camera --with-static-cam --headless \
   > "$LOG/w1_isaac.log" 2>&1 &
 for _ in $(seq 1 90); do grep -q "scene topics" "$LOG/w1_isaac.log" && break; sleep 5; done
 grep -q "scene topics" "$LOG/w1_isaac.log" || { echo "FAIL: isaac"; exit 1; }
+# "scene topics" is printed before the first physics step; on a cold shader cache
+# /clock only starts minutes later and controllers spawned meanwhile time out.
+for _ in $(seq 1 60); do timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1 && break; sleep 5; done
+timeout 5 ros2 topic echo --once /clock > /dev/null 2>&1 || { echo "FAIL: isaac never published /clock"; exit 1; }
 "$S/bringup.sh" > "$LOG/w1_bringup.log" 2>&1
 tail -1 "$LOG/w1_bringup.log" | grep -q "== ready" || { echo "FAIL: bringup"; tail -3 "$LOG/w1_bringup.log"; exit 1; }
 echo "   stack ready"

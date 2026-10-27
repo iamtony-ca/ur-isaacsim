@@ -182,7 +182,7 @@ cuMotion(궤적)과 정책(스트리밍)은 **같은 HW 인터페이스 위에�
 tool0 → camera_link :  xyz = (0, -0.067, 0.01847) m,  pitch 8°   (PickNik 브라켓 기준)
 ```
 이 값은 `urdf/ur16e_2f85_d405/realsense_d405_macro.xacro` 와 `isaac/common/ur16e_isaac_ros2.py`
-**양쪽에 중복 기재**되어 있고, 한쪽만 바꾸면 RViz ↔ Isaac 자세가 어긋난다(`CLAUDE.md` 함정 7).
+**양쪽에 중복 기재**되어 있고, 한쪽만 바꾸면 RViz ↔ Isaac 자세가 어긋난다(`SETUP.md` §9 "Isaac EE(그리퍼) 위치가 RViz 와 어긋남" 행, 재베이크 §5-B·§5-C).
 
 ➡ 따라서 할 일은 "먼저 정하기"가 아니라 둘 중 하나다:
 1. **실물 브라켓을 이 명목 치수로 제작**한다 (권장 — sim/데이터가 이미 이 값으로 검증됨), 또는
@@ -236,6 +236,9 @@ sim↔real 을 관절 이름으로 매핑하는 순간 조용히 깨진다. **`s
 **③ 액션 기록 규약** — 데이터셋의 `action.single_arm` 은 **정책이 재현해야 할 목표 관절 위치**다.
 §3 의 상태머신 생성 경로에서는 컨트롤러로 보낸 궤적 waypoint 가 아니라, **다음 스텝의 관측 관절 위치**를
 액션으로 기록하는 편이 안전하다(궤적 보간 타이밍과 기록 rate 불일치를 피함). §6.5 의 시간 동기화 항목 참조.
+**단 물리 접촉 파지에서는 `action.gripper` 를 명령에서 받는다**(2026-10-19, `HISTORY.md` §53.7): jaw 가 큐브에 막혀 0.506 에 멈추므로
+next_state 그리퍼는 "쥐는 힘 0" 을 가르친다(용접 데이터 체크포인트 physical 0/10, §53.6). sim 수집은 `gripper_action_topic:=/isaac_joint_commands`
+(그리퍼만 교체, 팔은 그대로 next_state). 스키마(필드·범위)는 그대로다.
 
 ### 2.7 모델 순서: ACT → **소형 VLA** → GR00T (2026-09-06 개정)
 
@@ -352,7 +355,7 @@ Mimic 은 사람 데모를 subtask 로 쪼갠 뒤 **각 구간에 강체 변환�
 | Isaac Lab 설치 + **Isaac Sim 6.0.1 호환 버전** | **미설치, 호환성 미확인** — 계획의 숨은 최대 리스크였음 |
 | `ManagerBasedRLMimicEnv` 서브클래스 (`target_eef_pose_to_action` 등) | 미착수 |
 | **instanceable USD 변환** | instanceable prim **0개** (§5) |
-| Isaac Lab `ArticulationCfg` = **세 번째 로봇 정의** | URDF·USD 이미 2개. 동기화 함정(`CLAUDE.md` 함정 7)이 하나 더 늘어남 |
+| Isaac Lab `ArticulationCfg` = **세 번째 로봇 정의** | URDF·USD 이미 2개. 동기화 함정(URDF ↔ USD 이중 기재, `SETUP.md` §9 "Isaac EE(그리퍼) 위치가 RViz 와 어긋남")이 하나 더 늘어남 |
 | HDF5 → LeRobot 변환 스크립트 | 미작성 (§6.5 가 "예상보다 시간 먹는 지점"으로 지목) |
 
 ### 3.2 sim 데이터: pick&place 상태머신이 **곧 데모 생성기**
@@ -585,7 +588,8 @@ UR16e 가 다른 작업을 하다 텔레옵으로 넘어오면 리더와 시작 
 (2026-09-16 재정의, `HISTORY.md` §47):
 
 ```
-leader ready [0, −90°, +152°, −62°, +90°, 0]  →  UR16e [0, −180°, +152°, −152°, −90°, 0]  =  reset_pose.py ready
+L100 실측 rest [−1.1°, −88.4°, +152.0°, −69.6°, +87.5°, +1.6°]  →  UR16e [178.9°, −1.6°, −152.0°, −20.4°, 87.5°, −1.6°]  =  reset_pose.py ready      (2026-09-17 실측 매핑, HISTORY.md §49.8)
+leader ready [0, −90°, +152°, −62°, +90°, 0]  →  UR16e [0, −180°, +152°, −152°, −90°, 0]  =  reset_pose.py ready_v2   (2026-09-16 URDF 가지, §47 — sim 스모크만)
 ```
 
 > 2026-09-10 판은 SRDF `home`(상완 수직)을 리더 휴식 자세로 잘못 보고 [0, −90°, +90°, −90°, −90°, 0] 을
@@ -720,6 +724,10 @@ F3M 링크 질량(g): 2064.88 / 3679.54 / 2386.59 / 1400.23 / 1400.23 / 400.15.
 들어있다.** prismatic 근사로 되돌릴 필요 없고, revolute + mimic 이 파지 물리에 더 유리하다.
 ➡ **"최대 위험 요소"였던 항목이 사실상 완료 상태.** B단계 "1~2주" 추정은 여기서 크게 줄어든다.
 
+> **2026-10-19 정정(`HISTORY.md` §53)**: 구조(트리 + mimic)는 맞지만 **용접 없이** 쥐면 위 표의 에셋 게인(finger_joint 26 N·m, 2.56 rad/s)이
+> 닫히는 순간 손목을 2~3 rad/s 로 걷어차고 큐브를 튕겨 0/10 이었다(그래서 그동안 D5 용접). 물리 접촉 파지는 USD 재베이크 없이 play 전에
+> 적용하는 **soft 프로파일**(3 N·m · 1 rad/s · 120 Hz 물리 · 패드 μ1.2)로 20/20 — `--grasp-mode physical` 의 기본값이다.
+
 ### 참고: Isaac Lab이 기본 제공하는 UR 설정 (Mimic 경로로 돌아갈 경우에만 유효)
 
 `UR10_CFG`(그리퍼 없음), `UR10E_ROBOTIQ_GRIPPER_CFG`(2F-140), `UR3e_CFG`, `UR3e_GRIPPER_CFG`(2F-140), `UR3e_SHORT_SUCTION_CFG`
@@ -815,7 +823,7 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 - **★ 시간 동기화 규약을 스키마와 함께 확정할 것.** §2.8/이 절이 "타임스탬프 정렬"을 데이터 품질 1순위
   용의자로 지목하는데 정작 방법이 미정이었다. 현재 sim 실측값:
   `/clock` 기반, 카메라 ~80 Hz, controller_manager 100 Hz, physics 60 Hz.
-  **기록 rate 를 하나 정하고(예: 30 Hz) 관측·액션을 그 그리드에 리샘플**한다. 카메라 프레임과
+  **기록 rate 를 하나 정하고(예: 30 Hz) 관측·액션을 그 그리드에 리샘플**한다. *(→ 구현 `il_recorder.py`: 보간하는 리샘플이 아니라 30 Hz 타이머가 tick 마다 각 스트림의 **최신값**을 샘플한다 — zero-order hold, 프레임 시각은 tick 의 노드 시계. `HISTORY.md` §58.4)* 카메라 프레임과
   `/joint_states` 를 어느 쪽 타임스탬프에 맞출지도 명시.
 - **에피소드 성공 판정 + 자동 리셋을 정의할 것.** D단계 "closed-loop 롤아웃"의 성공 기준이 없으면
   §2.8 이 설계한 ACT vs VLA 비교가 성립하지 않는다. 판정 조건(물체가 목표 영역 안 & 그리퍼 열림 & 정지)과
@@ -864,7 +872,7 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 |---|---|
 | **T1. teleop 조종 파이프라인** (Servo + 스트리밍 컨트롤러 + 패드/키보드 + 그리퍼) | ✅ **완료·검증** (2026-09-06, `HISTORY.md` §15) |
 | T2. 씬 준비 | 🔶 **진행중** |
-| ├ T2-1 **파지** — 접촉 물리 실패 → **D5 fixed-joint attach 로 해결·검증**(물체 +1.62 m 추종, 관절 건전) | ✅ |
+| ├ T2-1 **파지** — 접촉 물리 실패 → **D5 fixed-joint attach 로 해결·검증**(물체 +1.62 m 추종, 관절 건전). **2026-10-19 부터 IL 기본은 물리 접촉 파지**(`--grasp-mode physical` + soft 그리퍼 프로파일, 정상 20/20; 하네스 `GRASP_MODE=physical`). attach 는 용접 시대 데이터·체크포인트 재현용 — `HISTORY.md` §53 | ✅ |
 | ├ T2-2 씬 요소(작업면·물리 물체·place 마커·랜덤화·`/scene/reset_episode`) | ✅ |
 | ├ T2-3 **외부 RGB 카메라** — `/static_cam/color/{image_raw,camera_info}` 추가 + TF 를 `static_cam_tf.launch.py` 로 분리 | ✅ |
 | └ T2-5 실물 외부 카메라 런치(sim 과 동일 토픽) | ⬜ |
@@ -877,8 +885,8 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 | **T3-D. pick&place 상태머신** `scripts/pick_place_demo.py` — GT pose(`/scene/object_pose`) → cuMotion + **직선 접근/후퇴**(`compute_cartesian_path`) → 2F-85. TCP 는 TF 로 실측. **사람 없이 파이프라인을 끝까지 돌리는 구동기** | ✅ **sim 검증 완료** (2026-09-07, 1/1 SUCCESS, 마커에서 14 mm — `HISTORY.md` §25) |
 | └ ⚠️ **런치는 반드시 `ur_only:=false`** — 기본 `true` 면 move_group 이 그리퍼 없는 모델을 써서 **모든 Cartesian goal 이 SUCCESS 를 반환하며 무동작**한다 | — |
 | **T4-A. 파이프라인 관통** — 상태머신 → `il_recorder` → `raw_to_lerobot` → LeRobot v3.0 → ACT 학습. 4 에피소드/7,136프레임, 재판독 시 §2.6 스키마 그대로, ACT loss 15.3→3.1 | ✅ **완료** (2026-09-08, `HISTORY.md` §25) |
-| T4-B. 대량 수집 + closed-loop 롤아웃 | ⬜ *선행: **태스크 3종 × 언어 지시문**(§2.8 — 지금은 1종이라 VLA 가 언어를 무시한다), 에피소드의 정지 프레임 정리(현재 1,686프레임≈56초 중 상당수가 대기)* |
-| T5. (선택) 소형 VLA → **GR00T N1.7** | ⬜ *lerobot 0.6.1 내장 확인(§2.7) — 별도 레포 불필요* |
+| T4-B. 대량 수집 + closed-loop 롤아웃 | ✅ **sim 완료** — 최종 ACT(physical) `outputs/act_red_left_190_phys/checkpoints/200000`: 190 ep(±60 mm 100 + x 바깥 띠 60–100 mm 90), 기존 범위 19/20 · 넓은 범위(x ±100 mm) 20/20, 놓기 오차 4–6 mm. 남은 과제 = yaw 추종(기울기 −0.62…+0.05, 시연 −1.00) — `HISTORY.md` §54.5·§54.6·§58.7 |
+| T5. (선택) 소형 VLA → **GR00T N1.7** | 🔶 **sim 파이프라인 검증**(2026-09-13 3/8 → 30 ep/태스크 재판정 14/29, 언어 실패 0 — 용접(attach) 데이터, `plan_groot_n17.md` §8.9·§8.10, `HISTORY.md` §44·§46). physical 재수집(`v4_phys`)은 아직 |
 
 > ### ★ IL/VLA 스택에 **필요 없는 것** (2026-09-06 확정)
 > 정책 입력은 **RGB + 관절뿐**이다. 따라서 teleop→IL→VLA 경로는 아래를 **쓰지 않는다**:
@@ -889,7 +897,7 @@ print(torch.cuda.get_arch_list())   # 'sm_120' 포함 확인
 >
 > **IL 최소 기동 (4개면 끝)**:
 > ```
-> ① Isaac  --scene pick_place --table --grasp-attach --with-camera --with-static-cam
+> ① Isaac  --scene pick_place --table --grasp-mode physical --with-camera --with-static-cam   (용접 시대 재현만 --grasp-attach)
 > ② 제어    ur16e_2f85_d405.launch.py use_sim:=true
 > ③ TF      static_cam_tf.launch.py            ← 그래서 nvblox 런치에서 분리했다
 > ④ teleop  teleop_servo.launch.py + teleop_dualsense.launch.py

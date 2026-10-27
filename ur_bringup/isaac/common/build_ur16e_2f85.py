@@ -23,7 +23,7 @@ via PhysxMimicJointAPI baked into the asset, so ROS only ever commands
 
 Run (Isaac Sim bundled python):
     /isaac-sim/python.sh \
-        /isaac-sim/ur_ws/src/ur_bringup/isaac/build_ur16e_2f85.py
+        /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/common/build_ur16e_2f85.py
 """
 from __future__ import annotations
 

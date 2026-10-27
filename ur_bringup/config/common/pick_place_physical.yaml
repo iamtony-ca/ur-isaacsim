@@ -1,0 +1,13 @@
+# pick_place_demo overrides for a PHYSICAL grasp (Isaac started with
+# --grasp-mode physical; HISTORY.md 53). Pass as
+#   ros2 launch ur_bringup pick_place_demo.launch.py ... \
+#     extra_params:=$(ros2 pkg prefix ur_bringup)/share/ur_bringup/config/common/pick_place_physical.yaml
+#
+# grip_closed 0.8: command fully shut and let the force-limited jaw stall on the
+# part (finger_joint settles at 0.506 on the 35 mm cube), like the real 2F-85.
+# The weld-era 0.52 was "just past contact"; with the soft drive it would squeeze
+# with ~0.4 N.m instead of the 3 N.m cap.
+/**:
+  ros__parameters:
+    grasp_mode: physical
+    grip_closed: 0.8

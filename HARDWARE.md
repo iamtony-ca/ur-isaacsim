@@ -5,7 +5,8 @@
 
 - 구성/아키텍처: [`README.md`](README.md) · 재현 매뉴얼: [`SETUP.md`](SETUP.md) · 배경/이력: [`HISTORY.md`](HISTORY.md)
 - 매 터미널 먼저:
-  `source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=0`
+  `source /opt/ros/jazzy/setup.bash && source /isaac-sim/volume/ur_ws/install/setup.bash && export ROS_DOMAIN_ID=42`
+  (0 이 아니고 **같은 호스트의 컨테이너마다 다른 값**, **모든 터미널에서 같게** — 42 = 이 워크스페이스(호스트의 첫 컨테이너). 두 번째 컨테이너면 바꾼다)
 
 ---
 
@@ -125,7 +126,7 @@ sim 은 USD 카메라가 ground-truth 라 캘리브 불필요. 실물은 브라�
 ### 전체 결합 + OctoMap
 ```bash
 ros2 launch ur_bringup ur16e_2f85_d405_real.launch.py robot_ip:=<UR16e_IP> cam_xyz:="..." cam_rpy:="..."
-ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py use_sim:=false       # depth→OctoMap (sim 과 동일 토픽)
+ros2 launch ur_bringup ur16e_2f85_d405_moveit.launch.py use_sim_time:=false  # depth→OctoMap (sim 과 동일 토픽). ★ 실물엔 /clock 없음
 # planning scene 에 OctoMap(component 32) 채워지는지:
 ros2 service call /get_planning_scene moveit_msgs/srv/GetPlanningScene "{components: {components: 32}}"
 ```
@@ -167,8 +168,14 @@ nvidia-smi --query-gpu=name,compute_cap --format=csv
 `colcon build --packages-select nvblox_ros --cmake-args -DUSE_NATIVE_CUDA_ARCHITECTURE=1` 로 빌드.
 
 ### UR16e 로봇 설정 (XRDF) — 일회성
-cuMotion 은 URDF + XRDF(충돌 sphere) 필요. UR16e 용은 standalone cuMotion 엔진 휠로 sphere 를 생성해
-`ur_bringup/cumotion/ur16e_2f85.{urdf,xrdf}` 로 vendored 되어 있다. 재생성/배경은 [`ur_bringup/cumotion/README.md`](ur_bringup/cumotion/README.md).
+cuMotion 은 URDF + XRDF(충돌 sphere) 필요. UR16e 용은 `ur_bringup/cumotion/ur16e_2f85.{urdf,xrdf}` 로 vendored 되어 있다.
+**2026-10-16 재생성**(`HISTORY.md` §51): world 구(+버퍼 5 mm)는 베이스 하우징을 뺀 전 링크 메시를 **덮고**(옛 구는 메시 안쪽이라
+메시가 구+버퍼 밖으로 최대 39 mm), self 구는 forearm·wrist_2/3·커플링·베이스만 덮는다. MoveIt 대비 놓친 자기충돌 49→5
+(오경보 3→48; forearm↔wrist_2/3 를 무시 목록에서 빼 검사를 되살린 효과 포함), 빈 장면 계획 시간 중앙값 0.078→0.182 s. 재생성은 Isaac Sim 내장 cuMotion 모듈로
+(휠 불필요): `/isaac-sim/python.sh src/ur_bringup/cumotion/gen_xrdf.py` → `check_xrdf.py` 가 PASS 여야 한다.
+nvblox A/B 데모(§4 아래)는 새 XRDF 로 2026-10-20 sim 재실행 **PASS**(ESDF 켬: FREE 성공·OBST 거부 / 끔: 둘 다 성공,
+`HISTORY.md` §54.4). 새 XRDF 는 cuMotion 기동 시 `attached_object` 자기충돌 마스크에 구가 없다는 경고를 낸다 — 붙인 물체가 없으면 무해.
+배경/수치는 [`ur_bringup/cumotion/README.md`](ur_bringup/cumotion/README.md).
 
 ### 실행
 ```bash
@@ -209,13 +216,17 @@ ros2 launch ur_bringup ur16e_2f85_d405_cumotion_moveit.launch.py \
 
 **프로그램 회피 검증(A/B)**: `python3 src/ur_bringup/isaac/ur16e_2f85_d405/nvblox_obstacle_demo.py` —
 동일 pose goal 이 장애물 부피 안일 때만 막히는지 대조(FREE 성공·OBST 실패 → `PASS`). 같은 OBST 점이
-`read_esdf_world:=false`(장애물 없음)면 성공함을 보여 "도달 가능하지만 매핑된 장애물 때문에 막힘"을 확정.
+`read_esdf_world:=false`(장애물 없음)면 성공함을 보여 "도달 가능하지만 매핑된 장애물 때문에 막힘"을 확정
+(대조는 `nvblox_obstacle_demo.py --control` — OBST 성공을 기대값으로 채점).
+데모는 계획 **전에** `/nvblox_node/get_esdf_and_gradient` 로 OBST 점 주변에 장애물 복셀이 생길 때까지 기다린다
+(`--esdf-timeout`, 기본 180 s). 안 생기면 `ESDF NOT READY` 로 rc 3 — nvblox 가 depth 를 하나도 적분 못 한 빈 맵에선
+새 cuMotion 은 FREE 까지 거부하고 이미 초기화된 cuMotion 은 OBST 를 계획해 판정이 거짓이 되기 때문(`HISTORY.md` §56).
 **함정**: cuMotion **pose(task-space) goal 의 target link 는 XRDF EE(`gripper_frame`)** 여야 함 —
 `tool0` 로 보내면 `Target link 'tool0' does not match end effector 'gripper_frame'` 로 거부(joint goal 은 무관).
 
 **데모 옵션**: `--obstacle`(박스, `--obstacle-pose`/`--obstacle-size` 로 조정). Isaac 은 시작 시 **home 자세**로
 초기화(USD 기본 전관절0=팔 수평 대신 팔 위로) — 안 하면 수평 팔이 낮은 장애물에 닿아 보임. 데모 박스는 수평·home
-양쪽 팔과 안 닿도록 바닥 z≈0.35 로 띄움.
+양쪽 팔과 안 닿도록 띄움(기본 중심 (0.5,0.1,0.6)·크기 (0.12,0.5,0.1) = y 로 넓은 슬랩 z[0.55,0.65]; OBST 점 (0.5,0.3,0.6) 은 그 안).
 
 **★ 핵심 교훈 — eye-in-hand 가 아니라 정적(외부) 카메라로 매핑한다.** 손목장착 D405 는 시야의 대부분이
 로봇 자신이고 팔과 함께 움직여 TSDF 가 로봇으로 오염됨 → 시작자세가 "world collision" 으로 거부된다
@@ -232,8 +243,12 @@ ESDF 에 남아 시작자세 충돌 → `additional_buffer_distance` 키움(0.12
 RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvblox.rviz` 로 자동 전환됨.
 ⑤ 노드가 많아 **Fast DDS 공유메모리(SHM) 포트 포화**(`fastrtps_port ... open_and_lock_file failed`) 가능 — plan/execute 는
 정상이나 신규 CLI/RViz 구독이 불안정하면 전체를 **UDP 전송**(`export FASTDDS_BUILTIN_TRANSPORTS=UDPv4`)으로 재기동.
+⑥ **nvblox 는 depth·camera_info 를 ExactTime(큐 10)으로 짝짓는다** — segmenter 출력(≈220 ms 늦음)과 카메라 원본 camera_info 를
+그대로 주면 짝이 큐에서 밀려 **정상상태 적분 0**(빈 맵인데 `Updated ESDF grid successfully` 는 계속 찍힘). 런치가
+`depth_info_restamp.py` 로 masked 프레임마다 같은 stamp 의 camera_info(`/cumotion/camera_0/world_depth_info`)를 nvblox 에 준다.
+적분 확인은 nvblox 로그의 `Allocating space for last depth view` 또는 `save_timings` 의 `ros/depth_image_callback` > 0 (`HISTORY.md` §56).
 - **실물**: 정적 depth 카메라(D455 등 워크스페이스 오버룩)를 추가하고 `depth_image:=/<그 카메라>/depth/...`,
-  TF 는 그 카메라 실제 장착위치로(`static_cam_tf:=false` 후 별도 발행 또는 `SCAM_TF` 수정).
+  TF 는 그 카메라 실제 장착위치로(`static_cam_tf:=false` 후 별도 발행 또는 `SCAM_TF` 수정). camera_info 재스탬프(⑥)는 토픽만 바뀔 뿐 그대로 필요.
 
 ### ★ 설치 시 겪는 함정 (이번에 확정)
 1. **`cuda-toolkit-13-0` / `libnvvpi4` "not installable"** → (b)CUDA·(c)VPI 레포 누락. 위 3개 레포 다 추가하면 `gxf-isaac-*`/`nitros` 까지 연쇄 해결.
@@ -246,7 +261,7 @@ RViz 설정은 `read_esdf_world:=true` 면 `config/ur16e_2f85_d405/cumotion_nvbl
 UR16e 를 사람이 직접 끌어 IL 데모를 모으기 위한 **리더 암**. 설계 근거는
 [`ur_bringup/docs/plan_il_vla.md`](ur_bringup/docs/plan_il_vla.md) §3.5, 설치는
 [`SETUP.md`](SETUP.md) §2-D, 검증 이력은 [`HISTORY.md`](HISTORY.md) §21·§22.
-**sim 에서 전 구간 검증 완료**(추종오차 0.244°) — 실물에서 새로 할 일은 아래 캘리브레이션뿐이다.
+**sim 에서 전 구간 검증 완료**(추종오차 0.244° → 2026-10-21 순정 이미지 재현 0.116°) — 실물에서 새로 할 일은 아래 캘리브레이션뿐이다.
 
 ### 물리 연결
 | 항목 | 값 |
@@ -315,7 +330,7 @@ ros2 run ur_bringup il_recorder.py --ros-args -p action_source:=topic \
 > sync 는 끝나면 팔을 **streaming 모드로 되돌려 둔다**(안 그러면 enable 이 성공해도 명령이
 > 갈 곳이 없어 "안 움직인다"로 보인다 — `enable` 에 그 가드도 들어있다).
 > 패드: Options=enable · R3=sync (**데드맨 L1 필요**) / Create=disable (불필요).
-> mock + Isaac sim 검증 완료, 추종오차 0.14° (`HISTORY.md` §42).
+> mock + Isaac sim 검증 완료, 추종오차 0.14°(`HISTORY.md` §42) · 2026-10-21 순정 이미지 호스트 재현 0.116°(`HISTORY.md` §57).
 > **첫 연결은 `max_joint_speed:=0.3`(기본 1.0 의 1/3)으로 시작할 것.** 익숙해진 뒤 올린다.
 >
 > `forward_position_controller` 는 **실물에서도 이미 존재한다** — UR 공식
@@ -395,9 +410,15 @@ ros2 run ur_bringup omy_leader_calib.py --mode verify
   규칙을 넣거나 `echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer` 후, 컨테이너 안 `check_env.sh` 로 값만 확인.
 - 컨테이너 플래그: U2D2 `--device=/dev/ttyUSB0`(FTDI 가 둘이면 `port_name:=/dev/serial/by-id/...`), UR 은 **`--network host`**
   — 로봇이 PC 의 50001~50003 으로 **역접속**하므로 브리지 네트워크에선 External Control 이 안 붙는다.
+- **★ `--device=/dev/ttyUSB0` 는 컨테이너 시작 시점의 노드를 고정 매핑한다**(2026-09-22 실물 2회차): 컨테이너를 껐다 켤 때
+  호스트에 그 노드가 없거나 이름이 바뀌어 있으면(다른 FTDI 가 먼저 잡혀 U2D2 가 `ttyUSB1`) 컨테이너 안에 `/dev/ttyUSB0` 가
+  **아예 없다**(`chmod: cannot access`). 컨테이너 기동 후 꽂은 장치도 반영 안 됨. 복구: 호스트에서 `ls -l /dev/serial/by-id/` 로
+  U2D2 이름 확인 → 그 상태로 `docker restart`. 재삽입에 강하게 만들려면 생성 시 `--device-cgroup-rule='c 188:* rmw' -v /dev:/dev`
+  (188 = `ttyUSB*` major) + `port_name:=/dev/serial/by-id/usb-FTDI_...`.
 - 예: PC `192.168.0.20/24`, UR16e `192.168.0.10` → `robot_ip:=192.168.0.10`, URCap 의 host IP = **192.168.0.20**(컨테이너도 host 네트워크라 동일).
 - `ROS_DOMAIN_ID`: 코드에 고정된 곳은 없다(하네스는 `${ROS_DOMAIN_ID:-0}`). 같은 호스트의 다른 컨테이너가 host 네트워크로
-  ROS 2 를 쓰면 도메인이 겹치니, 실물에서도 정하지 않을 거면 그쪽과 겹치지 않는지만 확인(`ros2 node list` 에 모르는 노드).
+  ROS 2 를 쓰면 도메인이 겹치니, 0 이 아니고 그 호스트의 컨테이너마다 다른 값(이 워크스페이스는 `42`)을 모든 터미널에 export 하고
+  겹치지 않는지 확인한다(`ros2 node list` 에 모르는 노드).
 
 ### ⑦ 데이터 기록
 기록기는 **수정 불필요**(장치무관 설계, `plan_il_vla.md` §2.5) — 단 action 토픽은 **브리지 출력**이다:

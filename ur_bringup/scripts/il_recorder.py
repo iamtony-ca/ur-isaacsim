@@ -55,6 +55,23 @@ The ACTION differs per device, hence --action-source:
                 to start while the action topic lacks the arm joints, and refuses
                 to save an episode with a null action (HISTORY.md 49).
 
+Gripper action from the COMMAND (gripper_action_topic)
+------------------------------------------------------
+    With next_state the gripper action is where the jaw ENDED UP. That is fine
+    while a weld holds the part, but with a physical grasp the jaw stalls on the
+    part (finger_joint 0.506 on the 35 mm cube) while the command is 0.8, and a
+    policy trained on the stall value commands no squeeze at all: the existing
+    ACT checkpoint went 0/10 in the physical scene for exactly this reason
+    (HISTORY.md 53.6). gripper_action_topic (a JointState carrying finger_joint)
+    replaces ONLY action.gripper; the arm action keeps its action_source. In sim
+    the command the gripper controller sends Isaac is /isaac_joint_commands.
+    *** In a physical scene (/scene/grasp_mode == physical) with
+    action_source=next_state and no gripper_action_topic, the recorder REFUSES
+    to start an episode (HISTORY.md 53.7); restart it with
+        -p gripper_action_topic:=/isaac_joint_commands
+    collect_il_episodes.sh adds that itself. A leader arm (action_source=topic on
+    /omy_bridge/command_joint_states) already carries finger_joint. ***
+
 Episode tail trimming (GELLO drops its last 5 frames)
 -----------------------------------------------------
     trim_tail_frames (default 0) drops the last N frames at stop: the operator
@@ -63,9 +80,10 @@ Episode tail trimming (GELLO drops its last 5 frames)
 
 Usage
 -----
-    ros2 run ur_bringup il_recorder.py --ros-args \\
-        -p out_dir:=/isaac-sim/volume/ur_ws/datasets/pick_place_raw \\
-        -p task:="put the blue block in the green zone"
+    ros2 run ur_bringup il_recorder.py --ros-args -p use_sim_time:=true \\
+        -p out_dir:=/isaac-sim/volume/ur_ws/outputs/il_raw_my_task \\
+        -p task:="put the blue block in the green zone" \\
+        -p gripper_action_topic:=/isaac_joint_commands   # sim, physical grasp scene
 
     ros2 service call /il/start_episode   std_srvs/srv/Trigger   # begin
     ros2 service call /il/stop_episode    std_srvs/srv/Trigger   # save (success)
@@ -84,7 +102,7 @@ import numpy as np
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
-from rclpy.qos import QoSPresetProfiles
+from rclpy.qos import DurabilityPolicy, QoSPresetProfiles, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -110,10 +128,12 @@ class ILRecorder(Node):
         p("joint_states_topic", "/joint_states")
         p("action_source", "next_state")          # next_state | topic
         p("action_topic", "")                      # JointState, e.g. a leader arm
+        p("gripper_action_topic", "")              # JointState; overrides action.gripper only
         p("gripper_open_rad", 0.0)
         p("gripper_closed_rad", 0.8)
         p("min_episode_frames", 10)
         p("trim_tail_frames", 0)                   # drop the last N frames at stop
+        p("grasp_mode", "")                        # expected sim grasp mode ("" = take the scene's)
         p("auto_reset", True)                      # call /scene/reset_episode on stop
 
         g = lambda n: self.get_parameter(n).value
@@ -133,6 +153,7 @@ class ILRecorder(Node):
             raise SystemExit("every camera is disabled -- there would be no images to record")
         self.action_source = g("action_source")
         self.action_topic = g("action_topic")
+        self.grip_topic = g("gripper_action_topic")
         self.g_open = float(g("gripper_open_rad"))
         self.g_closed = float(g("gripper_closed_rad"))
         self.min_frames = int(g("min_episode_frames"))
@@ -143,6 +164,7 @@ class ILRecorder(Node):
         self._imgs = {k: None for k in self.cams}
         self._js = {}
         self._act_js = {}
+        self._grip_cmd = None
         self._recording = False
         self._frames = []          # list of dicts (one per tick)
         self._ep_dir = None
@@ -160,6 +182,28 @@ class ILRecorder(Node):
                 self.create_subscription(JointState, self.action_topic,
                                          lambda m: self._act_js.update(dict(zip(m.name, m.position))), 20)
 
+        # The scene says how it holds the part (latched /scene/grasp_mode, Isaac
+        # only). Recorded in meta.json so episodes from a hand-started recorder are
+        # labelled too; a mismatch with an explicit grasp_mode parameter blocks
+        # recording. Real hardware has no such topic: the field stays "".
+        self._scene_mode = None
+
+        def _scene(m):
+            first = self._scene_mode is None
+            self._scene_mode = m.data
+            why = self._stalled_gripper_reason()
+            if first and why:
+                self.get_logger().error(why)
+        self.create_subscription(
+            String, "/scene/grasp_mode", _scene,
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                       reliability=ReliabilityPolicy.RELIABLE))
+        if self.grip_topic:
+            def _grip(m):
+                if GRIPPER_JOINT in m.name:
+                    self._grip_cmd = float(m.position[list(m.name).index(GRIPPER_JOINT)])
+            self.create_subscription(JointState, self.grip_topic, _grip, 20)
+
         self.create_service(Trigger, "/il/start_episode", self._srv_start)
         self.create_service(Trigger, "/il/stop_episode", self._srv_stop)
         self.create_service(Trigger, "/il/discard_episode", self._srv_discard)
@@ -172,7 +216,8 @@ class ILRecorder(Node):
         self.get_logger().info(
             f"il_recorder ready. out_dir={self.out_dir} rate={self.rate}Hz "
             f"cams={list(self.cams)} action_source={self.action_source}"
-            + (f" ({self.action_topic})" if self.action_source == "topic" else ""))
+            + (f" ({self.action_topic})" if self.action_source == "topic" else "")
+            + (f", gripper action from {self.grip_topic}" if self.grip_topic else ""))
 
     # ------------------------------------------------------------------ utils
     def _img_cb(self, key):
@@ -194,6 +239,21 @@ class ILRecorder(Node):
         span = self.g_closed - self.g_open
         return float(np.clip((rad - self.g_open) / span, 0.0, 1.0)) if span else 0.0
 
+    def _stalled_gripper_reason(self):
+        """Non-empty when action.gripper would be the STALLED jaw of a physical grasp.
+
+        next_state takes action.gripper from where finger_joint ended up; with a
+        physical grasp that is the stall on the part (0.506), not the 0.8 command,
+        and a policy trained on it never squeezes (HISTORY.md 53.7). Only the
+        scene's own latched mode decides -- real hardware has no /scene/grasp_mode."""
+        if (self._scene_mode == "physical" and self.action_source == "next_state"
+                and not self.grip_topic):
+            return ("scene grasp mode is 'physical' but action.gripper would come from "
+                    "next_state, i.e. the jaw stalled on the part, and the policy would "
+                    "learn not to squeeze (HISTORY.md 53.7). Restart the recorder with "
+                    "-p gripper_action_topic:=/isaac_joint_commands")
+        return ""
+
     def _ready(self):
         missing = [k for k, v in self._imgs.items() if v is None]
         if missing:
@@ -208,6 +268,18 @@ class ILRecorder(Node):
                            f"(seen: {seen}). It must carry the MAPPED command with UR names -- "
                            "with the OMY bridge use /omy_bridge/command_joint_states, "
                            "not /leader/joint_states")
+        want = self.get_parameter("grasp_mode").value
+        if want and self._scene_mode is not None and self._scene_mode != want:
+            return False, (f"scene grasp mode is '{self._scene_mode}' but this recorder was "
+                           f"started for '{want}'")
+        if want == "physical" and self._scene_mode is None:
+            return False, "grasp_mode=physical but /scene/grasp_mode has not been received"
+        why = self._stalled_gripper_reason()
+        if why:
+            return False, why
+        if self.grip_topic and self._grip_cmd is None:
+            return False, (f"gripper_action_topic '{self.grip_topic}' has not carried "
+                           f"{GRIPPER_JOINT} yet")
         return True, ""
 
     def _heartbeat(self):
@@ -234,6 +306,8 @@ class ILRecorder(Node):
                 act_arm = [float(self._act_js[j]) for j in ARM]
             if GRIPPER_JOINT in self._act_js:
                 act_grip = self._norm_gripper(float(self._act_js[GRIPPER_JOINT]))
+        if self.grip_topic:
+            act_grip = self._norm_gripper(self._grip_cmd)
 
         i = len(self._frames)
         for key, img in self._imgs.items():
@@ -262,7 +336,8 @@ class ILRecorder(Node):
             nxt = self._frames[min(i + 1, n - 1)]
             if self.action_source == "next_state":
                 f["action.single_arm"] = list(nxt["state.single_arm"])
-                f["action.gripper"] = list(nxt["state.gripper"])
+                if not self.grip_topic:
+                    f["action.gripper"] = list(nxt["state.gripper"])
             elif f["action.gripper"] is None:
                 f["action.gripper"] = list(nxt["state.gripper"])
                 filled += 1
@@ -348,6 +423,8 @@ class ILRecorder(Node):
             "gripper_closed_rad": self.g_closed,
             "action_source": self.action_source,
             "action_topic": self.action_topic,
+            "gripper_action_topic": self.grip_topic,
+            "grasp_mode": self._scene_mode or self.get_parameter("grasp_mode").value,
             "trim_tail_frames": self.trim_tail,
             "schema": "ur_bringup/docs/plan_il_vla.md 2.6",
             "recorded_unix_time": time.time(),

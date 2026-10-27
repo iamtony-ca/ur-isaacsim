@@ -15,6 +15,9 @@ Pipeline (use_robot_segmenter:=true, DEFAULT):
     static cam depth (/static_cam/depth/image_rect_raw + .../camera_info)
       -> robot_segmenter  (masks the arm/gripper out of the depth using our
                            cumotion URDF/XRDF + TF)  -> /cumotion/camera_0/world_depth
+      -> depth_info_restamp (camera_info with each masked frame's stamp
+                           -> /cumotion/camera_0/world_depth_info; nvblox's
+                           ExactTime sync loses the late frames without it, §56)
       -> nvblox_node  -> 3D ESDF (base_link frame)  -> get_esdf_and_gradient
       -> cuMotion (read_esdf_world:=true)
 
@@ -51,6 +54,7 @@ from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 
 WORLD_DEPTH = "/cumotion/camera_0/world_depth"   # robot-masked depth -> nvblox
+WORLD_DEPTH_INFO = WORLD_DEPTH + "_info"         # depth_info re-stamped per masked frame
 # The static camera pose now lives in launch/common/static_cam_tf.launch.py --
 # ONE definition shared by nvblox and by teleop/IL recording. It must stay in sync
 # with ur16e_isaac_ros2.py --static-cam-xyz/--static-cam-target.
@@ -119,13 +123,25 @@ def generate_launch_description():
         ],
     )
 
+    # nvblox pairs depth+camera_info with an ExactTime sync of queue 10. The masked depth
+    # arrives ~220 ms after its camera_info, by which time >10 newer camera_info stamps
+    # have pushed the partner out -> nvblox integrated (almost) nothing (HISTORY.md §56).
+    # So feed nvblox a camera_info re-stamped with each masked frame's header.
+    info_restamp = Node(
+        package="ur_bringup", executable="depth_info_restamp.py", name="depth_info_restamp",
+        output="screen", condition=IfCondition(use_seg),
+        parameters=[{"use_sim_time": use_sim_time}],
+        remappings=[("depth", WORLD_DEPTH), ("camera_info", depth_info),
+                    ("camera_info_out", WORLD_DEPTH_INFO)],
+    )
+
     # nvblox on the MASKED depth (segmenter on) ...
     nvblox_masked = Node(
         package="nvblox_ros", executable="nvblox_node", name="nvblox_node", output="screen",
         condition=IfCondition(use_seg),
         parameters=[nvblox_base, nvblox_cumotion, {"use_sim_time": use_sim_time}],
         remappings=[("camera_0/depth/image", WORLD_DEPTH),
-                    ("camera_0/depth/camera_info", depth_info)],
+                    ("camera_0/depth/camera_info", WORLD_DEPTH_INFO)],
     )
     # ... or on RAW depth (segmenter off, debug only)
     nvblox_raw = Node(
@@ -164,6 +180,7 @@ def generate_launch_description():
                                           "(set false if your camera TF comes from elsewhere)."),
         static_tf,
         segmenter,
+        info_restamp,
         nvblox_masked,
         nvblox_raw,
     ])

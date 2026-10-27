@@ -6,11 +6,15 @@
 # has failed, and training on the previous dataset would look like success.
 set -uo pipefail
 S="$(cd "$(dirname "$0")" && pwd)"
+source "$S/grasp_mode.sh"   # GRASP_MODE=physical (default) | attach -- HISTORY.md 53
+# This pipeline rolls out what pick_place_demo.py JUST collected, and its READY is
+# reset_pose `ready` in either grasp mode -- not grasp_mode.sh's ready_v1 for attach.
+export START_POSE=ready
 WS="${UR_WS:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"   # workspace root (override: UR_WS=...)
 LOG="${HARNESS_LOG:-$WS/outputs/harness_logs}"; mkdir -p "$LOG"   # logs never go into the source tree
-RAW="$WS/outputs/il_raw_wrist_only"
-DS="$WS/outputs/lerobot_ds_wrist_only"
-CK="$WS/outputs/act_wrist_only/checkpoints/last/pretrained_model"
+RAW="$WS/outputs/il_raw_wrist_only$GRASP_SFX"
+DS="$WS/outputs/lerobot_ds_wrist_only$GRASP_SFX"
+CK="$WS/outputs/act_wrist_only$GRASP_SFX/checkpoints/last/pretrained_model"
 
 # TARGET is 50, not 100: this run only has to prove the wrist-only path works
 # end to end. The 2-camera comparison at 100 episodes already exists, and 50 is
@@ -25,7 +29,7 @@ for _ in $(seq 1 400); do
   sleep 20
 done
 # Stop the collector once the target is reached -- it was told to gather 100.
-# Kill by PID, never a broad pattern (CLAUDE.md), and give the recorder a moment
+# Kill by PID, never a broad pattern (README.md 8), and give the recorder a moment
 # to finish writing the episode it is on.
 ps -eo pid,args --no-headers | grep "[c]ollect_wrist1.sh" | awk '{print $1}' \
   | while read -r pp; do kill "$pp" 2>/dev/null; done
@@ -60,7 +64,7 @@ sleep 12; rm -f /dev/shm/torch_* 2>/dev/null
 echo "   shm free: $(df -h /dev/shm | awk 'NR==2{print $4}')"
 "$S/train_wrist1.sh" > "$LOG/w1_train.log" 2>&1
 [ -f "$CK/config.json" ] || { echo "FAIL: no checkpoint"; tail -5 "$LOG/w1_train.log"; exit 1; }
-echo "   trained: $(ls $WS/outputs/act_wrist_only/checkpoints/)"
+echo "   trained: $(ls $WS/outputs/act_wrist_only$GRASP_SFX/checkpoints/)"
 
 echo "== [4/4] rollout x10"
 "$S/rollout_gui_then_n_w1.sh" > "$LOG/w1_rollout.log" 2>&1

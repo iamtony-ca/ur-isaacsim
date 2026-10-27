@@ -8,8 +8,8 @@ scaled_joint_trajectory_controller (6 arm joints) and gripper_controller
 
 Isaac Sim must be running the composed UR16e+2F-85 scene, e.g.:
     /isaac-sim/python.sh \
-        /isaac-sim/ur_ws/src/ur_bringup/isaac/ur16e_isaac_ros2.py \
-        --asset-path /isaac-sim/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
+        /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/common/ur16e_isaac_ros2.py \
+        --asset-path /isaac-sim/volume/ur_ws/src/ur_bringup/isaac/assets/ur16e_with_2f85.usd
 
 Then (this launch):
     ros2 launch ur_bringup ur16e_2f85.launch.py
@@ -36,7 +36,12 @@ def generate_launch_description():
     joint_states_topic = LaunchConfiguration("joint_states_topic")
 
     declared_args = [
-        DeclareLaunchArgument("use_sim_time", default_value="true",
+        # use_sim mirrors the *_moveit launches (docs and the harness pass use_sim:=true).
+        # This launch is sim-only (topic_based hardware), so use_sim only sets the DEFAULT
+        # of use_sim_time; an explicit use_sim_time wins.
+        DeclareLaunchArgument("use_sim", default_value="true",
+                              description="true = Isaac /clock; sets the use_sim_time default"),
+        DeclareLaunchArgument("use_sim_time", default_value=LaunchConfiguration("use_sim"),
                               description="Sim nodes use /clock from Isaac. Set false to test the "
                                           "controller stack without Isaac running."),
         DeclareLaunchArgument("launch_rviz", default_value="false"),
